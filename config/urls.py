@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework_simplejwt.views import (
@@ -30,6 +31,7 @@ api_v1_patterns = [
 ]
 
 urlpatterns = [
+    path("healthz/", lambda _request: JsonResponse({"status": "ok"}), name="healthz"),
     path("admin/", admin.site.urls),
     path("api/v1/", include((api_v1_patterns, "v1"), namespace="v1")),
     # Esquema OpenAPI + Swagger UI

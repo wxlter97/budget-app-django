@@ -39,7 +39,9 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-cp .env.example .env               # y ajustar DJANGO_SECRET_KEY, DATABASE_URL, ...
+cp .env.example .env               # y ajustar DATABASE_URL, etc.
+# generar el secret key (url-safe: no rompe el parser de .env de docker compose):
+python -c "import secrets; print('DJANGO_SECRET_KEY=' + secrets.token_urlsafe(64))"
 
 python manage.py migrate
 python manage.py createsuperuser
@@ -52,6 +54,16 @@ Celery (en otras terminales, requiere Redis):
 celery -A config worker -l info
 celery -A config beat -l info
 ```
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+Levanta `db` (PostgreSQL 17), `redis`, `web` (gunicorn en `:8000`, corre
+`migrate` al arrancar), `worker` y `beat`. Variables desde el entorno o un
+`.env` (ver `docker-compose.yml`). Healthcheck en `GET /healthz/`.
 
 Tareas programadas (Celery Beat):
 

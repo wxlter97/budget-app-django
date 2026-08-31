@@ -6,6 +6,8 @@
 # Core
 Django~=5.2                      # LTS (soporte hasta 2028)
 psycopg2-binary~=2.9.10          # driver PostgreSQL
+gunicorn~=23.0                   # servidor WSGI en producción
+whitenoise~=6.8                  # sirve los estáticos (admin, DRF, swagger) desde el contenedor
 
 # API REST
 djangorestframework~=3.16
