@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 
 from django.conf import settings
@@ -8,6 +9,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.models import Account
@@ -177,6 +179,27 @@ class EmailImportLogViewSet(
 # ---------------------------------------------------------------------------
 # Webhook de correo entrante
 # ---------------------------------------------------------------------------
+def _authenticate_webhook(request, data) -> bool:
+    """
+    Dos modos:
+    - Mailgun: si `INBOUND_MAILGUN_SIGNING_KEY` está configurada y el payload
+      trae timestamp/token/signature, se verifica el HMAC-SHA256 nativo.
+    - Genérico: header `X-Inbound-Secret` == `INBOUND_WEBHOOK_SECRET`.
+    """
+    mailgun_key = settings.INBOUND_MAILGUN_SIGNING_KEY
+    if mailgun_key and {"timestamp", "token", "signature"} <= set(data):
+        expected = hmac.new(
+            mailgun_key.encode(),
+            f"{data['timestamp']}{data['token']}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(expected, str(data.get("signature", "")))
+
+    secret = settings.INBOUND_WEBHOOK_SECRET
+    provided = request.headers.get("X-Inbound-Secret", "")
+    return bool(secret) and hmac.compare_digest(provided, secret)
+
+
 class InboundEmailSerializer(serializers.Serializer):
     to = serializers.CharField(help_text="Dirección import+<token>@... (string o lista)")
     subject = serializers.CharField(required=False, allow_blank=True)
@@ -211,14 +234,14 @@ class InboundEmailWebhookView(APIView):
 
     authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "inbound"
 
     def post(self, request):
-        secret = settings.INBOUND_WEBHOOK_SECRET
-        provided = request.headers.get("X-Inbound-Secret", "")
-        if not secret or not hmac.compare_digest(provided, secret):
-            raise PermissionDenied("Secreto de webhook inválido o no configurado.")
-
         data = request.data
+        if not _authenticate_webhook(request, data):
+            raise PermissionDenied("Firma / secreto de webhook inválido o no configurado.")
+
         to = data.get("to") or data.get("recipient") or data.get("To")
         sender = data.get("from") or data.get("sender") or data.get("From")
         subject = data.get("subject") or data.get("Subject") or ""

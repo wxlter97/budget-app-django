@@ -69,6 +69,7 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     serializer_class = WorkspaceSerializer
     permission_classes = [IsAuthenticated, WorkspaceOwnerOrReadOnly]
+    queryset = Workspace.objects.none()  # el real está en get_queryset; ayuda al esquema
 
     def get_queryset(self):
         return (

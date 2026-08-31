@@ -3,9 +3,23 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import generics, serializers
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 User = get_user_model()
+
+
+class TokenObtainPairThrottledView(TokenObtainPairView):
+    """Login con throttling propio (scope `auth`) para frenar fuerza bruta."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
+
+
+class TokenRefreshThrottledView(TokenRefreshView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -53,6 +67,8 @@ class RegisterView(generics.CreateAPIView):
 
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

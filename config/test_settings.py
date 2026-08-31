@@ -1,7 +1,13 @@
-"""Settings para correr la test suite sin PostgreSQL/Redis locales.
+"""Settings para la test suite.
 
     python manage.py test --settings=config.test_settings
+
+Usa SQLite en memoria salvo que haya DATABASE_URL en el entorno (CI corre
+contra PostgreSQL). El throttling de DRF se desactiva solo cuando "test"
+está en sys.argv (ver config/settings.py).
 """
+import os
+
 from .settings import *  # noqa: F401,F403
 
 DEBUG = False
@@ -11,12 +17,13 @@ SECURE_HSTS_SECONDS = 0
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": ":memory:",
+if not os.environ.get("DATABASE_URL"):
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
     }
-}
 
 # Password hasher rápido para tests.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

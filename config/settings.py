@@ -4,11 +4,14 @@ Settings de Django para el proyecto buddyclone.
 La configuración sensible / dependiente del entorno se lee de variables de
 entorno (o de un archivo .env en la raíz del proyecto). Ver .env.example.
 """
+import sys
 from datetime import timedelta
 from pathlib import Path
 
 import environ
 from celery.schedules import crontab
+
+RUNNING_TESTS = "test" in sys.argv
 
 # buddyclone/config/settings.py -> BASE_DIR = buddyclone/
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -58,6 +61,7 @@ THIRD_PARTY_APPS = [
     "django_celery_beat",
     "djmoney",
     "drf_spectacular",
+    "drf_spectacular_sidecar",
 ]
 
 LOCAL_APPS = [
@@ -165,7 +169,26 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
     ),
+    "DEFAULT_THROTTLE_CLASSES": (
+        ()
+        if RUNNING_TESTS
+        else (
+            "rest_framework.throttling.AnonRateThrottle",
+            "rest_framework.throttling.UserRateThrottle",
+        )
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": env("THROTTLE_ANON", default="40/min"),
+        "user": env("THROTTLE_USER", default="1000/hour"),
+        "auth": env("THROTTLE_AUTH", default="10/min"),      # login / registro
+        "inbound": env("THROTTLE_INBOUND", default="120/min"),  # webhook de correo
+    },
 }
+if RUNNING_TESTS:
+    # scopes a None => ScopedRateThrottle (login, webhook) tampoco limita
+    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+        key: None for key in REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+    }
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env.int("JWT_ACCESS_MINUTES", default=30)),
@@ -180,7 +203,31 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "API REST de presupuesto personal/compartido (iOS + web).",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
+    "REDOC_DIST": "SIDECAR",
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+        "apps.common.openapi.add_workspace_id_header",
+    ],
 }
+
+# ---------------------------------------------------------------------------
+# Cache (backend de throttling de DRF). En prod: Redis; en dev/test: en memoria.
+# ---------------------------------------------------------------------------
+CACHE_URL = env("CACHE_URL", default="")
+if CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": CACHE_URL,
+        }
+    }
+else:
+    CACHES = {
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+    }
 
 # ---------------------------------------------------------------------------
 # CORS (front web)
@@ -236,6 +283,9 @@ INBOUND_EMAIL_DOMAIN = env("INBOUND_EMAIL_DOMAIN", default="inbound.buddyclone.l
 # Secreto compartido que debe traer el webhook en el header X-Inbound-Secret.
 # Vacío = el endpoint rechaza todo (fail-closed).
 INBOUND_WEBHOOK_SECRET = env("INBOUND_WEBHOOK_SECRET", default="")
+# Si se configura, se verifica la firma HMAC nativa de Mailgun cuando el
+# payload trae timestamp/token/signature (en vez del secreto en el header).
+INBOUND_MAILGUN_SIGNING_KEY = env("INBOUND_MAILGUN_SIGNING_KEY", default="")
 
 LOGGING = {
     "version": 1,

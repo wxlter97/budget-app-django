@@ -116,7 +116,7 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 | `/monthly-snapshots/` | Scoped, **solo lectura** (los genera la tarea de cierre de mes). |
 | `/bank-email-schemas/` | Config global. Lectura: cualquier autenticado (solo `is_active`). Escritura: solo staff. |
 | `/email-import-logs/` | Scoped, solo lectura + `?status=`. Acciones: `POST .../{id}/confirm/` (body: `category` obligatorio; `account`/`amount`/`date`/`description` opcionales, caen a los valores extraídos del correo — crea la `Transaction`) y `POST .../{id}/reject/`. Solo sobre logs en estado `pending`. |
-| `POST /email-import/inbound/` | **Webhook** de correo entrante. Header `X-Inbound-Secret: <INBOUND_WEBHOOK_SECRET>`. Body JSON/form: `{to, from, subject, text}` (también acepta los nombres de Mailgun/SendGrid/Postmark). Responde `202 {log_id, status}`. |
+| `POST /email-import/inbound/` | **Webhook** de correo entrante. Auth: header `X-Inbound-Secret: <INBOUND_WEBHOOK_SECRET>` **o** firma HMAC nativa de Mailgun si se configura `INBOUND_MAILGUN_SIGNING_KEY`. Body JSON/form: `{to, from, subject, text}` (también acepta los nombres de Mailgun/SendGrid/Postmark). Responde `202 {log_id, status}`. |
 | `POST /workspaces/{id}/rotate-inbound-token/` | Rota el token de importación (solo owner). |
 
 ### Importación por correo — cómo funciona
@@ -155,7 +155,19 @@ Agregar un banco = crear un `BankEmailSchema` (`bank_name`, `sender_pattern`)
 Las cuentas/activos `private` de los que el usuario no es `owner` quedan
 fuera de todos los reportes (igual que en `/accounts/` y `/transactions/`).
 
-Esquema OpenAPI: `/api/schema/` · Swagger UI: `/api/docs/`
+Esquema OpenAPI: `/api/schema/` · Swagger UI: `/api/docs/` · Redoc: `/api/redoc/`
+(Swagger/Redoc se sirven **sin CDN** vía `drf-spectacular-sidecar`).
+
+El header `X-Workspace-ID` aparece documentado automáticamente en todas las
+operaciones que lo requieren (hook `apps/common/openapi.py`).
+
+### Rate limiting
+
+`AnonRateThrottle` + `UserRateThrottle` globales, más scopes propios para
+login/registro y el webhook. Rates configurables por entorno
+(`THROTTLE_ANON`, `THROTTLE_USER`, `THROTTLE_AUTH`, `THROTTLE_INBOUND`).
+Backend: `CACHE_URL` (Redis) en producción, en memoria si no se define.
+Desactivado automáticamente durante los tests.
 
 ## Tests
 

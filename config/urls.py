@@ -1,12 +1,12 @@
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-    TokenVerifyView,
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularRedocView,
+    SpectacularSwaggerView,
 )
+from rest_framework_simplejwt.views import TokenVerifyView
 
 from apps.email_import.api import InboundEmailWebhookView
 from apps.reports.api import (
@@ -15,14 +15,19 @@ from apps.reports.api import (
     DashboardSummaryView,
     NetWorthView,
 )
-from apps.users.api import MeView, RegisterView
+from apps.users.api import (
+    MeView,
+    RegisterView,
+    TokenObtainPairThrottledView,
+    TokenRefreshThrottledView,
+)
 from config.api_router import urlpatterns as api_v1_router
 
 api_v1_patterns = [
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/me/", MeView.as_view(), name="me"),
-    path("auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("auth/token/", TokenObtainPairThrottledView.as_view(), name="token_obtain_pair"),
+    path("auth/token/refresh/", TokenRefreshThrottledView.as_view(), name="token_refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token_verify"),
     path("reports/budget/", BudgetReportView.as_view(), name="report-budget"),
     path("reports/net-worth/", NetWorthView.as_view(), name="report-net-worth"),
@@ -47,4 +52,5 @@ urlpatterns = [
         SpectacularSwaggerView.as_view(url_name="schema"),
         name="swagger-ui",
     ),
+    path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
 ]

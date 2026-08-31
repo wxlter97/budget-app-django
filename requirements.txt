@@ -6,14 +6,15 @@
 # Core
 Django~=5.2                      # LTS (soporte hasta 2028)
 psycopg2-binary~=2.9.10          # driver PostgreSQL
-gunicorn~=23.0                   # servidor WSGI en producción
-whitenoise~=6.8                  # sirve los estáticos (admin, DRF, swagger) desde el contenedor
+gunicorn~=26.0                   # servidor WSGI en producción
+whitenoise~=6.12                 # sirve los estáticos (admin, DRF, swagger) desde el contenedor
 
 # API REST
 djangorestframework~=3.16
 djangorestframework-simplejwt~=5.5   # auth JWT (access + refresh + blacklist)
 django-cors-headers~=4.7             # CORS para el front web que consume el mismo API
 drf-spectacular~=0.28               # esquema OpenAPI 3 (cliente iOS + web)
+drf-spectacular-sidecar>=2026.8.1    # sirve Swagger UI / Redoc sin CDN externo
 
 # Dinero / finanzas
 django-money~=3.5                # trae py-moneyed como dependencia
