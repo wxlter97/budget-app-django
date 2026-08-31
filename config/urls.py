@@ -7,9 +7,12 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 
+from apps.users.api import MeView, RegisterView
 from config.api_router import urlpatterns as api_v1_router
 
 api_v1_patterns = [
+    path("auth/register/", RegisterView.as_view(), name="register"),
+    path("auth/me/", MeView.as_view(), name="me"),
     path("auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token_verify"),

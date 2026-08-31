@@ -55,8 +55,14 @@ celery -A config beat -l info
 
 ## API v1
 
-Base: `/api/v1/`. Autenticación: `Authorization: Bearer <access token>`
-(obtén el token en `POST /api/v1/auth/token/` con `username` + `password`).
+Base: `/api/v1/`. Autenticación: `Authorization: Bearer <access token>`.
+
+| Auth | |
+|---|---|
+| `POST /auth/register/` | `{username, email, password, first_name?, last_name?}` → crea la cuenta y devuelve `{user, access, refresh}` |
+| `POST /auth/token/` | `{username, password}` → `{access, refresh}` |
+| `POST /auth/token/refresh/` | `{refresh}` → `{access}` |
+| `GET/PATCH /auth/me/` | usuario autenticado (el `username` es de solo lectura) |
 
 **Selección de workspace:** salvo `/workspaces/`, todos los endpoints exigen el
 header `X-Workspace-ID: <uuid>`. Un permission valida que el usuario sea miembro
