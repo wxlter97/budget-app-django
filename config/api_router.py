@@ -7,6 +7,7 @@ from apps.accounts.api import (
     DebtViewSet,
     LiabilityViewSet,
 )
+from apps.email_import.api import BankEmailSchemaViewSet, EmailImportLogViewSet
 from apps.reports.api import MonthlySnapshotViewSet
 from apps.savings.api import ReserveFundViewSet, SavingsGoalViewSet
 from apps.transactions.api import (
@@ -37,5 +38,8 @@ router.register("savings-goals", SavingsGoalViewSet, basename="savingsgoal")
 router.register("reserve-funds", ReserveFundViewSet, basename="reservefund")
 
 router.register("monthly-snapshots", MonthlySnapshotViewSet, basename="monthlysnapshot")
+
+router.register("bank-email-schemas", BankEmailSchemaViewSet, basename="bankemailschema")
+router.register("email-import-logs", EmailImportLogViewSet, basename="emailimportlog")
 
 urlpatterns = router.urls

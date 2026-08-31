@@ -82,6 +82,8 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 | `/recurring-expenses/` · `/installment-purchases/` | Scoped. Validan `account` y `category` del workspace. |
 | `/savings-goals/` · `/reserve-funds/` | Scoped. |
 | `/monthly-snapshots/` | Scoped, **solo lectura** (los genera la tarea de cierre de mes). |
+| `/bank-email-schemas/` | Config global. Lectura: cualquier autenticado (solo `is_active`). Escritura: solo staff. |
+| `/email-import-logs/` | Scoped, solo lectura + `?status=`. Acciones: `POST .../{id}/confirm/` (body: `category` obligatorio; `account`/`amount`/`date`/`description` opcionales, caen a los valores extraídos del correo — crea la `Transaction`) y `POST .../{id}/reject/`. Solo sobre logs en estado `pending`. |
 
 `DELETE` = soft delete (`is_deleted=True`).
 
