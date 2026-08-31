@@ -5,10 +5,23 @@ modelos (`RecurringExpense.next_due_date`, `InstallmentPurchase.installments_pai
 correrlas dos veces el mismo día no duplica nada.
 """
 from django.db import transaction as db_transaction
+from django.db.models import Q
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 
 from .models import InstallmentPurchase, RecurringExpense, Transaction
+
+
+def visible_transactions(workspace, user):
+    """
+    Transacciones del workspace que puede ver ``user``: las de cuentas
+    compartidas + las de cuentas privadas de las que es owner.
+    """
+    from apps.accounts.models import Account
+
+    return Transaction.objects.filter(account__workspace=workspace).filter(
+        Q(account__visibility=Account.VISIBILITY_SHARED) | Q(account__owner=user)
+    )
 
 
 def _advance(date, frequency):

@@ -7,6 +7,12 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 
+from apps.reports.api import (
+    BudgetReportView,
+    CashflowView,
+    DashboardSummaryView,
+    NetWorthView,
+)
 from apps.users.api import MeView, RegisterView
 from config.api_router import urlpatterns as api_v1_router
 
@@ -16,6 +22,10 @@ api_v1_patterns = [
     path("auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token_verify"),
+    path("reports/budget/", BudgetReportView.as_view(), name="report-budget"),
+    path("reports/net-worth/", NetWorthView.as_view(), name="report-net-worth"),
+    path("reports/cashflow/", CashflowView.as_view(), name="report-cashflow"),
+    path("reports/summary/", DashboardSummaryView.as_view(), name="report-summary"),
     *api_v1_router,
 ]
 

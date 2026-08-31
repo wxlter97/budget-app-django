@@ -107,6 +107,18 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 
 `DELETE` = soft delete (`is_deleted=True`).
 
+### Reportes (solo lectura, scoped por header)
+
+| Endpoint | |
+|---|---|
+| `GET /reports/budget/?year=&month=` | presupuesto vs. gasto real por categoría + totales (default: mes actual) |
+| `GET /reports/net-worth/` | desglose del patrimonio neto (cuentas, activos, pasivos, deudas, neto) |
+| `GET /reports/cashflow/?months=` | serie mensual de ingresos/gastos/neto (default 6, máx 24) |
+| `GET /reports/summary/` | resumen del dashboard: mes actual, patrimonio, importaciones pendientes, top 5 categorías de gasto |
+
+Las cuentas/activos `private` de los que el usuario no es `owner` quedan
+fuera de todos los reportes (igual que en `/accounts/` y `/transactions/`).
+
 Esquema OpenAPI: `/api/schema/` · Swagger UI: `/api/docs/`
 
 ## Tests
