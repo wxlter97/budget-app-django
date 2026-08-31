@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# buddyclone - backend Django + API REST
+# Python 3.12+ recomendado
+# ---------------------------------------------------------------------------
+
+# Core
+Django~=5.2                      # LTS (soporte hasta 2028)
+psycopg2-binary~=2.9.10          # driver PostgreSQL
+
+# API REST
+djangorestframework~=3.16
+djangorestframework-simplejwt~=5.5   # auth JWT (access + refresh + blacklist)
+django-cors-headers~=4.7             # CORS para el front web que consume el mismo API
+drf-spectacular~=0.28               # esquema OpenAPI 3 (cliente iOS + web)
+
+# Dinero / finanzas
+django-money~=3.5                # trae py-moneyed como dependencia
+py-moneyed~=3.0                  # explícito por si se usa fuera de un modelo
+numpy-financial~=1.0             # TIR / cuotas / amortización (InstallmentPurchase, Liability)
+
+# Tareas asíncronas y programadas
+celery~=5.5
+django-celery-beat~=2.8         # scheduler en BD (cierre de mes, recurrentes, import de correo)
+redis~=5.2                      # broker/result backend por defecto de Celery
+
+# Configuración
+django-environ~=0.12            # lee settings desde variables de entorno / .env
