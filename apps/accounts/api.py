@@ -15,6 +15,7 @@ class AccountSerializer(serializers.ModelSerializer):
             "name",
             "type",
             "currency",
+            "opening_balance",
             "current_balance",
             "visibility",
             "owner",
@@ -25,7 +26,8 @@ class AccountSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at")
+        # current_balance lo mantienen los signals de Transaction, no el cliente.
+        read_only_fields = ("id", "current_balance", "created_at", "updated_at")
 
     def validate_owner(self, user):
         if user is None:

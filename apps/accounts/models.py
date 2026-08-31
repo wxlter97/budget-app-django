@@ -30,6 +30,12 @@ class Account(BaseModel):
     name = models.CharField(max_length=100)
     type = models.CharField(max_length=20, choices=TYPE_CHOICES)
     currency = models.CharField(max_length=3, default="USD")
+
+    # Saldo con el que se da de alta la cuenta (punto de partida fijo).
+    opening_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    # Saldo actual = opening_balance + suma de transacciones. Se mantiene por
+    # signals al crear/editar/borrar Transaction; recalculable con
+    # `manage.py recompute_balances` si hiciera falta reconciliar.
     current_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
     visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default=VISIBILITY_SHARED)
@@ -49,6 +55,12 @@ class Account(BaseModel):
     )
 
     is_active = models.BooleanField(default=True)
+
+    def save(self, *args, **kwargs):
+        # Al crear la cuenta, el saldo actual arranca en el saldo de apertura.
+        if self._state.adding and not self.current_balance:
+            self.current_balance = self.opening_balance
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} ({self.workspace})"

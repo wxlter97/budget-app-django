@@ -7,7 +7,11 @@ from .models import Account, Asset, Debt, Liability
 
 @admin.register(Account)
 class AccountAdmin(BaseModelAdmin):
-    list_display = ("name", "workspace", "type", "currency", "current_balance", "visibility", "is_active")
+    list_display = (
+        "name", "workspace", "type", "currency",
+        "opening_balance", "current_balance", "visibility", "is_active",
+    )
+    readonly_fields = BaseModelAdmin.readonly_fields + ("current_balance",)
     list_filter = ("type", "visibility", "is_active", "currency")
     search_fields = ("name", "workspace__name", "card_last4")
     raw_id_fields = ("workspace", "owner")

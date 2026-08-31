@@ -8,6 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 # buddyclone/config/settings.py -> BASE_DIR = buddyclone/
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -188,6 +189,21 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+CELERY_BEAT_SCHEDULE = {
+    "generate-recurring-expenses": {
+        "task": "apps.transactions.tasks.generate_due_recurring_expenses",
+        "schedule": crontab(hour=0, minute=30),
+    },
+    "post-due-installments": {
+        "task": "apps.transactions.tasks.post_due_installments",
+        "schedule": crontab(hour=0, minute=35),
+    },
+    "close-previous-month": {
+        "task": "apps.reports.tasks.close_previous_month",
+        "schedule": crontab(hour=0, minute=5, day_of_month=1),
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Seguridad (activa en producción, DEBUG=False)

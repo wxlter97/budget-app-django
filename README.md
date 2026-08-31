@@ -46,11 +46,31 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Celery (en otra terminal, requiere Redis):
+Celery (en otras terminales, requiere Redis):
 
 ```bash
 celery -A config worker -l info
 celery -A config beat -l info
+```
+
+Tareas programadas (Celery Beat):
+
+| Tarea | Cuándo | Qué hace |
+|---|---|---|
+| `apps.transactions.tasks.generate_due_recurring_expenses` | diaria 00:30 | crea una `Transaction` por cada período vencido de cada `RecurringExpense` activo y adelanta `next_due_date` |
+| `apps.transactions.tasks.post_due_installments` | diaria 00:35 | registra las cuotas vencidas de cada `InstallmentPurchase` e incrementa `installments_paid` |
+| `apps.reports.tasks.close_previous_month` | día 1, 00:05 | genera el `MonthlySnapshot` del mes anterior (por workspace) y hace el rollover del sobrante de cada categoría a su `CategoryProvision` |
+
+## Saldos de cuenta
+
+`Account.opening_balance` es el punto de partida fijo (lo fija el cliente al
+crear la cuenta). `Account.current_balance` es un valor **cacheado** =
+`opening_balance + Σ transacciones vivas` (income suma, expense resta). Lo
+mantienen signals sobre `Transaction` (alta, edición de monto/categoría/cuenta,
+soft y hard delete). Para reconciliar:
+
+```bash
+python manage.py recompute_balances
 ```
 
 ## API v1
