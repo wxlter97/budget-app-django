@@ -239,16 +239,19 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 # Celery
 # ---------------------------------------------------------------------------
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://localhost:6379/1")
+# Estas tareas no devuelven nada que haga falta persistir: sin result backend.
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=None)
+CELERY_TASK_IGNORE_RESULT = True
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
+# Orden en el día 1: recurrentes -> cuotas -> cierre de mes.
 CELERY_BEAT_SCHEDULE = {
-    "generate-recurring-expenses": {
-        "task": "apps.transactions.tasks.generate_due_recurring_expenses",
-        "schedule": crontab(hour=0, minute=30),
+    "generate-recurring-transactions": {
+        "task": "apps.transactions.tasks.generate_recurring_transactions",
+        "schedule": crontab(hour=0, minute=30),  # diaria
     },
     "post-due-installments": {
         "task": "apps.transactions.tasks.post_due_installments",

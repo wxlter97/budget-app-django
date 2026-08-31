@@ -11,7 +11,7 @@ from apps.transactions.models import (
     Transaction,
 )
 from apps.transactions.services import (
-    generate_due_recurring_expenses,
+    generate_recurring_transactions,
     post_due_installments,
 )
 from apps.workspaces.models import Workspace
@@ -36,26 +36,27 @@ class RecurringExpenseGenerationTests(TestCase):
 
     def test_generates_one_transaction_per_overdue_period(self):
         rec = self._recurring(dt.date(2026, 1, 1))
-        created = generate_due_recurring_expenses(as_of=dt.date(2026, 3, 15))
+        created = generate_recurring_transactions(as_of=dt.date(2026, 3, 15))
         self.assertEqual(len(created), 3)  # ene, feb, mar
+        self.assertTrue(all(t.source == Transaction.SOURCE_RECURRING for t in created))
         rec.refresh_from_db()
         self.assertEqual(rec.next_due_date, dt.date(2026, 4, 1))
 
     def test_inactive_is_skipped(self):
         self._recurring(dt.date(2026, 1, 1), is_active=False)
-        self.assertEqual(generate_due_recurring_expenses(as_of=dt.date(2026, 2, 1)), [])
+        self.assertEqual(generate_recurring_transactions(as_of=dt.date(2026, 2, 1)), [])
 
     def test_running_twice_does_not_duplicate(self):
         self._recurring(dt.date(2026, 1, 1))
-        generate_due_recurring_expenses(as_of=dt.date(2026, 1, 20))
-        generate_due_recurring_expenses(as_of=dt.date(2026, 1, 20))
+        generate_recurring_transactions(as_of=dt.date(2026, 1, 20))
+        generate_recurring_transactions(as_of=dt.date(2026, 1, 20))
         self.assertEqual(Transaction.objects.count(), 1)
 
     def test_yearly_frequency_advances_a_year(self):
         rec = self._recurring(
             dt.date(2025, 6, 1), frequency=RecurringExpense.FREQUENCY_YEARLY
         )
-        created = generate_due_recurring_expenses(as_of=dt.date(2026, 1, 1))
+        created = generate_recurring_transactions(as_of=dt.date(2026, 1, 1))
         self.assertEqual(len(created), 1)
         rec.refresh_from_db()
         self.assertEqual(rec.next_due_date, dt.date(2026, 6, 1))
@@ -86,6 +87,7 @@ class InstallmentGenerationTests(TestCase):
         p = self._purchase()
         created = post_due_installments(as_of=dt.date(2026, 3, 10))
         self.assertEqual(len(created), 3)
+        self.assertTrue(all(t.source == Transaction.SOURCE_INSTALLMENT for t in created))
         p.refresh_from_db()
         self.assertEqual(p.installments_paid, 3)
 

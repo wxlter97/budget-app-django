@@ -69,8 +69,8 @@ Tareas programadas (Celery Beat):
 
 | Tarea | Cuándo | Qué hace |
 |---|---|---|
-| `apps.transactions.tasks.generate_due_recurring_expenses` | diaria 00:30 | crea una `Transaction` por cada período vencido de cada `RecurringExpense` activo y adelanta `next_due_date` |
-| `apps.transactions.tasks.post_due_installments` | diaria 00:35 | registra las cuotas vencidas de cada `InstallmentPurchase` e incrementa `installments_paid` |
+| `apps.transactions.tasks.generate_recurring_transactions` | diaria 00:30 | crea una `Transaction` (`source=recurring`) por cada período vencido de cada `RecurringExpense` activo y adelanta `next_due_date` |
+| `apps.transactions.tasks.post_due_installments` | diaria 00:35 | registra las cuotas vencidas de cada `InstallmentPurchase` (`source=installment`) e incrementa `installments_paid` |
 | `apps.reports.tasks.close_previous_month` | día 1, 00:05 | genera el `MonthlySnapshot` del mes anterior (por workspace) y hace el rollover del sobrante de cada categoría a su `CategoryProvision` |
 
 ## Saldos de cuenta

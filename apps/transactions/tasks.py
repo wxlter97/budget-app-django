@@ -4,8 +4,9 @@ from . import services
 
 
 @shared_task
-def generate_due_recurring_expenses():
-    return [str(t.id) for t in services.generate_due_recurring_expenses()]
+def generate_recurring_transactions():
+    """Diaria: materializa los gastos recurrentes vencidos."""
+    return [str(t.id) for t in services.generate_recurring_transactions()]
 
 
 @shared_task

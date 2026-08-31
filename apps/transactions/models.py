@@ -27,7 +27,14 @@ class Category(BaseModel):
 class Transaction(BaseModel):
     SOURCE_MANUAL = "manual"
     SOURCE_EMAIL_IMPORT = "email_import"
-    SOURCE_CHOICES = [(SOURCE_MANUAL, "Manual"), (SOURCE_EMAIL_IMPORT, "Importada por correo")]
+    SOURCE_RECURRING = "recurring"
+    SOURCE_INSTALLMENT = "installment"
+    SOURCE_CHOICES = [
+        (SOURCE_MANUAL, "Manual"),
+        (SOURCE_EMAIL_IMPORT, "Importada por correo"),
+        (SOURCE_RECURRING, "Gasto recurrente"),
+        (SOURCE_INSTALLMENT, "Cuota de compra a plazo"),
+    ]
 
     account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name="transactions")
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name="transactions")

@@ -30,8 +30,12 @@ def _advance(date, frequency):
     return date + relativedelta(months=1)
 
 
-def generate_due_recurring_expenses(as_of=None):
-    """Crea una Transaction por cada período vencido de cada gasto recurrente activo."""
+def generate_recurring_transactions(as_of=None):
+    """Crea una Transaction por cada período vencido de cada gasto recurrente activo.
+
+    Idempotente: avanza ``next_due_date`` a medida que genera, así una segunda
+    corrida el mismo día no duplica nada.
+    """
     as_of = as_of or timezone.localdate()
     created = []
 
@@ -50,7 +54,7 @@ def generate_due_recurring_expenses(as_of=None):
                         amount=rec.amount,
                         description=f"{rec.category.name} (recurrente)",
                         date=due,
-                        source=Transaction.SOURCE_MANUAL,
+                        source=Transaction.SOURCE_RECURRING,
                         is_recurring=True,
                     )
                 )
@@ -88,7 +92,7 @@ def post_due_installments(as_of=None):
                         amount=purchase.installment_amount,
                         description=f"{purchase.description} (cuota {n}/{purchase.installments_total})",
                         date=due_date,
-                        source=Transaction.SOURCE_MANUAL,
+                        source=Transaction.SOURCE_INSTALLMENT,
                     )
                 )
                 purchase.installments_paid = n
