@@ -228,6 +228,15 @@ if not DEBUG:
 
 DEFAULT_FROM_EMAIL = env("DJANGO_DEFAULT_FROM_EMAIL", default="no-reply@buddyclone.local")
 
+# ---------------------------------------------------------------------------
+# Importación por correo bancario (webhook de correo entrante)
+# ---------------------------------------------------------------------------
+INBOUND_EMAIL_LOCALPART = env("INBOUND_EMAIL_LOCALPART", default="import")
+INBOUND_EMAIL_DOMAIN = env("INBOUND_EMAIL_DOMAIN", default="inbound.buddyclone.local")
+# Secreto compartido que debe traer el webhook en el header X-Inbound-Secret.
+# Vacío = el endpoint rechaza todo (fail-closed).
+INBOUND_WEBHOOK_SECRET = env("INBOUND_WEBHOOK_SECRET", default="")
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

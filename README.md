@@ -116,6 +116,30 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 | `/monthly-snapshots/` | Scoped, **solo lectura** (los genera la tarea de cierre de mes). |
 | `/bank-email-schemas/` | Config global. Lectura: cualquier autenticado (solo `is_active`). Escritura: solo staff. |
 | `/email-import-logs/` | Scoped, solo lectura + `?status=`. Acciones: `POST .../{id}/confirm/` (body: `category` obligatorio; `account`/`amount`/`date`/`description` opcionales, caen a los valores extraídos del correo — crea la `Transaction`) y `POST .../{id}/reject/`. Solo sobre logs en estado `pending`. |
+| `POST /email-import/inbound/` | **Webhook** de correo entrante. Header `X-Inbound-Secret: <INBOUND_WEBHOOK_SECRET>`. Body JSON/form: `{to, from, subject, text}` (también acepta los nombres de Mailgun/SendGrid/Postmark). Responde `202 {log_id, status}`. |
+| `POST /workspaces/{id}/rotate-inbound-token/` | Rota el token de importación (solo owner). |
+
+### Importación por correo — cómo funciona
+
+1. Cada workspace tiene un `inbound_token` y una dirección
+   `import+<token>@<INBOUND_EMAIL_DOMAIN>` (campo `inbound_email` en el API).
+2. El usuario configura una regla en su correo para **reenviar** las
+   notificaciones del banco a esa dirección.
+3. El proveedor de correo entrante (SendGrid Inbound Parse / Mailgun Routes /
+   Postmark) hace `POST` a `/api/v1/email-import/inbound/` con el
+   `X-Inbound-Secret`.
+4. `ingest_inbound_email` resuelve el workspace por el token, matchea un
+   `BankEmailSchema` activo por `sender_pattern` (regex sobre el remitente),
+   corre el parser de ese banco (`apps/email_import/bank_parsers/<slug>.py`,
+   registrado con `@register("<slug-de-bank_name>")`) y crea un
+   `EmailImportLog` — `pending` si todo salió bien, `failed` con el motivo si
+   no. Si el parser extrae los últimos 4 dígitos, intenta matchear la `Account`.
+5. El usuario revisa `/email-import-logs/?status=pending` y confirma/rechaza.
+   **Nunca se crea una `Transaction` automáticamente.**
+
+Agregar un banco = crear un `BankEmailSchema` (`bank_name`, `sender_pattern`)
++ un módulo en `bank_parsers/` cuyo `@register("<slug>")` coincida con
+`slugify(bank_name)`. Parsers de ejemplo: `demo_bank.py`, `nu_style.py`.
 
 `DELETE` = soft delete (`is_deleted=True`).
 

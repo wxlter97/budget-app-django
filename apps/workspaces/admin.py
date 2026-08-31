@@ -14,8 +14,9 @@ class MembershipInline(admin.TabularInline):
 
 @admin.register(Workspace)
 class WorkspaceAdmin(BaseModelAdmin):
-    list_display = ("name", "id", "created_at")
-    search_fields = ("name", "id")
+    list_display = ("name", "id", "inbound_token", "created_at")
+    search_fields = ("name", "id", "inbound_token")
+    readonly_fields = BaseModelAdmin.readonly_fields + ("inbound_token", "inbound_email")
     inlines = [MembershipInline]
 
 

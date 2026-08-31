@@ -8,6 +8,7 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 
+from apps.email_import.api import InboundEmailWebhookView
 from apps.reports.api import (
     BudgetReportView,
     CashflowView,
@@ -27,6 +28,11 @@ api_v1_patterns = [
     path("reports/net-worth/", NetWorthView.as_view(), name="report-net-worth"),
     path("reports/cashflow/", CashflowView.as_view(), name="report-cashflow"),
     path("reports/summary/", DashboardSummaryView.as_view(), name="report-summary"),
+    path(
+        "email-import/inbound/",
+        InboundEmailWebhookView.as_view(),
+        name="email-import-inbound",
+    ),
     *api_v1_router,
 ]
 

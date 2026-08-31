@@ -1,14 +1,20 @@
+import hmac
+
+from django.conf import settings
 from django.db import transaction as db_transaction
+from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.accounts.models import Account
 from apps.common.api import HasWorkspaceMembership
 from apps.transactions.models import Category, Transaction
 
+from . import services
 from .models import BankEmailSchema, EmailImportLog
 
 
@@ -166,3 +172,71 @@ class EmailImportLogViewSet(
         log.status = EmailImportLog.STATUS_REJECTED
         log.save(update_fields=["status", "updated_at"])
         return Response(self.get_serializer(log).data)
+
+
+# ---------------------------------------------------------------------------
+# Webhook de correo entrante
+# ---------------------------------------------------------------------------
+class InboundEmailSerializer(serializers.Serializer):
+    to = serializers.CharField(help_text="Dirección import+<token>@... (string o lista)")
+    subject = serializers.CharField(required=False, allow_blank=True)
+    text = serializers.CharField(required=False, allow_blank=True)
+    # El remitente viaja en el campo `from` (palabra reservada en Python, por
+    # eso no aparece como field). También se aceptan los nombres de Mailgun
+    # (recipient/sender/body-plain) y Postmark (To/From/TextBody).
+
+
+class InboundImportResultSerializer(serializers.Serializer):
+    log_id = serializers.UUIDField()
+    status = serializers.CharField()
+
+
+@extend_schema(
+    request=InboundEmailSerializer,
+    responses={202: InboundImportResultSerializer},
+)
+class InboundEmailWebhookView(APIView):
+    """
+    Recibe un correo bancario ya normalizado y genera un ``EmailImportLog``.
+
+    Auth: header ``X-Inbound-Secret`` == ``INBOUND_WEBHOOK_SECRET``.
+    Body (JSON o form-encoded); se aceptan también los nombres de campo de
+    Mailgun/SendGrid/Postmark:
+
+        {"to": "...", "from": "...", "subject": "...", "text": "..."}
+
+    Responde 202 con ``{"log_id", "status"}`` incluso si el parseo falla
+    (el log queda en estado ``failed`` para revisión).
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        secret = settings.INBOUND_WEBHOOK_SECRET
+        provided = request.headers.get("X-Inbound-Secret", "")
+        if not secret or not hmac.compare_digest(provided, secret):
+            raise PermissionDenied("Secreto de webhook inválido o no configurado.")
+
+        data = request.data
+        to = data.get("to") or data.get("recipient") or data.get("To")
+        sender = data.get("from") or data.get("sender") or data.get("From")
+        subject = data.get("subject") or data.get("Subject") or ""
+        text = (
+            data.get("text")
+            or data.get("body-plain")
+            or data.get("stripped-text")
+            or data.get("TextBody")
+            or ""
+        )
+        if not to or not sender:
+            raise ValidationError("Faltan los campos 'to' y/o 'from'.")
+
+        try:
+            log = services.ingest_inbound_email(
+                to=to, sender=sender, subject=subject, text=text
+            )
+        except services.WorkspaceNotResolved:
+            raise NotFound("La dirección de destino no corresponde a ningún workspace.")
+
+        return Response({"log_id": str(log.id), "status": log.status}, status=202)

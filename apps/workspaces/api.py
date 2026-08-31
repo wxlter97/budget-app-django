@@ -1,6 +1,9 @@
 from django.db import transaction
 from rest_framework import serializers, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from apps.common.api import (
     HasWorkspaceMembership,
@@ -19,11 +22,16 @@ User = Membership._meta.get_field("user").related_model
 class WorkspaceSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField()
     member_count = serializers.SerializerMethodField()
+    inbound_email = serializers.ReadOnlyField()
 
     class Meta:
         model = Workspace
-        fields = ("id", "name", "role", "member_count", "created_at", "updated_at")
-        read_only_fields = ("id", "created_at", "updated_at")
+        fields = (
+            "id", "name", "role", "member_count",
+            "inbound_token", "inbound_email",
+            "created_at", "updated_at",
+        )
+        read_only_fields = ("id", "inbound_token", "created_at", "updated_at")
 
     def get_role(self, obj) -> str:
         user = self.context["request"].user
@@ -83,6 +91,20 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         instance.soft_delete()
+
+    @action(detail=True, methods=["post"], url_path="rotate-inbound-token")
+    def rotate_inbound_token(self, request, pk=None):
+        """Genera un token de importación nuevo (invalida la dirección anterior). Solo owner."""
+        workspace = self.get_object()
+        membership = next(
+            (m for m in workspace.memberships.all()
+             if m.user_id == request.user.id and not m.is_deleted),
+            None,
+        )
+        if membership is None or membership.role != Membership.ROLE_OWNER:
+            raise PermissionDenied("Solo el owner puede rotar el token.")
+        workspace.rotate_inbound_token()
+        return Response(self.get_serializer(workspace).data)
 
 
 # ---------------------------------------------------------------------------
