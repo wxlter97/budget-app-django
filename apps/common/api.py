@@ -9,7 +9,7 @@ workspace automáticamente.
 """
 import uuid
 
-from rest_framework import viewsets
+from rest_framework import serializers, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import BasePermission, IsAuthenticated
 
@@ -86,6 +86,31 @@ def _workspace_id_of(obj, workspace_field):
     for part in workspace_field.split("__"):
         value = getattr(value, part)
     return getattr(value, "id", value)
+
+
+class WorkspaceScopedSerializerMixin:
+    """
+    Para serializers de modelos con FK directa a Workspace.
+
+    - Asigna ``workspace`` (del header) en la creación; el cliente no lo manda.
+    - ``workspace_child_fields``: nombres de FK que deben pertenecer al mismo
+      workspace (p. ej. ``("category", "account")``). Se validan en update y create.
+    """
+
+    workspace_child_fields = ()
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        workspace = self.context["workspace"]
+        for field in self.workspace_child_fields:
+            obj = attrs.get(field) or getattr(self.instance, field, None)
+            if obj is not None and obj.workspace_id != workspace.id:
+                raise serializers.ValidationError({field: "Pertenece a otro workspace."})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data["workspace"] = self.context["workspace"]
+        return super().create(validated_data)
 
 
 class WorkspaceScopedViewSet(viewsets.ModelViewSet):

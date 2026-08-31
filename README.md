@@ -74,10 +74,14 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 |---|---|
 | `GET/POST /workspaces/` | No usa el header. `POST` crea el workspace + Membership owner. `PATCH/DELETE` solo owner. |
 | `/memberships/` | Scoped por header. Lectura: cualquier miembro. Alta (`{"email": "..."}`) / cambio de rol / expulsión: solo owner. Protege al último owner. |
-| `/accounts/` | Scoped. Las cuentas `private` solo las ve/usa su `owner`. |
+| `/accounts/` · `/assets/` | Scoped. Los `private` solo los ve/usa su `owner`. |
+| `/liabilities/` · `/debts/` | Scoped. |
 | `/categories/` | Scoped. `parent` debe ser del mismo workspace. |
 | `/transactions/` | Scoped vía `account.workspace`. Valida que `account` y `category` sean del workspace. |
 | `/category-budgets/` | Scoped. Único por `(category, month, year)`. |
+| `/recurring-expenses/` · `/installment-purchases/` | Scoped. Validan `account` y `category` del workspace. |
+| `/savings-goals/` · `/reserve-funds/` | Scoped. |
+| `/monthly-snapshots/` | Scoped, **solo lectura** (los genera la tarea de cierre de mes). |
 
 `DELETE` = soft delete (`is_deleted=True`).
 

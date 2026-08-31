@@ -2,9 +2,15 @@ from django.db.models import Q
 from rest_framework import serializers
 
 from apps.accounts.models import Account
-from apps.common.api import WorkspaceScopedViewSet
+from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewSet
 
-from .models import Category, CategoryBudget, Transaction
+from .models import (
+    Category,
+    CategoryBudget,
+    InstallmentPurchase,
+    RecurringExpense,
+    Transaction,
+)
 
 
 def _visible_accounts(workspace, user):
@@ -139,3 +145,55 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
 class CategoryBudgetViewSet(WorkspaceScopedViewSet):
     serializer_class = CategoryBudgetSerializer
     queryset = CategoryBudget.objects.select_related("workspace", "category").all()
+
+
+# ---------------------------------------------------------------------------
+# RecurringExpense
+# ---------------------------------------------------------------------------
+class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.ModelSerializer):
+    workspace_child_fields = ("category", "account")
+
+    class Meta:
+        model = RecurringExpense
+        fields = (
+            "id", "category", "account", "amount", "frequency", "next_due_date",
+            "is_active", "created_at", "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+
+class RecurringExpenseViewSet(WorkspaceScopedViewSet):
+    serializer_class = RecurringExpenseSerializer
+    queryset = RecurringExpense.objects.select_related(
+        "workspace", "category", "account"
+    ).all()
+
+
+# ---------------------------------------------------------------------------
+# InstallmentPurchase
+# ---------------------------------------------------------------------------
+class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.ModelSerializer):
+    workspace_child_fields = ("category", "account")
+    is_completed = serializers.BooleanField(read_only=True)
+    remaining_amount = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True
+    )
+
+    class Meta:
+        model = InstallmentPurchase
+        fields = (
+            "id", "account", "category", "description", "total_amount",
+            "installment_amount", "installments_total", "installments_paid",
+            "start_date", "is_completed", "remaining_amount",
+            "created_at", "updated_at",
+        )
+        read_only_fields = (
+            "id", "is_completed", "remaining_amount", "created_at", "updated_at",
+        )
+
+
+class InstallmentPurchaseViewSet(WorkspaceScopedViewSet):
+    serializer_class = InstallmentPurchaseSerializer
+    queryset = InstallmentPurchase.objects.select_related(
+        "workspace", "category", "account"
+    ).all()
