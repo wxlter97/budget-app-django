@@ -3,9 +3,9 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from apps.accounts.models import Account, Asset, Debt, Liability
+from apps.accounts.models import Wallet
 from apps.reports.models import MonthlySnapshot
-from apps.reports.services import close_month, net_worth
+from apps.reports.services import close_month, net_worth, net_worth_breakdown
 from apps.transactions.models import (
     Category,
     CategoryBudget,
@@ -16,33 +16,40 @@ from apps.workspaces.models import Workspace
 
 
 class NetWorthTests(TestCase):
-    def test_net_worth_combines_accounts_assets_liabilities_debts(self):
+    def test_net_worth_sums_flagged_wallets_across_purposes(self):
         ws = Workspace.objects.create(name="W")
-        Account.objects.create(
-            workspace=ws, name="C", type=Account.TYPE_CHECKING,
+        Wallet.objects.create(
+            workspace=ws, name="C", purpose=Wallet.PURPOSE_SPENDING,
             opening_balance=Decimal("1000.00"),
         )
-        Asset.objects.create(workspace=ws, name="Auto", type="v", current_value=Decimal("5000.00"))
-        Liability.objects.create(
-            workspace=ws, name="Prestamo", type="p",
-            total_amount=Decimal("3000.00"), remaining_amount=Decimal("2000.00"),
+        Wallet.objects.create(
+            workspace=ws, name="Auto", purpose=Wallet.PURPOSE_ASSET,
+            opening_balance=Decimal("5000.00"),
         )
-        Debt.objects.create(
-            workspace=ws, direction=Debt.DIRECTION_FAVOR, person="A", amount=Decimal("300.00")
+        Wallet.objects.create(
+            workspace=ws, name="Prestamo", purpose=Wallet.PURPOSE_DEBT,
+            opening_balance=Decimal("-2000.00"),
         )
-        Debt.objects.create(
-            workspace=ws, direction=Debt.DIRECTION_CONTRA, person="B", amount=Decimal("100.00")
+        # una cartera que NO cuenta para el neto
+        Wallet.objects.create(
+            workspace=ws, name="Ahorro viaje", purpose=Wallet.PURPOSE_SAVINGS,
+            opening_balance=Decimal("800.00"), counts_toward_net_worth=False,
         )
-        # 1000 + 5000 - 2000 + 300 - 100
-        self.assertEqual(net_worth(ws), Decimal("4200.00"))
+        # 1000 + 5000 - 2000 (los 800 de ahorro no cuentan)
+        self.assertEqual(net_worth(ws), Decimal("4000.00"))
+
+        breakdown = net_worth_breakdown(ws)
+        self.assertEqual(breakdown["net"], Decimal("4000.00"))
+        self.assertEqual(breakdown["by_purpose"]["savings"], Decimal("800.00"))
+        self.assertEqual(breakdown["by_purpose"]["asset"], Decimal("5000.00"))
 
 
 class CloseMonthTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.ws = Workspace.objects.create(name="W")
-        cls.account = Account.objects.create(
-            workspace=cls.ws, name="C", type=Account.TYPE_CHECKING
+        cls.account = Wallet.objects.create(
+            workspace=cls.ws, name="C", purpose=Wallet.PURPOSE_SPENDING
         )
         cls.salary = Category.objects.create(
             workspace=cls.ws, name="Sueldo", type=Category.TYPE_INCOME
@@ -53,7 +60,7 @@ class CloseMonthTests(TestCase):
 
     def _txn(self, cat, amount, day=10):
         return Transaction.objects.create(
-            account=self.account, category=cat, amount=Decimal(amount),
+            wallet=self.account, category=cat, amount=Decimal(amount),
             date=dt.date(2026, 1, day),
         )
 
@@ -63,7 +70,7 @@ class CloseMonthTests(TestCase):
         self._txn(self.food, "150.00", day=20)
         # ruido de otro mes
         Transaction.objects.create(
-            account=self.account, category=self.food, amount=Decimal("99.00"),
+            wallet=self.account, category=self.food, amount=Decimal("99.00"),
             date=dt.date(2026, 2, 1),
         )
 

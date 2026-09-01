@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.transactions.models import Category, Transaction
 from apps.workspaces.models import Membership, Workspace
 
@@ -21,8 +21,8 @@ class TransactionFilterTests(APITestCase):
         Membership.objects.create(
             workspace=cls.ws, user=cls.user, role=Membership.ROLE_OWNER
         )
-        cls.acc = Account.objects.create(
-            workspace=cls.ws, name="C", type=Account.TYPE_CHECKING
+        cls.acc = Wallet.objects.create(
+            workspace=cls.ws, name="C", purpose=Wallet.PURPOSE_SPENDING
         )
         cls.food = Category.objects.create(
             workspace=cls.ws, name="Comida", type=Category.TYPE_EXPENSE
@@ -33,7 +33,7 @@ class TransactionFilterTests(APITestCase):
 
         def txn(cat, day, amount, source=Transaction.SOURCE_MANUAL):
             return Transaction.objects.create(
-                account=cls.acc,
+                wallet=cls.acc,
                 category=cat,
                 amount=amount,
                 date=dt.date(2026, 8, day),
@@ -41,12 +41,12 @@ class TransactionFilterTests(APITestCase):
             )
 
         cls.jul = Transaction.objects.create(
-            account=cls.acc, category=cls.food, amount=10, date=dt.date(2026, 7, 20)
+            wallet=cls.acc, category=cls.food, amount=10, date=dt.date(2026, 7, 20)
         )
         cls.aug_food = txn(cls.food, 5, 20)
         cls.aug_salary = txn(cls.salary, 1, 1000, source=Transaction.SOURCE_EMAIL_IMPORT)
         cls.sep = Transaction.objects.create(
-            account=cls.acc, category=cls.food, amount=30, date=dt.date(2026, 9, 2)
+            wallet=cls.acc, category=cls.food, amount=30, date=dt.date(2026, 9, 2)
         )
 
     def setUp(self):

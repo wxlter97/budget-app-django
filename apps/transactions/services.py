@@ -14,13 +14,13 @@ from .models import InstallmentPurchase, RecurringExpense, Transaction
 
 def visible_transactions(workspace, user):
     """
-    Transacciones del workspace que puede ver ``user``: las de cuentas
-    compartidas + las de cuentas privadas de las que es owner.
+    Transacciones del workspace que puede ver ``user``: las de carteras
+    compartidas + las de carteras privadas de las que es owner.
     """
-    from apps.accounts.models import Account
+    from apps.accounts.models import Wallet
 
-    return Transaction.objects.filter(account__workspace=workspace).filter(
-        Q(account__visibility=Account.VISIBILITY_SHARED) | Q(account__owner=user)
+    return Transaction.objects.filter(wallet__workspace=workspace).filter(
+        Q(wallet__visibility=Wallet.VISIBILITY_SHARED) | Q(wallet__owner=user)
     )
 
 
@@ -41,7 +41,7 @@ def generate_recurring_transactions(as_of=None):
 
     recurring = (
         RecurringExpense.objects.filter(is_active=True, next_due_date__lte=as_of)
-        .select_related("category", "account")
+        .select_related("category", "wallet")
     )
     for rec in recurring:
         with db_transaction.atomic():
@@ -49,7 +49,7 @@ def generate_recurring_transactions(as_of=None):
             while due <= as_of:
                 created.append(
                     Transaction.objects.create(
-                        account=rec.account,
+                        wallet=rec.wallet,
                         category=rec.category,
                         amount=rec.amount,
                         description=f"{rec.category.name} (recurrente)",
@@ -70,7 +70,7 @@ def post_due_installments(as_of=None):
     as_of = as_of or timezone.localdate()
     created = []
 
-    for purchase in InstallmentPurchase.objects.select_related("category", "account"):
+    for purchase in InstallmentPurchase.objects.select_related("category", "wallet"):
         if purchase.installments_paid >= purchase.installments_total:
             continue
 
@@ -87,7 +87,7 @@ def post_due_installments(as_of=None):
             with db_transaction.atomic():
                 created.append(
                     Transaction.objects.create(
-                        account=purchase.account,
+                        wallet=purchase.wallet,
                         category=purchase.category,
                         amount=purchase.installment_amount,
                         description=f"{purchase.description} (cuota {n}/{purchase.installments_total})",

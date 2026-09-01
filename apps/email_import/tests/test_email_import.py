@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.email_import.models import BankEmailSchema, EmailImportLog
 from apps.transactions.models import Category, Transaction
 from apps.workspaces.models import Membership, Workspace
@@ -30,14 +30,14 @@ class EmailImportConfirmTests(APITestCase):
         cls.schema = BankEmailSchema.objects.create(
             bank_name="Banco X", sender_pattern="@bancox.com"
         )
-        cls.account_a = Account.objects.create(
-            workspace=cls.ws_a, name="Tarjeta", type=Account.TYPE_CREDIT
+        cls.account_a = Wallet.objects.create(
+            workspace=cls.ws_a, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT
         )
         cls.category_a = Category.objects.create(
             workspace=cls.ws_a, name="Super", type=Category.TYPE_EXPENSE
         )
-        cls.account_b = Account.objects.create(
-            workspace=cls.ws_b, name="Ajena", type=Account.TYPE_CREDIT
+        cls.account_b = Wallet.objects.create(
+            workspace=cls.ws_b, name="Ajena", purpose=Wallet.PURPOSE_DEBT
         )
 
     def setUp(self):
@@ -48,7 +48,7 @@ class EmailImportConfirmTests(APITestCase):
         defaults = dict(
             workspace=self.ws_a,
             bank_schema=self.schema,
-            account=self.account_a,
+            wallet=self.account_a,
             status=EmailImportLog.STATUS_PENDING,
             raw_email_subject="Compra aprobada",
             extracted_amount="123.45",
@@ -71,7 +71,7 @@ class EmailImportConfirmTests(APITestCase):
         self.assertIsNotNone(txn)
         self.assertEqual(txn.source, Transaction.SOURCE_EMAIL_IMPORT)
         self.assertEqual(str(txn.amount), "123.45")
-        self.assertEqual(txn.account_id, self.account_a.id)
+        self.assertEqual(txn.wallet_id, self.account_a.id)
         self.assertEqual(txn.date, dt.date(2026, 1, 20))
 
     def test_confirm_requires_category(self):
@@ -128,7 +128,7 @@ class EmailImportConfirmTests(APITestCase):
 
     def test_status_filter(self):
         self._pending()
-        self._pending(status=EmailImportLog.STATUS_FAILED, account=None)
+        self._pending(status=EmailImportLog.STATUS_FAILED, wallet=None)
         resp = self.client.get("/api/v1/email-import-logs/?status=pending")
         self.assertEqual(len(resp.data["results"]), 1)
 

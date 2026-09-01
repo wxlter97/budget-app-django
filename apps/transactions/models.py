@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.common.models import BaseModel
 from apps.workspaces.models import Workspace
 
@@ -46,11 +46,11 @@ class Transaction(BaseModel):
     ]
 
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
-    # Cuenta origen. En transferencias, de aquí sale el dinero.
-    account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name="transactions")
-    # Solo transferencias: cuenta destino (a la que entra el dinero).
-    to_account = models.ForeignKey(
-        Account,
+    # Cartera origen. En transferencias, de aquí sale el dinero.
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="transactions")
+    # Solo transferencias: cartera destino (a la que entra el dinero).
+    to_wallet = models.ForeignKey(
+        Wallet,
         on_delete=models.CASCADE,
         null=True,
         blank=True,
@@ -136,7 +136,7 @@ class RecurringExpense(BaseModel):
 
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="recurring_expenses")
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="recurring_expenses")
-    account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name="recurring_expenses")
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="recurring_expenses")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     frequency = models.CharField(max_length=10, choices=FREQUENCY_CHOICES, default=FREQUENCY_MONTHLY)
     next_due_date = models.DateField()
@@ -149,7 +149,7 @@ class RecurringExpense(BaseModel):
 class InstallmentPurchase(BaseModel):
     """Compra a plazo: genera una Transaction por cuota mensual."""
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="installment_purchases")
-    account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name="installment_purchases")
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="installment_purchases")
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="installment_purchases")
     description = models.CharField(max_length=255)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2)

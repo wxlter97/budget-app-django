@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.common.api import HasWorkspaceMembership
 from apps.transactions.models import Category, Transaction
 
@@ -72,7 +72,7 @@ class EmailImportLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = EmailImportLog
         fields = (
-            "id", "status", "bank_schema", "bank_name", "account",
+            "id", "status", "bank_schema", "bank_name", "wallet",
             "raw_email_subject", "extracted_amount", "extracted_merchant",
             "extracted_date", "resulting_transaction", "error_message",
             "created_at",
@@ -86,8 +86,8 @@ class ConfirmImportSerializer(serializers.Serializer):
     los valores extraídos del correo (``category`` no se extrae: es obligatoria).
     """
 
-    account = serializers.PrimaryKeyRelatedField(
-        queryset=Account.objects.none(), required=False
+    wallet = serializers.PrimaryKeyRelatedField(
+        queryset=Wallet.objects.none(), required=False
     )
     category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.none())
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
@@ -97,7 +97,7 @@ class ConfirmImportSerializer(serializers.Serializer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         workspace = self.context["workspace"]
-        self.fields["account"].queryset = Account.objects.filter(workspace=workspace)
+        self.fields["wallet"].queryset = Wallet.objects.filter(workspace=workspace)
         self.fields["category"].queryset = Category.objects.filter(workspace=workspace)
 
 
@@ -113,7 +113,7 @@ class EmailImportLogViewSet(
     serializer_class = EmailImportLogSerializer
     permission_classes = [IsAuthenticated, HasWorkspaceMembership]
     queryset = EmailImportLog.objects.select_related(
-        "bank_schema", "account", "resulting_transaction"
+        "bank_schema", "wallet", "resulting_transaction"
     ).all()
 
     def get_queryset(self):
@@ -135,13 +135,13 @@ class EmailImportLogViewSet(
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        account = data.get("account") or log.account
+        wallet = data.get("wallet") or log.wallet
         amount = data.get("amount", log.extracted_amount)
         date = data.get("date", log.extracted_date)
         description = data.get("description") or log.extracted_merchant
 
         missing = [
-            name for name, value in (("account", account), ("amount", amount), ("date", date))
+            name for name, value in (("wallet", wallet), ("amount", amount), ("date", date))
             if value is None
         ]
         if missing:
@@ -151,7 +151,7 @@ class EmailImportLogViewSet(
 
         with db_transaction.atomic():
             txn = Transaction.objects.create(
-                account=account,
+                wallet=wallet,
                 category=data["category"],
                 amount=amount,
                 description=description,
@@ -160,9 +160,9 @@ class EmailImportLogViewSet(
                 source=Transaction.SOURCE_EMAIL_IMPORT,
             )
             log.resulting_transaction = txn
-            log.account = account
+            log.wallet = wallet
             log.status = EmailImportLog.STATUS_CONFIRMED
-            log.save(update_fields=["resulting_transaction", "account", "status", "updated_at"])
+            log.save(update_fields=["resulting_transaction", "wallet", "status", "updated_at"])
 
         return Response(self.get_serializer(log).data)
 

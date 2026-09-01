@@ -1,9 +1,9 @@
-"""Sincroniza `Account.current_balance` ante cambios en Transaction.
+"""Sincroniza `Wallet.current_balance` ante cambios en Transaction.
 
-Cubre alta, edición (de monto, tipo, cuenta origen/destino) y borrado
+Cubre alta, edición (de monto, tipo, cartera origen/destino) y borrado
 —incluido el soft delete, que llega como un ``save`` con ``is_deleted=True``.
-Cada transacción puede afectar a más de una cuenta (transferencias), así que
-se trabaja con un dict ``{account_id: delta}``.
+Cada transacción puede afectar a más de una cartera (transferencias), así que
+se trabaja con un dict ``{wallet_id: delta}``.
 """
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
@@ -14,8 +14,8 @@ from .models import Transaction
 
 
 def _apply_diff(old: dict, new: dict) -> None:
-    for account_id in set(old) | set(new):
-        apply_balance_delta(account_id, new.get(account_id, 0) - old.get(account_id, 0))
+    for wallet_id in set(old) | set(new):
+        apply_balance_delta(wallet_id, new.get(wallet_id, 0) - old.get(wallet_id, 0))
 
 
 @receiver(pre_save, sender=Transaction)

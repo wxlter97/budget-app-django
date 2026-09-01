@@ -1,7 +1,7 @@
 """
-CRUD y aislamiento de los endpoints secundarios (Asset, Liability, Debt,
-SavingsGoal, ReserveFund, RecurringExpense, InstallmentPurchase,
-MonthlySnapshot). El header X-Workspace-ID manda igual que en el core.
+CRUD y aislamiento de los endpoints secundarios (RecurringExpense,
+InstallmentPurchase, MonthlySnapshot). El header X-Workspace-ID manda igual que
+en el core.
 """
 import datetime as dt
 
@@ -9,9 +9,8 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Account, Asset, Debt, Liability
+from apps.accounts.models import Wallet
 from apps.reports.models import MonthlySnapshot
-from apps.savings.models import ReserveFund, SavingsGoal
 from apps.transactions.models import (
     Category,
     InstallmentPurchase,
@@ -37,25 +36,15 @@ class SecondaryEndpointsTests(APITestCase):
         cls.ws_a = make_workspace(cls.alice, "A")
         cls.ws_b = make_workspace(cls.bob, "B")
 
-        # Un objeto de cada tipo en cada workspace.
         for ws, user in ((cls.ws_a, cls.alice), (cls.ws_b, cls.bob)):
-            Asset.objects.create(workspace=ws, name="Casa", type="propiedad", current_value=1)
-            Liability.objects.create(
-                workspace=ws, name="Hipoteca", type="prestamo", total_amount=10, remaining_amount=9
-            )
-            Debt.objects.create(
-                workspace=ws, direction=Debt.DIRECTION_FAVOR, person="X", amount=5
-            )
-            SavingsGoal.objects.create(workspace=ws, name="Viaje", target_amount=100)
-            ReserveFund.objects.create(workspace=ws, name="Auto", monthly_contribution=10)
-            acc = Account.objects.create(workspace=ws, name="C", type=Account.TYPE_CHECKING)
+            acc = Wallet.objects.create(workspace=ws, name="C", purpose=Wallet.PURPOSE_SPENDING)
             cat = Category.objects.create(workspace=ws, name="Cat", type=Category.TYPE_EXPENSE)
             RecurringExpense.objects.create(
-                workspace=ws, category=cat, account=acc, amount=1,
+                workspace=ws, category=cat, wallet=acc, amount=1,
                 next_due_date=dt.date(2026, 2, 1),
             )
             InstallmentPurchase.objects.create(
-                workspace=ws, account=acc, category=cat, description="TV",
+                workspace=ws, wallet=acc, category=cat, description="TV",
                 total_amount=12, installment_amount=1, installments_total=12,
                 start_date=dt.date(2026, 1, 1),
             )
@@ -69,7 +58,6 @@ class SecondaryEndpointsTests(APITestCase):
         self.client.credentials(**{HEADER: str(self.ws_a.id)})
 
     ENDPOINTS = [
-        "assets", "liabilities", "debts", "savings-goals", "reserve-funds",
         "recurring-expenses", "installment-purchases", "monthly-snapshots",
     ]
 
@@ -82,8 +70,6 @@ class SecondaryEndpointsTests(APITestCase):
 
     def test_foreign_objects_are_404(self):
         model_by_ep = {
-            "assets": Asset, "liabilities": Liability, "debts": Debt,
-            "savings-goals": SavingsGoal, "reserve-funds": ReserveFund,
             "recurring-expenses": RecurringExpense,
             "installment-purchases": InstallmentPurchase,
             "monthly-snapshots": MonthlySnapshot,
@@ -101,22 +87,17 @@ class SecondaryEndpointsTests(APITestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
-    def test_create_asset_in_active_workspace(self):
-        resp = self.client.post("/api/v1/assets/", {"name": "Auto", "type": "vehiculo", "current_value": "5000.00"})
-        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
-        self.assertEqual(Asset.objects.get(pk=resp.data["id"]).workspace_id, self.ws_a.id)
-
-    def test_recurring_expense_rejects_foreign_account(self):
-        foreign_account = Account.objects.filter(workspace=self.ws_b).first()
+    def test_recurring_expense_rejects_foreign_wallet(self):
+        foreign_wallet = Wallet.objects.filter(workspace=self.ws_b).first()
         own_category = Category.objects.filter(workspace=self.ws_a).first()
         resp = self.client.post(
             "/api/v1/recurring-expenses/",
             {
-                "account": str(foreign_account.id),
+                "wallet": str(foreign_wallet.id),
                 "category": str(own_category.id),
                 "amount": "1.00",
                 "next_due_date": "2026-03-01",
             },
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("account", resp.data)
+        self.assertIn("wallet", resp.data)

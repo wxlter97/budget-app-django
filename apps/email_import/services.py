@@ -18,7 +18,7 @@ import re
 
 from django.utils.text import slugify
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.workspaces.models import Workspace
 
 from .bank_parsers import ParseError, get_parser
@@ -95,15 +95,15 @@ def ingest_inbound_email(*, to, sender, subject="", text="", workspace=None):
             **base,
         )
 
-    account = None
+    wallet = None
     if parsed.card_last4:
-        account = Account.objects.filter(
+        wallet = Wallet.objects.filter(
             workspace=workspace, card_last4=parsed.card_last4
         ).first()
 
     return EmailImportLog.objects.create(
         status=EmailImportLog.STATUS_PENDING,
-        account=account,
+        wallet=wallet,
         extracted_amount=parsed.amount,
         extracted_merchant=(parsed.merchant or "")[:255],
         extracted_date=parsed.date,

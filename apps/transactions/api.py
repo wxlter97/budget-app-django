@@ -2,7 +2,7 @@ from django.db.models import Q
 from django_filters import rest_framework as filters
 from rest_framework import serializers
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewSet
 
 from .models import (
@@ -14,9 +14,9 @@ from .models import (
 )
 
 
-def _visible_accounts(workspace, user):
-    return Account.objects.filter(workspace=workspace).filter(
-        Q(visibility=Account.VISIBILITY_SHARED) | Q(owner=user)
+def _visible_wallets(workspace, user):
+    return Wallet.objects.filter(workspace=workspace).filter(
+        Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user)
     )
 
 
@@ -59,8 +59,8 @@ class TransactionSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "type",
-            "account",
-            "to_account",
+            "wallet",
+            "to_wallet",
             "category",
             "amount",
             "currency",
@@ -75,17 +75,17 @@ class TransactionSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "created_by", "created_at", "updated_at")
 
-    def _check_account(self, account, workspace, user, field):
-        if account is None:
+    def _check_wallet(self, wallet, workspace, user, field):
+        if wallet is None:
             return
-        if account.workspace_id != workspace.id:
-            raise serializers.ValidationError({field: "La cuenta es de otro workspace."})
+        if wallet.workspace_id != workspace.id:
+            raise serializers.ValidationError({field: "La cartera es de otro workspace."})
         if (
-            account.visibility == Account.VISIBILITY_PRIVATE
-            and account.owner_id != user.id
+            wallet.visibility == Wallet.VISIBILITY_PRIVATE
+            and wallet.owner_id != user.id
         ):
             raise serializers.ValidationError(
-                {field: "No puedes usar una cuenta privada ajena."}
+                {field: "No puedes usar una cartera privada ajena."}
             )
 
     def validate(self, attrs):
@@ -93,8 +93,8 @@ class TransactionSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
         inst = self.instance
 
-        account = attrs.get("account") or getattr(inst, "account", None)
-        to_account = attrs.get("to_account", getattr(inst, "to_account", None))
+        wallet = attrs.get("wallet") or getattr(inst, "wallet", None)
+        to_wallet = attrs.get("to_wallet", getattr(inst, "to_wallet", None))
         category = attrs.get("category", getattr(inst, "category", None))
         txn_type = attrs.get("type") or getattr(inst, "type", None)
 
@@ -107,20 +107,20 @@ class TransactionSerializer(serializers.ModelSerializer):
                 {"type": "Requerido (o envía una categoría de la que deducirlo)."}
             )
 
-        self._check_account(account, workspace, user, "account")
+        self._check_wallet(wallet, workspace, user, "wallet")
 
         if txn_type == Transaction.TYPE_TRANSFER:
-            if to_account is None:
+            if to_wallet is None:
                 raise serializers.ValidationError(
-                    {"to_account": "Requerida en una transferencia."}
+                    {"to_wallet": "Requerida en una transferencia."}
                 )
-            if account is not None and to_account.id == account.id:
+            if wallet is not None and to_wallet.id == wallet.id:
                 raise serializers.ValidationError(
-                    {"to_account": "La cuenta destino debe ser distinta de la origen."}
+                    {"to_wallet": "La cartera destino debe ser distinta de la origen."}
                 )
-            self._check_account(to_account, workspace, user, "to_account")
+            self._check_wallet(to_wallet, workspace, user, "to_wallet")
             attrs["category"] = None
-            attrs["to_account"] = to_account
+            attrs["to_wallet"] = to_wallet
             attrs["counts_toward_budget"] = False
         else:
             if category is None:
@@ -135,7 +135,7 @@ class TransactionSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"category": f"La categoría no es de tipo «{txn_type}»."}
                 )
-            attrs["to_account"] = None
+            attrs["to_wallet"] = None
 
         return attrs
 
@@ -157,8 +157,8 @@ class TransactionFilter(filters.FilterSet):
         model = Transaction
         fields = {
             "type": ["exact"],
-            "account": ["exact"],
-            "to_account": ["exact"],
+            "wallet": ["exact"],
+            "to_wallet": ["exact"],
             "category": ["exact"],
             "source": ["exact"],
             "is_recurring": ["exact"],
@@ -167,19 +167,19 @@ class TransactionFilter(filters.FilterSet):
 
 
 class TransactionViewSet(WorkspaceScopedViewSet):
-    """Transacciones del workspace activo (scoping vía account__workspace)."""
+    """Transacciones del workspace activo (scoping vía wallet__workspace)."""
 
     serializer_class = TransactionSerializer
-    workspace_field = "account__workspace"
+    workspace_field = "wallet__workspace"
     filterset_class = TransactionFilter
     queryset = Transaction.objects.select_related(
-        "account", "to_account", "category", "created_by"
+        "wallet", "to_wallet", "category", "created_by"
     ).all()
 
     def get_queryset(self):
         user = self.request.user
         return super().get_queryset().filter(
-            Q(account__visibility=Account.VISIBILITY_SHARED) | Q(account__owner=user)
+            Q(wallet__visibility=Wallet.VISIBILITY_SHARED) | Q(wallet__owner=user)
         )
 
 
@@ -229,12 +229,12 @@ class CategoryBudgetViewSet(WorkspaceScopedViewSet):
 # RecurringExpense
 # ---------------------------------------------------------------------------
 class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.ModelSerializer):
-    workspace_child_fields = ("category", "account")
+    workspace_child_fields = ("category", "wallet")
 
     class Meta:
         model = RecurringExpense
         fields = (
-            "id", "category", "account", "amount", "frequency", "next_due_date",
+            "id", "category", "wallet", "amount", "frequency", "next_due_date",
             "is_active", "created_at", "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")
@@ -243,7 +243,7 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
 class RecurringExpenseViewSet(WorkspaceScopedViewSet):
     serializer_class = RecurringExpenseSerializer
     queryset = RecurringExpense.objects.select_related(
-        "workspace", "category", "account"
+        "workspace", "category", "wallet"
     ).all()
 
 
@@ -251,7 +251,7 @@ class RecurringExpenseViewSet(WorkspaceScopedViewSet):
 # InstallmentPurchase
 # ---------------------------------------------------------------------------
 class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.ModelSerializer):
-    workspace_child_fields = ("category", "account")
+    workspace_child_fields = ("category", "wallet")
     is_completed = serializers.BooleanField(read_only=True)
     remaining_amount = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True
@@ -260,7 +260,7 @@ class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.
     class Meta:
         model = InstallmentPurchase
         fields = (
-            "id", "account", "category", "description", "total_amount",
+            "id", "wallet", "category", "description", "total_amount",
             "installment_amount", "installments_total", "installments_paid",
             "start_date", "is_completed", "remaining_amount",
             "created_at", "updated_at",
@@ -273,5 +273,5 @@ class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.
 class InstallmentPurchaseViewSet(WorkspaceScopedViewSet):
     serializer_class = InstallmentPurchaseSerializer
     queryset = InstallmentPurchase.objects.select_related(
-        "workspace", "category", "account"
+        "workspace", "category", "wallet"
     ).all()

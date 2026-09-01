@@ -25,9 +25,9 @@ budget/
     ├── users/         # AUTH_USER_MODEL personalizado (users.User)
     ├── common/        # BaseModel: UUID PK, soft delete, auditoría, scoping
     ├── workspaces/    # Workspace (presupuesto compartido) + Membership
-    ├── accounts/      # Account, Asset, Liability, Debt
+    ├── accounts/      # Wallet (cartera: gasto / ahorro / deuda / activo)
     ├── transactions/  # Category, Transaction, CategoryBudget, ...
-    ├── savings/       # SavingsGoal, ReserveFund
+    ├── savings/       # (vacía; fusionada en accounts.Wallet)
     ├── reports/       # MonthlySnapshot
     └── email_import/  # BankEmailSchema, EmailImportLog
 ```
@@ -73,13 +73,23 @@ Tareas programadas (Celery Beat):
 | `apps.transactions.tasks.post_due_installments` | diaria 00:35 | registra las cuotas vencidas de cada `InstallmentPurchase` (`source=installment`) e incrementa `installments_paid` |
 | `apps.reports.tasks.close_previous_month` | día 1, 00:05 | genera el `MonthlySnapshot` del mes anterior (por workspace) y hace el rollover del sobrante de cada categoría a su `CategoryProvision` |
 
-## Saldos de cuenta
+## Carteras (`Wallet`) y saldos
 
-`Account.opening_balance` es el punto de partida fijo (lo fija el cliente al
-crear la cuenta). `Account.current_balance` es un valor **cacheado** =
-`opening_balance + Σ transacciones vivas` (income suma, expense resta). Lo
-mantienen signals sobre `Transaction` (alta, edición de monto/categoría/cuenta,
-soft y hard delete). Para reconciliar:
+Una `Wallet` (cartera) unifica cuentas, ahorros, activos y deudas. Campos clave:
+- `purpose` = `spending` | `savings` | `debt` | `asset`.
+- `counts_toward_net_worth` (bool): si es `False` la cartera no suma al
+  patrimonio neto (sí aparece en los totales por tipo).
+- `parent` (self-FK): sub-carteras. `aggregated_balance` = saldo propio + el de
+  los descendientes (solo presentacional; el neto suma los `current_balance`
+  propios para no doble-contar).
+- Ahorro: `goal_amount`, `goal_date`, `monthly_contribution`, `progress_pct`.
+
+`opening_balance` es el punto de partida fijo. `current_balance` (propio) es un
+valor **cacheado** = `opening_balance + Σ transacciones vivas` (income +,
+expense −, transfer saliente −, entrante +). Lo mantienen signals sobre
+`Transaction`. Las carteras sin movimientos (activo, préstamo, bucket de ahorro)
+se ajustan editando `opening_balance` (el serializer recalcula `current_balance`).
+Para reconciliar:
 
 ```bash
 python manage.py recompute_balances
@@ -106,16 +116,14 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 |---|---|
 | `GET/POST /workspaces/` | No usa el header. `POST` crea el workspace + Membership owner. `PATCH/DELETE` solo owner. |
 | `/memberships/` | Scoped por header. Lectura: cualquier miembro. Alta (`{"email": "..."}`) / cambio de rol / expulsión: solo owner. Protege al último owner. |
-| `/accounts/` · `/assets/` | Scoped. Los `private` solo los ve/usa su `owner`. |
-| `/liabilities/` · `/debts/` | Scoped. |
+| `/wallets/` | Scoped. Carteras (gasto/ahorro/deuda/activo). Las `private` solo las ve/usa su `owner`. Filtros: `purpose`, `parent`, `is_active`, `counts_toward_net_worth`. |
 | `/categories/` | Scoped. `parent` debe ser del mismo workspace. |
-| `/transactions/` | Scoped vía `account.workspace`. Valida que `account` y `category` sean del workspace. |
+| `/transactions/` | Scoped vía `wallet.workspace`. `type` = income/expense/transfer; en transfer manda `wallet` + `to_wallet` sin categoría. |
 | `/category-budgets/` | Scoped. Único por `(category, month, year)`. |
-| `/recurring-expenses/` · `/installment-purchases/` | Scoped. Validan `account` y `category` del workspace. |
-| `/savings-goals/` · `/reserve-funds/` | Scoped. |
+| `/recurring-expenses/` · `/installment-purchases/` | Scoped. Validan `wallet` y `category` del workspace. |
 | `/monthly-snapshots/` | Scoped, **solo lectura** (los genera la tarea de cierre de mes). |
 | `/bank-email-schemas/` | Config global. Lectura: cualquier autenticado (solo `is_active`). Escritura: solo staff. |
-| `/email-import-logs/` | Scoped, solo lectura + `?status=`. Acciones: `POST .../{id}/confirm/` (body: `category` obligatorio; `account`/`amount`/`date`/`description` opcionales, caen a los valores extraídos del correo — crea la `Transaction`) y `POST .../{id}/reject/`. Solo sobre logs en estado `pending`. |
+| `/email-import-logs/` | Scoped, solo lectura + `?status=`. Acciones: `POST .../{id}/confirm/` (body: `category` obligatorio; `wallet`/`amount`/`date`/`description` opcionales, caen a los valores extraídos del correo — crea la `Transaction`) y `POST .../{id}/reject/`. Solo sobre logs en estado `pending`. |
 | `POST /email-import/inbound/` | **Webhook** de correo entrante. Auth: header `X-Inbound-Secret: <INBOUND_WEBHOOK_SECRET>` **o** firma HMAC nativa de Mailgun si se configura `INBOUND_MAILGUN_SIGNING_KEY`. Body JSON/form: `{to, from, subject, text}` (también acepta los nombres de Mailgun/SendGrid/Postmark). Responde `202 {log_id, status}`. |
 | `POST /workspaces/{id}/rotate-inbound-token/` | Rota el token de importación (solo owner). |
 
@@ -133,7 +141,7 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
    corre el parser de ese banco (`apps/email_import/bank_parsers/<slug>.py`,
    registrado con `@register("<slug-de-bank_name>")`) y crea un
    `EmailImportLog` — `pending` si todo salió bien, `failed` con el motivo si
-   no. Si el parser extrae los últimos 4 dígitos, intenta matchear la `Account`.
+   no. Si el parser extrae los últimos 4 dígitos, intenta matchear la cartera (`Wallet`) por `card_last4`.
 5. El usuario revisa `/email-import-logs/?status=pending` y confirma/rechaza.
    **Nunca se crea una `Transaction` automáticamente.**
 
@@ -148,12 +156,12 @@ Agregar un banco = crear un `BankEmailSchema` (`bank_name`, `sender_pattern`)
 | Endpoint | |
 |---|---|
 | `GET /reports/budget/?year=&month=` | presupuesto vs. gasto real por categoría + totales (default: mes actual) |
-| `GET /reports/net-worth/` | desglose del patrimonio neto (cuentas, activos, pasivos, deudas, neto) |
+| `GET /reports/net-worth/` | `{ net, by_purpose: {spending, savings, debt, asset} }` |
 | `GET /reports/cashflow/?months=` | serie mensual de ingresos/gastos/neto (default 6, máx 24) |
 | `GET /reports/summary/` | resumen del dashboard: mes actual, patrimonio, importaciones pendientes, top 5 categorías de gasto |
 
 Las cuentas/activos `private` de los que el usuario no es `owner` quedan
-fuera de todos los reportes (igual que en `/accounts/` y `/transactions/`).
+fuera de todos los reportes (igual que en `/wallets/` y `/transactions/`).
 
 Esquema OpenAPI: `/api/schema/` · Swagger UI: `/api/docs/` · Redoc: `/api/redoc/`
 (Swagger/Redoc se sirven **sin CDN** vía `drf-spectacular-sidecar`).

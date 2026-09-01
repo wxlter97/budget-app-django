@@ -1,4 +1,4 @@
-"""Transferencias entre cuentas + flag `counts_toward_budget`."""
+"""Transferencias entre carteras + flag `counts_toward_budget`."""
 import datetime as dt
 from decimal import Decimal
 
@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.reports.services import budget_vs_actual, monthly_cashflow
 from apps.transactions.models import Category, CategoryBudget, Transaction
 from apps.workspaces.models import Membership, Workspace
@@ -27,12 +27,12 @@ class TransferTests(APITestCase):
         Membership.objects.create(
             workspace=cls.ws, user=cls.user, role=Membership.ROLE_OWNER
         )
-        cls.a = Account.objects.create(
-            workspace=cls.ws, name="A", type=Account.TYPE_CHECKING,
+        cls.a = Wallet.objects.create(
+            workspace=cls.ws, name="A", purpose=Wallet.PURPOSE_SPENDING,
             opening_balance=Decimal("100.00"),
         )
-        cls.b = Account.objects.create(
-            workspace=cls.ws, name="B", type=Account.TYPE_SAVINGS,
+        cls.b = Wallet.objects.create(
+            workspace=cls.ws, name="B", purpose=Wallet.PURPOSE_SAVINGS,
             opening_balance=Decimal("0.00"),
         )
         cls.food = Category.objects.create(
@@ -47,12 +47,12 @@ class TransferTests(APITestCase):
             "/api/v1/transactions/", payload, format="json", **{HEADER: str(self.ws.id)}
         )
 
-    def test_transfer_moves_balance_between_accounts(self):
+    def test_transfer_moves_balance_between_wallets(self):
         res = self._post(
             {
                 "type": "transfer",
-                "account": str(self.a.id),
-                "to_account": str(self.b.id),
+                "wallet": str(self.a.id),
+                "to_wallet": str(self.b.id),
                 "amount": "30.00",
                 "date": "2026-01-10",
             }
@@ -66,22 +66,22 @@ class TransferTests(APITestCase):
         self.assertEqual(self.a.current_balance, money("70.00"))
         self.assertEqual(self.b.current_balance, money("30.00"))
 
-    def test_transfer_requires_distinct_accounts(self):
+    def test_transfer_requires_distinct_wallets(self):
         res = self._post(
             {
                 "type": "transfer",
-                "account": str(self.a.id),
-                "to_account": str(self.a.id),
+                "wallet": str(self.a.id),
+                "to_wallet": str(self.a.id),
                 "amount": "10.00",
                 "date": "2026-01-10",
             }
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("to_account", res.data)
+        self.assertIn("to_wallet", res.data)
 
     def test_transfer_excluded_from_cashflow(self):
         Transaction.objects.create(
-            type="transfer", account=self.a, to_account=self.b,
+            type="transfer", wallet=self.a, to_wallet=self.b,
             amount=Decimal("30.00"), date=dt.date(2026, 1, 10),
         )
         series = monthly_cashflow(self.ws, self.user, months=1, until=dt.date(2026, 1, 15))
@@ -90,7 +90,7 @@ class TransferTests(APITestCase):
 
     def test_deleting_transfer_reverts_both_balances(self):
         t = Transaction.objects.create(
-            type="transfer", account=self.a, to_account=self.b,
+            type="transfer", wallet=self.a, to_wallet=self.b,
             amount=Decimal("40.00"), date=dt.date(2026, 1, 10),
         )
         t.delete()
@@ -108,8 +108,8 @@ class BudgetFlagTests(APITestCase):
         Membership.objects.create(
             workspace=cls.ws, user=cls.user, role=Membership.ROLE_OWNER
         )
-        cls.acc = Account.objects.create(
-            workspace=cls.ws, name="C", type=Account.TYPE_CHECKING
+        cls.acc = Wallet.objects.create(
+            workspace=cls.ws, name="C", purpose=Wallet.PURPOSE_SPENDING
         )
         cls.food = Category.objects.create(
             workspace=cls.ws, name="Comida", type=Category.TYPE_EXPENSE
@@ -120,11 +120,11 @@ class BudgetFlagTests(APITestCase):
 
     def test_out_of_budget_expense_affects_balance_but_not_budget(self):
         Transaction.objects.create(
-            account=self.acc, category=self.food, amount=Decimal("60.00"),
+            wallet=self.acc, category=self.food, amount=Decimal("60.00"),
             date=dt.date(2026, 1, 5),
         )
         Transaction.objects.create(
-            account=self.acc, category=self.food, amount=Decimal("500.00"),
+            wallet=self.acc, category=self.food, amount=Decimal("500.00"),
             date=dt.date(2026, 1, 6), counts_toward_budget=False,
         )
 

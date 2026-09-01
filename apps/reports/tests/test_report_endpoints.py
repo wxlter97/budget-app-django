@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.transactions.models import Category, CategoryBudget, Transaction
 from apps.workspaces.models import Membership, Workspace
 
@@ -37,8 +37,8 @@ class ReportEndpointTests(APITestCase):
         cls.ws_b = make_workspace(cls.bob, "B")
         Membership.objects.create(workspace=cls.ws_a, user=cls.bob, role=Membership.ROLE_MEMBER)
 
-        cls.acc = Account.objects.create(
-            workspace=cls.ws_a, name="C", type=Account.TYPE_CHECKING,
+        cls.acc = Wallet.objects.create(
+            workspace=cls.ws_a, name="C", purpose=Wallet.PURPOSE_SPENDING,
             opening_balance=Decimal("1000.00"),
         )
         cls.salary = Category.objects.create(
@@ -62,14 +62,14 @@ class ReportEndpointTests(APITestCase):
             (cls.transport, "80.00", 8),
         ]:
             Transaction.objects.create(
-                account=cls.acc, category=cat, amount=Decimal(amount), date=day(d)
+                wallet=cls.acc, category=cat, amount=Decimal(amount), date=day(d)
             )
-        acc_b = Account.objects.create(workspace=cls.ws_b, name="X", type=Account.TYPE_CASH)
+        acc_b = Wallet.objects.create(workspace=cls.ws_b, name="X", purpose=Wallet.PURPOSE_SPENDING)
         cat_b = Category.objects.create(
             workspace=cls.ws_b, name="Otro", type=Category.TYPE_EXPENSE
         )
         Transaction.objects.create(
-            account=acc_b, category=cat_b, amount=Decimal("999.00"), date=day(5)
+            wallet=acc_b, category=cat_b, amount=Decimal("999.00"), date=day(5)
         )
 
     def setUp(self):
@@ -106,7 +106,7 @@ class ReportEndpointTests(APITestCase):
     def test_net_worth_excludes_other_workspace(self):
         resp = self.client.get("/api/v1/reports/net-worth/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["accounts"], "3570.00")  # 1000 + 3000 - 430
+        self.assertEqual(resp.data["by_purpose"]["spending"], "3570.00")  # 1000 + 3000 - 430
         self.assertEqual(resp.data["net"], "3570.00")
 
     def test_cashflow_respects_months_param(self):
@@ -131,18 +131,18 @@ class ReportEndpointTests(APITestCase):
         self.assertEqual(resp.data["top_expense_categories"][0]["category_name"], "Comida")
 
     def test_private_account_excluded_for_non_owner(self):
-        private = Account.objects.create(
-            workspace=self.ws_a, name="Secreta", type=Account.TYPE_SAVINGS,
-            visibility=Account.VISIBILITY_PRIVATE, owner=self.alice,
+        private = Wallet.objects.create(
+            workspace=self.ws_a, name="Secreta", purpose=Wallet.PURPOSE_SAVINGS,
+            visibility=Wallet.VISIBILITY_PRIVATE, owner=self.alice,
             opening_balance=Decimal("10000.00"),
         )
         Transaction.objects.create(
-            account=private, category=self.food, amount=Decimal("40.00"), date=day(3)
+            wallet=private, category=self.food, amount=Decimal("40.00"), date=day(3)
         )
         self.client.force_authenticate(self.bob)
         self.client.credentials(**{HEADER: str(self.ws_a.id)})
         nw = self.client.get("/api/v1/reports/net-worth/").data
-        self.assertEqual(nw["accounts"], "3570.00")
+        self.assertEqual(nw["net"], "3570.00")
         budget = self.client.get(
             f"/api/v1/reports/budget/?year={YEAR}&month={MONTH}"
         ).data

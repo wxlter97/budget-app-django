@@ -48,13 +48,16 @@ class MonthlySnapshotViewSet(
 # Serializers de salida de los reportes (dan tipos al esquema OpenAPI y
 # fuerzan el formato string de los montos, como el resto del API)
 # ---------------------------------------------------------------------------
+class NetWorthByPurposeSerializer(serializers.Serializer):
+    spending = _Money()
+    savings = _Money()
+    debt = _Money()
+    asset = _Money()
+
+
 class NetWorthSerializer(serializers.Serializer):
-    accounts = _Money()
-    assets = _Money()
-    liabilities = _Money()
-    debts_owed_to_us = _Money()
-    debts_we_owe = _Money()
     net = _Money()
+    by_purpose = NetWorthByPurposeSerializer()
 
 
 class BudgetRowSerializer(serializers.Serializer):

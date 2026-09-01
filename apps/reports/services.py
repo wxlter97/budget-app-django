@@ -9,7 +9,7 @@ from dateutil.relativedelta import relativedelta
 from django.db.models import F, Q, Sum
 from django.utils import timezone
 
-from apps.accounts.models import Account, Asset, Debt, Liability
+from apps.accounts.models import Wallet
 from apps.transactions.models import (
     Category,
     CategoryBudget,
@@ -29,28 +29,34 @@ def _sum(qs, field):
 def _visible(qs, user):
     if user is None:
         return qs
-    return qs.filter(Q(visibility=Account.VISIBILITY_SHARED) | Q(owner=user))
+    return qs.filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
 
 
 def net_worth_breakdown(workspace, user=None) -> dict:
     """
-    Desglose del patrimonio neto. Con ``user`` excluye cuentas/activos
-    privados de los que no es owner (consistente con el resto del API).
+    Patrimonio neto + totales por tipo de cartera.
+
+    - ``net``       = Σ ``current_balance`` (propio, sin hijos, para no doble-contar)
+                      de las carteras activas con ``counts_toward_net_worth=True``.
+    - ``by_purpose``= Σ ``current_balance`` por ``purpose``, ignorando el flag.
+
+    Con ``user`` se excluyen las carteras privadas de las que no es owner.
     """
-    accounts = _sum(_visible(Account.objects.filter(workspace=workspace), user), "current_balance")
-    assets = _sum(_visible(Asset.objects.filter(workspace=workspace), user), "current_value")
-    liabilities = _sum(Liability.objects.filter(workspace=workspace), "remaining_amount")
-    debts = Debt.objects.filter(workspace=workspace, is_settled=False)
-    owed_to_us = _sum(debts.filter(direction=Debt.DIRECTION_FAVOR), "amount")
-    we_owe = _sum(debts.filter(direction=Debt.DIRECTION_CONTRA), "amount")
-    return {
-        "accounts": accounts,
-        "assets": assets,
-        "liabilities": liabilities,
-        "debts_owed_to_us": owed_to_us,
-        "debts_we_owe": we_owe,
-        "net": accounts + assets - liabilities + owed_to_us - we_owe,
+    wallets = list(
+        _visible(Wallet.objects.filter(workspace=workspace, is_active=True), user)
+    )
+    net = sum(
+        (w.current_balance for w in wallets if w.counts_toward_net_worth),
+        Decimal("0"),
+    )
+    by_purpose = {
+        purpose: sum(
+            (w.current_balance for w in wallets if w.purpose == purpose),
+            Decimal("0"),
+        )
+        for purpose, _ in Wallet.PURPOSE_CHOICES
     }
+    return {"net": net, "by_purpose": by_purpose}
 
 
 def net_worth(workspace) -> Decimal:
@@ -180,7 +186,7 @@ def close_month(year, month, workspace=None):
 
     for ws in workspaces:
         month_txns = Transaction.objects.filter(
-            account__workspace=ws, date__year=year, date__month=month
+            wallet__workspace=ws, date__year=year, date__month=month
         )
         snapshot, _ = MonthlySnapshot.objects.update_or_create(
             workspace=ws,

@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.transactions.models import (
     Category,
     InstallmentPurchase,
@@ -21,8 +21,8 @@ class RecurringExpenseGenerationTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.ws = Workspace.objects.create(name="W")
-        cls.account = Account.objects.create(
-            workspace=cls.ws, name="C", type=Account.TYPE_CHECKING
+        cls.account = Wallet.objects.create(
+            workspace=cls.ws, name="C", purpose=Wallet.PURPOSE_SPENDING
         )
         cls.category = Category.objects.create(
             workspace=cls.ws, name="Netflix", type=Category.TYPE_EXPENSE
@@ -30,7 +30,7 @@ class RecurringExpenseGenerationTests(TestCase):
 
     def _recurring(self, next_due, **kw):
         return RecurringExpense.objects.create(
-            workspace=self.ws, account=self.account, category=self.category,
+            workspace=self.ws, wallet=self.account, category=self.category,
             amount=Decimal("15.00"), next_due_date=next_due, **kw,
         )
 
@@ -66,8 +66,8 @@ class InstallmentGenerationTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.ws = Workspace.objects.create(name="W")
-        cls.account = Account.objects.create(
-            workspace=cls.ws, name="Tarjeta", type=Account.TYPE_CREDIT
+        cls.account = Wallet.objects.create(
+            workspace=cls.ws, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT
         )
         cls.category = Category.objects.create(
             workspace=cls.ws, name="Electro", type=Category.TYPE_EXPENSE
@@ -75,7 +75,7 @@ class InstallmentGenerationTests(TestCase):
 
     def _purchase(self, **kw):
         defaults = dict(
-            workspace=self.ws, account=self.account, category=self.category,
+            workspace=self.ws, wallet=self.account, category=self.category,
             description="Lavadora", total_amount=Decimal("1200.00"),
             installment_amount=Decimal("100.00"), installments_total=12,
             start_date=dt.date(2026, 1, 5),

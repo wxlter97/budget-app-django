@@ -114,7 +114,7 @@ class OpenApiSchemaTests(APITestCase):
         def names(path, method):
             return [p["name"] for p in paths[path][method].get("parameters", [])]
 
-        self.assertIn("X-Workspace-ID", names("/api/v1/accounts/", "get"))
+        self.assertIn("X-Workspace-ID", names("/api/v1/wallets/", "get"))
         self.assertIn("X-Workspace-ID", names("/api/v1/reports/net-worth/", "get"))
         self.assertNotIn("X-Workspace-ID", names("/api/v1/auth/register/", "post"))
         self.assertNotIn("X-Workspace-ID", names("/api/v1/workspaces/", "get"))

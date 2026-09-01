@@ -22,10 +22,10 @@ class CategoryAdmin(BaseModelAdmin):
 
 @admin.register(Transaction)
 class TransactionAdmin(BaseModelAdmin):
-    list_display = ("description", "amount", "currency", "date", "account", "category", "source")
+    list_display = ("description", "amount", "currency", "date", "wallet", "category", "source")
     list_filter = ("source", "is_recurring", "currency", "date")
-    search_fields = ("description", "account__name", "category__name")
-    raw_id_fields = ("account", "category", "created_by")
+    search_fields = ("description", "wallet__name", "category__name")
+    raw_id_fields = ("wallet", "category", "created_by")
     date_hierarchy = "date"
 
 
@@ -49,7 +49,7 @@ class RecurringExpenseAdmin(BaseModelAdmin):
     list_display = ("category", "workspace", "amount", "frequency", "next_due_date", "is_active")
     list_filter = ("frequency", "is_active")
     search_fields = ("category__name", "workspace__name")
-    raw_id_fields = ("workspace", "category", "account")
+    raw_id_fields = ("workspace", "category", "wallet")
     date_hierarchy = "next_due_date"
 
 
@@ -65,5 +65,5 @@ class InstallmentPurchaseAdmin(BaseModelAdmin):
         "start_date",
     )
     search_fields = ("description", "workspace__name")
-    raw_id_fields = ("workspace", "account", "category")
+    raw_id_fields = ("workspace", "wallet", "category")
     date_hierarchy = "start_date"

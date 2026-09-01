@@ -3,8 +3,8 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from apps.accounts.models import Account
-from apps.accounts.services import recompute_account_balance
+from apps.accounts.models import Wallet
+from apps.accounts.services import recompute_wallet_balance
 from apps.transactions.models import Category, Transaction
 from apps.workspaces.models import Workspace
 
@@ -25,14 +25,14 @@ class BalanceSignalTests(TestCase):
         )
 
     def _account(self, opening="100.00"):
-        return Account.objects.create(
-            workspace=self.ws, name="C", type=Account.TYPE_CHECKING,
+        return Wallet.objects.create(
+            workspace=self.ws, name="C", purpose=Wallet.PURPOSE_SPENDING,
             opening_balance=Decimal(opening),
         )
 
     def _txn(self, account, cat, amount, **kw):
         return Transaction.objects.create(
-            account=account, category=cat, amount=Decimal(amount),
+            wallet=account, category=cat, amount=Decimal(amount),
             date=dt.date(2026, 1, 10), **kw,
         )
 
@@ -72,7 +72,7 @@ class BalanceSignalTests(TestCase):
         b = self._account("0.00")
         txn = self._txn(a, self.expense_cat, "15.00")
         self.assertEqual(self._bal(a), money("-15.00"))
-        txn.account = b
+        txn.wallet = b
         txn.save()
         self.assertEqual(self._bal(a), money("0.00"))
         self.assertEqual(self._bal(b), money("-15.00"))
@@ -97,6 +97,6 @@ class BalanceSignalTests(TestCase):
     def test_recompute_fixes_drift(self):
         acc = self._account("100.00")
         self._txn(acc, self.expense_cat, "30.00")
-        Account.objects.filter(pk=acc.pk).update(current_balance=Decimal("999.00"))
-        recompute_account_balance(acc)
+        Wallet.objects.filter(pk=acc.pk).update(current_balance=Decimal("999.00"))
+        recompute_wallet_balance(acc)
         self.assertEqual(self._bal(acc), money("70.00"))

@@ -6,7 +6,7 @@ from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.email_import.bank_parsers import ParsedEmail
 from apps.email_import.bank_parsers.demo_bank import parse as demo_parse
 from apps.email_import.bank_parsers.nu_style import parse as nu_parse
@@ -62,8 +62,8 @@ class IngestServiceTests(TestCase):
         cls.schema = BankEmailSchema.objects.create(
             bank_name="Demo Bank", sender_pattern=r"@demobank\.com"
         )
-        cls.account = Account.objects.create(
-            workspace=cls.ws, name="Tarjeta", type=Account.TYPE_CREDIT, card_last4="4321"
+        cls.account = Wallet.objects.create(
+            workspace=cls.ws, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT, card_last4="4321"
         )
 
     def _to(self):
@@ -79,7 +79,7 @@ class IngestServiceTests(TestCase):
         with self.assertRaises(WorkspaceNotResolved):
             resolve_workspace("import+nope@inbound.budget.local")
 
-    def test_successful_ingest_creates_pending_log_and_matches_account(self):
+    def test_successful_ingest_creates_pending_log_and_matches_wallet(self):
         log = ingest_inbound_email(
             to=self._to(), sender="alertas@demobank.com",
             subject="Alerta", text=DEMO_BODY,
@@ -88,7 +88,7 @@ class IngestServiceTests(TestCase):
         self.assertEqual(log.extracted_amount, Decimal("1234.56"))
         self.assertEqual(log.extracted_merchant, "STARBUCKS REFORMA")
         self.assertEqual(log.extracted_date, dt.date(2026, 1, 20))
-        self.assertEqual(log.account, self.account)
+        self.assertEqual(log.wallet, self.account)
         self.assertEqual(log.bank_schema, self.schema)
 
     def test_unknown_sender_creates_failed_log(self):
@@ -193,8 +193,8 @@ class InboundWebhookTests(APITestCase):
         # 2. un miembro confirma el log -> se crea la Transaction
         user = User.objects.create_user("alice", "a@example.com", "pw")
         Membership.objects.create(workspace=self.ws, user=user, role=Membership.ROLE_OWNER)
-        account = Account.objects.create(
-            workspace=self.ws, name="Tarjeta", type=Account.TYPE_CREDIT
+        account = Wallet.objects.create(
+            workspace=self.ws, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT
         )
         category = Category.objects.create(
             workspace=self.ws, name="Café", type=Category.TYPE_EXPENSE
@@ -203,7 +203,7 @@ class InboundWebhookTests(APITestCase):
         self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.ws.id))
         confirm = self.client.post(
             f"/api/v1/email-import-logs/{log_id}/confirm/",
-            {"account": str(account.id), "category": str(category.id)},
+            {"wallet": str(account.id), "category": str(category.id)},
         )
         self.assertEqual(confirm.status_code, status.HTTP_200_OK, confirm.data)
         txn = EmailImportLog.objects.get(id=log_id).resulting_transaction

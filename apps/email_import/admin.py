@@ -26,5 +26,5 @@ class EmailImportLogAdmin(BaseModelAdmin):
     )
     list_filter = ("status", "bank_schema")
     search_fields = ("raw_email_subject", "extracted_merchant", "workspace__name")
-    raw_id_fields = ("workspace", "bank_schema", "account", "resulting_transaction")
+    raw_id_fields = ("workspace", "bank_schema", "wallet", "resulting_transaction")
     date_hierarchy = "created_at"

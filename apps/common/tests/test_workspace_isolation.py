@@ -14,7 +14,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.transactions.models import Category, CategoryBudget, Transaction
 from apps.workspaces.models import Membership, Workspace
 
@@ -30,15 +30,15 @@ def make_workspace(owner, name):
 
 
 def seed_financials(workspace, owner):
-    """Crea una cuenta compartida, categoría, transacción y presupuesto."""
-    account = Account.objects.create(
-        workspace=workspace, name=f"Cuenta {workspace.name}", type=Account.TYPE_CHECKING
+    """Crea una cartera compartida, categoría, transacción y presupuesto."""
+    wallet = Wallet.objects.create(
+        workspace=workspace, name=f"Cartera {workspace.name}", purpose=Wallet.PURPOSE_SPENDING
     )
     category = Category.objects.create(
         workspace=workspace, name=f"Cat {workspace.name}", type=Category.TYPE_EXPENSE
     )
     txn = Transaction.objects.create(
-        account=account,
+        wallet=wallet,
         category=category,
         amount="42.00",
         date=dt.date(2026, 1, 15),
@@ -47,7 +47,7 @@ def seed_financials(workspace, owner):
     budget = CategoryBudget.objects.create(
         workspace=workspace, category=category, amount="500.00", month=1, year=2026
     )
-    return {"account": account, "category": category, "txn": txn, "budget": budget}
+    return {"wallet": wallet, "category": category, "txn": txn, "budget": budget}
 
 
 class WorkspaceIsolationTests(APITestCase):
@@ -78,24 +78,24 @@ class WorkspaceIsolationTests(APITestCase):
     # ------------------------------------------------------------------
     def test_missing_header_is_rejected(self):
         self.client.credentials()  # sin header
-        resp = self.client.get("/api/v1/accounts/")
+        resp = self.client.get("/api/v1/wallets/")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_malformed_header_is_rejected(self):
         self.client.credentials(**{HEADER: "no-soy-un-uuid"})
-        resp = self.client.get("/api/v1/accounts/")
+        resp = self.client.get("/api/v1/wallets/")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_unknown_workspace_uuid_is_forbidden(self):
         self.client.credentials(**{HEADER: str(uuid.uuid4())})
-        resp = self.client.get("/api/v1/accounts/")
+        resp = self.client.get("/api/v1/wallets/")
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_non_member_workspace_is_forbidden_not_404(self):
         # Alice conoce el UUID de B pero no es miembro -> 403 (no 404: no se
         # filtra la existencia del workspace).
         self.as_b()
-        resp = self.client.get("/api/v1/accounts/")
+        resp = self.client.get("/api/v1/wallets/")
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
     # ------------------------------------------------------------------
@@ -104,7 +104,7 @@ class WorkspaceIsolationTests(APITestCase):
     def test_list_endpoints_only_return_own_workspace(self):
         self.as_a()
         cases = {
-            "/api/v1/accounts/": self.data_b["account"].id,
+            "/api/v1/wallets/": self.data_b["wallet"].id,
             "/api/v1/categories/": self.data_b["category"].id,
             "/api/v1/transactions/": self.data_b["txn"].id,
             "/api/v1/category-budgets/": self.data_b["budget"].id,
@@ -120,7 +120,7 @@ class WorkspaceIsolationTests(APITestCase):
     def test_retrieve_foreign_object_is_404(self):
         self.as_a()
         cases = {
-            "accounts": self.data_b["account"].id,
+            "wallets": self.data_b["wallet"].id,
             "categories": self.data_b["category"].id,
             "transactions": self.data_b["txn"].id,
             "category-budgets": self.data_b["budget"].id,
@@ -152,11 +152,11 @@ class WorkspaceIsolationTests(APITestCase):
     def test_cannot_update_foreign_object(self):
         self.as_a()
         resp = self.client.patch(
-            f"/api/v1/accounts/{self.data_b['account'].id}/", {"name": "hackeada"}
+            f"/api/v1/wallets/{self.data_b['wallet'].id}/", {"name": "hackeada"}
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
-        self.data_b["account"].refresh_from_db()
-        self.assertNotEqual(self.data_b["account"].name, "hackeada")
+        self.data_b["wallet"].refresh_from_db()
+        self.assertNotEqual(self.data_b["wallet"].name, "hackeada")
 
     def test_cannot_delete_foreign_object(self):
         self.as_a()
@@ -172,19 +172,19 @@ class WorkspaceIsolationTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(Category.objects.filter(name="intrusa").exists())
 
-    def test_cannot_reference_foreign_account_when_creating_transaction(self):
+    def test_cannot_reference_foreign_wallet_when_creating_transaction(self):
         self.as_a()  # header válido (workspace A) ...
         resp = self.client.post(
             "/api/v1/transactions/",
             {
-                "account": str(self.data_b["account"].id),  # ... pero cuenta de B
+                "wallet": str(self.data_b["wallet"].id),  # ... pero cartera de B
                 "category": str(self.data_a["category"].id),
                 "amount": "10.00",
                 "date": "2026-02-01",
             },
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("account", resp.data)
+        self.assertIn("wallet", resp.data)
 
     def test_cannot_reference_foreign_category_in_budget(self):
         self.as_a()
@@ -219,9 +219,9 @@ class WorkspaceIsolationTests(APITestCase):
     def test_happy_path_in_own_workspace(self):
         self.as_a()
         resp = self.client.post(
-            "/api/v1/accounts/",
-            {"name": "Nueva", "type": Account.TYPE_CASH},
+            "/api/v1/wallets/",
+            {"name": "Nueva", "purpose": Wallet.PURPOSE_SPENDING},
         )
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
-        created = Account.objects.get(pk=resp.data["id"])
+        created = Wallet.objects.get(pk=resp.data["id"])
         self.assertEqual(created.workspace_id, self.ws_a.id)

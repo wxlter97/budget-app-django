@@ -1,6 +1,6 @@
 from django.db import models
 
-from apps.accounts.models import Account
+from apps.accounts.models import Wallet
 from apps.common.models import BaseModel
 from apps.transactions.models import Transaction
 from apps.workspaces.models import Workspace
@@ -44,8 +44,8 @@ class EmailImportLog(BaseModel):
     bank_schema = models.ForeignKey(
         BankEmailSchema, on_delete=models.SET_NULL, null=True, related_name="import_logs"
     )
-    account = models.ForeignKey(
-        Account, on_delete=models.SET_NULL, null=True, blank=True, related_name="email_import_logs"
+    wallet = models.ForeignKey(
+        Wallet, on_delete=models.SET_NULL, null=True, blank=True, related_name="email_import_logs"
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     raw_email_subject = models.CharField(max_length=255, blank=True)

@@ -1,31 +1,31 @@
 from django.core.management.base import BaseCommand
 
-from apps.accounts.models import Account
-from apps.accounts.services import recompute_account_balance
+from apps.accounts.models import Wallet
+from apps.accounts.services import recompute_wallet_balance
 
 
 class Command(BaseCommand):
-    help = "Recalcula Account.current_balance (opening_balance + Σ transacciones vivas)."
+    help = "Recalcula Wallet.current_balance (opening_balance + Σ transacciones vivas)."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--workspace",
-            help="UUID de un workspace para limitar el recálculo a sus cuentas.",
+            help="UUID de un workspace para limitar el recálculo a sus carteras.",
         )
 
     def handle(self, *args, **options):
-        accounts = Account.all_objects.all()
+        wallets = Wallet.all_objects.all()
         if options.get("workspace"):
-            accounts = accounts.filter(workspace_id=options["workspace"])
+            wallets = wallets.filter(workspace_id=options["workspace"])
 
         changed = 0
-        for account in accounts:
-            before = account.current_balance
-            after = recompute_account_balance(account)
+        for wallet in wallets:
+            before = wallet.current_balance
+            after = recompute_wallet_balance(wallet)
             if before != after:
                 changed += 1
-                self.stdout.write(f"  {account}: {before} -> {after}")
+                self.stdout.write(f"  {wallet}: {before} -> {after}")
 
         self.stdout.write(
-            self.style.SUCCESS(f"{accounts.count()} cuenta(s) revisadas, {changed} ajustada(s).")
+            self.style.SUCCESS(f"{wallets.count()} cartera(s) revisadas, {changed} ajustada(s).")
         )
