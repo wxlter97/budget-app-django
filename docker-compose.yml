@@ -3,10 +3,10 @@ x-django-env: &django-env
   DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
   DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
   DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-False}
-  DATABASE_URL: postgres://buddyclone:buddyclone@db:5432/buddyclone
+  DATABASE_URL: postgres://budget:budget@db:5432/budget
   CELERY_BROKER_URL: redis://redis:6379/0
   CACHE_URL: redis://redis:6379/2
-  INBOUND_EMAIL_DOMAIN: ${INBOUND_EMAIL_DOMAIN:-inbound.buddyclone.local}
+  INBOUND_EMAIL_DOMAIN: ${INBOUND_EMAIL_DOMAIN:-inbound.budget.local}
   INBOUND_WEBHOOK_SECRET: ${INBOUND_WEBHOOK_SECRET:-}
 
 x-app: &app
@@ -17,13 +17,13 @@ services:
   db:
     image: postgres:17
     environment:
-      POSTGRES_USER: buddyclone
-      POSTGRES_PASSWORD: buddyclone
-      POSTGRES_DB: buddyclone
+      POSTGRES_USER: budget
+      POSTGRES_PASSWORD: budget
+      POSTGRES_DB: budget
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U buddyclone"]
+      test: ["CMD-SHELL", "pg_isready -U budget"]
       interval: 5s
       timeout: 5s
       retries: 12

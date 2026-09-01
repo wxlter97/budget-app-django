@@ -1,4 +1,4 @@
-# buddyclone — backend
+# budget — backend
 
 Backend Django + API REST para una app de presupuesto personal/compartido,
 consumida por una app iOS nativa y una interfaz web (mismo API `/api/v1/`).
@@ -16,7 +16,7 @@ consumida por una app iOS nativa y una interfaz web (mismo API `/api/v1/`).
 ## Estructura
 
 ```
-buddyclone/
+budget/
 ├── manage.py
 ├── requirements.txt
 ├── .env.example
@@ -181,6 +181,6 @@ El test crítico de aislamiento multi-tenant está en
 
 ## Configuración
 
-Toda la config sensible se lee de variables de entorno o de `buddyclone/.env`
+Toda la config sensible se lee de variables de entorno o de `budget/.env`
 (ver `.env.example`). En producción usar `DJANGO_DEBUG=False`, que activa
 HSTS, cookies seguras y redirección SSL.

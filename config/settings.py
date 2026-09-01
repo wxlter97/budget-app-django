@@ -1,5 +1,5 @@
 """
-Settings de Django para el proyecto buddyclone.
+Settings de Django para el proyecto budget.
 
 La configuración sensible / dependiente del entorno se lee de variables de
 entorno (o de un archivo .env en la raíz del proyecto). Ver .env.example.
@@ -13,7 +13,7 @@ from celery.schedules import crontab
 
 RUNNING_TESTS = "test" in sys.argv
 
-# buddyclone/config/settings.py -> BASE_DIR = buddyclone/
+# budget/config/settings.py -> BASE_DIR = budget/
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env(
@@ -24,7 +24,7 @@ env = environ.Env(
     DJANGO_LANGUAGE_CODE=(str, "es"),
 )
 
-# Lee buddyclone/.env si existe (no obligatorio en producción)
+# Lee budget/.env si existe (no obligatorio en producción)
 env_file = BASE_DIR / ".env"
 if env_file.exists():
     env.read_env(str(env_file))
@@ -114,7 +114,7 @@ TEMPLATES = [
 DATABASES = {
     "default": env.db(
         "DATABASE_URL",
-        default="postgres://buddyclone:buddyclone@localhost:5432/buddyclone",
+        default="postgres://budget:budget@localhost:5432/budget",
     ),
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
@@ -203,7 +203,7 @@ SIMPLE_JWT = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "buddyclone API",
+    "TITLE": "budget API",
     "DESCRIPTION": "API REST de presupuesto personal/compartido (iOS + web).",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
@@ -286,13 +286,13 @@ if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     CSRF_TRUSTED_ORIGINS = env.list("DJANGO_CSRF_TRUSTED_ORIGINS", default=[])
 
-DEFAULT_FROM_EMAIL = env("DJANGO_DEFAULT_FROM_EMAIL", default="no-reply@buddyclone.local")
+DEFAULT_FROM_EMAIL = env("DJANGO_DEFAULT_FROM_EMAIL", default="no-reply@budget.local")
 
 # ---------------------------------------------------------------------------
 # Importación por correo bancario (webhook de correo entrante)
 # ---------------------------------------------------------------------------
 INBOUND_EMAIL_LOCALPART = env("INBOUND_EMAIL_LOCALPART", default="import")
-INBOUND_EMAIL_DOMAIN = env("INBOUND_EMAIL_DOMAIN", default="inbound.buddyclone.local")
+INBOUND_EMAIL_DOMAIN = env("INBOUND_EMAIL_DOMAIN", default="inbound.budget.local")
 # Secreto compartido que debe traer el webhook en el header X-Inbound-Secret.
 # Vacío = el endpoint rechaza todo (fail-closed).
 INBOUND_WEBHOOK_SECRET = env("INBOUND_WEBHOOK_SECRET", default="")

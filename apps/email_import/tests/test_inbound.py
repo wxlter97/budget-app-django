@@ -67,7 +67,7 @@ class IngestServiceTests(TestCase):
         )
 
     def _to(self):
-        return f"import+{self.ws.inbound_token}@inbound.buddyclone.local"
+        return f"import+{self.ws.inbound_token}@inbound.budget.local"
 
     def test_resolve_workspace_by_token(self):
         self.assertEqual(resolve_workspace(self._to()), self.ws)
@@ -77,7 +77,7 @@ class IngestServiceTests(TestCase):
 
     def test_resolve_workspace_unknown_token(self):
         with self.assertRaises(WorkspaceNotResolved):
-            resolve_workspace("import+nope@inbound.buddyclone.local")
+            resolve_workspace("import+nope@inbound.budget.local")
 
     def test_successful_ingest_creates_pending_log_and_matches_account(self):
         log = ingest_inbound_email(
@@ -129,7 +129,7 @@ class InboundWebhookTests(APITestCase):
         )
 
     def _to(self):
-        return f"import+{self.ws.inbound_token}@inbound.buddyclone.local"
+        return f"import+{self.ws.inbound_token}@inbound.budget.local"
 
     def test_rejects_without_secret(self):
         resp = self.client.post(self.URL, {"to": self._to(), "from": "a@demobank.com"})
@@ -145,7 +145,7 @@ class InboundWebhookTests(APITestCase):
     def test_unknown_workspace_token_is_404(self):
         resp = self.client.post(
             self.URL,
-            {"to": "import+bogus@inbound.buddyclone.local", "from": "a@demobank.com"},
+            {"to": "import+bogus@inbound.budget.local", "from": "a@demobank.com"},
             HTTP_X_INBOUND_SECRET=SECRET,
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)

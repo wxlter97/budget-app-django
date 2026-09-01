@@ -64,7 +64,7 @@ class WebhookAuthTests(APITestCase):
         BankEmailSchema.objects.create(bank_name="Demo Bank", sender_pattern=r"@demobank\.com")
 
     def _to(self):
-        return f"import+{self.ws.inbound_token}@inbound.buddyclone.local"
+        return f"import+{self.ws.inbound_token}@inbound.budget.local"
 
     def _mailgun_sig(self, ts="1700000000", token="abc123"):
         import hashlib

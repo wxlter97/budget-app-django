@@ -15,7 +15,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: buddyclone
+          POSTGRES_DB: budget
         ports:
           - 5432:5432
         options: >-
@@ -31,7 +31,7 @@ jobs:
     env:
       DJANGO_SETTINGS_MODULE: config.test_settings
       DJANGO_SECRET_KEY: ci-secret-key-not-used-anywhere
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/buddyclone
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/budget
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/1
 
