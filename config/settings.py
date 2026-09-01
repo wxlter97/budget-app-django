@@ -58,6 +58,7 @@ THIRD_PARTY_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
+    "django_filters",
     "django_celery_beat",
     "djmoney",
     "drf_spectacular",
@@ -164,6 +165,9 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
     "PAGE_SIZE": 50,
+    "DEFAULT_FILTER_BACKENDS": (
+        "django_filters.rest_framework.DjangoFilterBackend",
+    ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -234,6 +238,12 @@ else:
 # ---------------------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
 CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
+
+# El front manda el workspace activo en este header; hay que permitirlo en CORS
+# (los headers por defecto de django-cors-headers no incluyen los custom).
+from corsheaders.defaults import default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (*default_headers, "x-workspace-id")
 
 # ---------------------------------------------------------------------------
 # Celery

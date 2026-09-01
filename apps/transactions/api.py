@@ -1,4 +1,5 @@
 from django.db.models import Q
+from django_filters import rest_framework as filters
 from rest_framework import serializers
 
 from apps.accounts.models import Account
@@ -89,11 +90,34 @@ class TransactionSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class TransactionFilter(filters.FilterSet):
+    """Filtros de querystring para la lista de transacciones.
+
+    Ej.: ``?date_after=2026-08-01&date_before=2026-08-31&source=manual``
+    """
+
+    date_after = filters.DateFilter(field_name="date", lookup_expr="gte")
+    date_before = filters.DateFilter(field_name="date", lookup_expr="lte")
+    type = filters.ChoiceFilter(
+        field_name="category__type", choices=Category.TYPE_CHOICES
+    )
+
+    class Meta:
+        model = Transaction
+        fields = {
+            "account": ["exact"],
+            "category": ["exact"],
+            "source": ["exact"],
+            "is_recurring": ["exact"],
+        }
+
+
 class TransactionViewSet(WorkspaceScopedViewSet):
     """Transacciones del workspace activo (scoping vía account__workspace)."""
 
     serializer_class = TransactionSerializer
     workspace_field = "account__workspace"
+    filterset_class = TransactionFilter
     queryset = Transaction.objects.select_related(
         "account", "category", "created_by"
     ).all()

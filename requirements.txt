@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# buddyclone - backend Django + API REST
+# budget - backend Django + API REST
 # Python 3.12+ recomendado
 # ---------------------------------------------------------------------------
 
@@ -13,6 +13,7 @@ whitenoise~=6.12                 # sirve los estáticos (admin, DRF, swagger) de
 djangorestframework~=3.16
 djangorestframework-simplejwt~=5.5   # auth JWT (access + refresh + blacklist)
 django-cors-headers~=4.7             # CORS para el front web que consume el mismo API
+django-filter~=25.2                  # filtros de querystring en listas (p. ej. transacciones por mes)
 drf-spectacular~=0.28               # esquema OpenAPI 3 (cliente iOS + web)
 drf-spectacular-sidecar>=2026.8.1    # sirve Swagger UI / Redoc sin CDN externo
 
