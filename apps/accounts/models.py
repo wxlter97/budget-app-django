@@ -55,11 +55,27 @@ class Account(BaseModel):
     )
 
     is_active = models.BooleanField(default=True)
+    # Cuenta preseleccionada al crear una transacción. Máx. una por workspace.
+    is_default = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace"],
+                condition=models.Q(is_default=True, is_deleted=False),
+                name="one_default_account_per_workspace",
+            ),
+        ]
 
     def save(self, *args, **kwargs):
         # Al crear la cuenta, el saldo actual arranca en el saldo de apertura.
         if self._state.adding and not self.current_balance:
             self.current_balance = self.opening_balance
+        # Solo una cuenta default por workspace: desmarca las demás antes de guardar.
+        if self.is_default and self.workspace_id:
+            Account.objects.filter(
+                workspace_id=self.workspace_id, is_default=True
+            ).exclude(pk=self.pk).update(is_default=False)
         super().save(*args, **kwargs)
 
     def __str__(self):

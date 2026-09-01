@@ -23,6 +23,7 @@ class AccountSerializer(serializers.ModelSerializer):
             "billing_cycle_day",
             "payment_due_day",
             "is_active",
+            "is_default",
             "created_at",
             "updated_at",
         )

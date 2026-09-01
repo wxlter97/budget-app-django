@@ -60,7 +60,7 @@ def net_worth(workspace) -> Decimal:
 def spending_by_category(workspace, user, year, month):
     rows = (
         visible_transactions(workspace, user)
-        .filter(date__year=year, date__month=month, category__type=Category.TYPE_EXPENSE)
+        .filter(date__year=year, date__month=month, type=Transaction.TYPE_EXPENSE)
         .values("category_id", "category__name")
         .annotate(spent=Sum("amount"))
         .order_by("-spent")
@@ -88,7 +88,8 @@ def budget_vs_actual(workspace, user, year, month):
             .filter(
                 date__year=year,
                 date__month=month,
-                category__type=Category.TYPE_EXPENSE,
+                type=Transaction.TYPE_EXPENSE,
+                counts_toward_budget=True,
             )
             .values("category")
             .annotate(spent=Sum("amount"))
@@ -141,8 +142,8 @@ def monthly_cashflow(workspace, user, months=6, until=None):
     series = []
     for year, month in periods:
         month_txns = txns.filter(date__year=year, date__month=month)
-        income = _sum(month_txns.filter(category__type=Category.TYPE_INCOME), "amount")
-        expenses = _sum(month_txns.filter(category__type=Category.TYPE_EXPENSE), "amount")
+        income = _sum(month_txns.filter(type=Transaction.TYPE_INCOME), "amount")
+        expenses = _sum(month_txns.filter(type=Transaction.TYPE_EXPENSE), "amount")
         series.append(
             {
                 "year": year,
@@ -188,10 +189,10 @@ def close_month(year, month, workspace=None):
             defaults={
                 "total_net_worth": net_worth(ws),
                 "total_income": _sum(
-                    month_txns.filter(category__type=Category.TYPE_INCOME), "amount"
+                    month_txns.filter(type=Transaction.TYPE_INCOME), "amount"
                 ),
                 "total_expenses": _sum(
-                    month_txns.filter(category__type=Category.TYPE_EXPENSE), "amount"
+                    month_txns.filter(type=Transaction.TYPE_EXPENSE), "amount"
                 ),
             },
         )
@@ -210,7 +211,10 @@ def _rollover_provisions(workspace, year, month):
     for budget in budgets:
         spent = _sum(
             Transaction.objects.filter(
-                category=budget.category, date__year=year, date__month=month
+                category=budget.category,
+                date__year=year,
+                date__month=month,
+                counts_toward_budget=True,
             ),
             "amount",
         )

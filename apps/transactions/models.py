@@ -25,6 +25,15 @@ class Category(BaseModel):
 
 
 class Transaction(BaseModel):
+    TYPE_INCOME = "income"
+    TYPE_EXPENSE = "expense"
+    TYPE_TRANSFER = "transfer"
+    TYPE_CHOICES = [
+        (TYPE_INCOME, "Ingreso"),
+        (TYPE_EXPENSE, "Gasto"),
+        (TYPE_TRANSFER, "Transferencia"),
+    ]
+
     SOURCE_MANUAL = "manual"
     SOURCE_EMAIL_IMPORT = "email_import"
     SOURCE_RECURRING = "recurring"
@@ -36,12 +45,28 @@ class Transaction(BaseModel):
         (SOURCE_INSTALLMENT, "Cuota de compra a plazo"),
     ]
 
+    type = models.CharField(max_length=10, choices=TYPE_CHOICES)
+    # Cuenta origen. En transferencias, de aquí sale el dinero.
     account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name="transactions")
-    category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name="transactions")
+    # Solo transferencias: cuenta destino (a la que entra el dinero).
+    to_account = models.ForeignKey(
+        Account,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="incoming_transfers",
+    )
+    # Requerida en income/expense; nula en transferencias.
+    category = models.ForeignKey(
+        Category, on_delete=models.PROTECT, null=True, blank=True, related_name="transactions"
+    )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     currency = models.CharField(max_length=3, default="USD")
     description = models.CharField(max_length=255, blank=True)
     date = models.DateField()
+    # Si es False, el gasto no cuenta contra el presupuesto de su categoría
+    # (sigue afectando el saldo y el resumen de gastos del mes).
+    counts_toward_budget = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="transactions"
     )
@@ -50,6 +75,22 @@ class Transaction(BaseModel):
 
     class Meta:
         ordering = ["-date", "-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(type__in=["income", "expense", "transfer"]),
+                name="transaction_type_valid",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.type == self.TYPE_TRANSFER:
+            self.category = None
+            self.counts_toward_budget = False
+        elif self.category_id:
+            # income / expense: el tipo lo manda la categoría (así, editar la
+            # categoría de una transacción cambia su efecto sobre el saldo).
+            self.type = self.category.type
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.description} {self.amount}"

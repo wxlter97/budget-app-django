@@ -48,16 +48,25 @@ class CategoryViewSet(WorkspaceScopedViewSet):
 # Transaction
 # ---------------------------------------------------------------------------
 class TransactionSerializer(serializers.ModelSerializer):
+    # `type` es opcional al escribir: si se omite en income/expense se deduce
+    # de la categoría. Requerido para transferencias.
+    type = serializers.ChoiceField(
+        choices=Transaction.TYPE_CHOICES, required=False
+    )
+
     class Meta:
         model = Transaction
         fields = (
             "id",
+            "type",
             "account",
+            "to_account",
             "category",
             "amount",
             "currency",
             "description",
             "date",
+            "counts_toward_budget",
             "source",
             "is_recurring",
             "created_by",
@@ -66,23 +75,68 @@ class TransactionSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "created_by", "created_at", "updated_at")
 
+    def _check_account(self, account, workspace, user, field):
+        if account is None:
+            return
+        if account.workspace_id != workspace.id:
+            raise serializers.ValidationError({field: "La cuenta es de otro workspace."})
+        if (
+            account.visibility == Account.VISIBILITY_PRIVATE
+            and account.owner_id != user.id
+        ):
+            raise serializers.ValidationError(
+                {field: "No puedes usar una cuenta privada ajena."}
+            )
+
     def validate(self, attrs):
         workspace = self.context["workspace"]
         user = self.context["request"].user
+        inst = self.instance
 
-        account = attrs.get("account") or getattr(self.instance, "account", None)
-        category = attrs.get("category") or getattr(self.instance, "category", None)
+        account = attrs.get("account") or getattr(inst, "account", None)
+        to_account = attrs.get("to_account", getattr(inst, "to_account", None))
+        category = attrs.get("category", getattr(inst, "category", None))
+        txn_type = attrs.get("type") or getattr(inst, "type", None)
 
-        if account is not None:
-            if account.workspace_id != workspace.id:
-                raise serializers.ValidationError({"account": "La cuenta es de otro workspace."})
-            if (
-                account.visibility == Account.VISIBILITY_PRIVATE
-                and account.owner_id != user.id
-            ):
-                raise serializers.ValidationError({"account": "No puedes usar una cuenta privada ajena."})
-        if category is not None and category.workspace_id != workspace.id:
-            raise serializers.ValidationError({"category": "La categoría es de otro workspace."})
+        # Deduce el tipo de la categoría si no viene y no es transferencia.
+        if not txn_type and category is not None:
+            txn_type = category.type
+            attrs["type"] = txn_type
+        if not txn_type:
+            raise serializers.ValidationError(
+                {"type": "Requerido (o envía una categoría de la que deducirlo)."}
+            )
+
+        self._check_account(account, workspace, user, "account")
+
+        if txn_type == Transaction.TYPE_TRANSFER:
+            if to_account is None:
+                raise serializers.ValidationError(
+                    {"to_account": "Requerida en una transferencia."}
+                )
+            if account is not None and to_account.id == account.id:
+                raise serializers.ValidationError(
+                    {"to_account": "La cuenta destino debe ser distinta de la origen."}
+                )
+            self._check_account(to_account, workspace, user, "to_account")
+            attrs["category"] = None
+            attrs["to_account"] = to_account
+            attrs["counts_toward_budget"] = False
+        else:
+            if category is None:
+                raise serializers.ValidationError(
+                    {"category": "Requerida en ingresos y gastos."}
+                )
+            if category.workspace_id != workspace.id:
+                raise serializers.ValidationError(
+                    {"category": "La categoría es de otro workspace."}
+                )
+            if category.type != txn_type:
+                raise serializers.ValidationError(
+                    {"category": f"La categoría no es de tipo «{txn_type}»."}
+                )
+            attrs["to_account"] = None
+
         return attrs
 
     def create(self, validated_data):
@@ -98,17 +152,17 @@ class TransactionFilter(filters.FilterSet):
 
     date_after = filters.DateFilter(field_name="date", lookup_expr="gte")
     date_before = filters.DateFilter(field_name="date", lookup_expr="lte")
-    type = filters.ChoiceFilter(
-        field_name="category__type", choices=Category.TYPE_CHOICES
-    )
 
     class Meta:
         model = Transaction
         fields = {
+            "type": ["exact"],
             "account": ["exact"],
+            "to_account": ["exact"],
             "category": ["exact"],
             "source": ["exact"],
             "is_recurring": ["exact"],
+            "counts_toward_budget": ["exact"],
         }
 
 
@@ -119,7 +173,7 @@ class TransactionViewSet(WorkspaceScopedViewSet):
     workspace_field = "account__workspace"
     filterset_class = TransactionFilter
     queryset = Transaction.objects.select_related(
-        "account", "category", "created_by"
+        "account", "to_account", "category", "created_by"
     ).all()
 
     def get_queryset(self):
