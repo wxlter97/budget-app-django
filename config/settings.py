@@ -118,7 +118,14 @@ DATABASES = {
     ),
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
+# Cloud Run congela la instancia entre requests: una conexión persistente puede
+# quedar obsoleta. Con Neon (o cualquier Postgres serverless) poner 0.
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DJANGO_DB_CONN_MAX_AGE", default=60)
+# Si se usa el endpoint *pooled* de Neon (PgBouncer en modo transacción) hay que
+# desactivar los server-side cursors. Con el endpoint directo no hace falta.
+DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = env.bool(
+    "DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS", default=False
+)
 
 # ---------------------------------------------------------------------------
 # Password validation
@@ -278,6 +285,9 @@ CELERY_BEAT_SCHEDULE = {
 # ---------------------------------------------------------------------------
 if not DEBUG:
     SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT", default=True)
+    # El health check de Cloud Run pega por HTTP interno (sin X-Forwarded-Proto);
+    # que no se lo lleve el redirect a HTTPS.
+    SECURE_REDIRECT_EXEMPT = [r"^healthz/?$"]
     SECURE_HSTS_SECONDS = env.int("DJANGO_SECURE_HSTS_SECONDS", default=60 * 60 * 24 * 7)
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True

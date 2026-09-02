@@ -18,5 +18,6 @@ RUN python manage.py collectstatic --noinput
 RUN useradd --create-home app && chown -R app /app
 USER app
 
-EXPOSE 8000
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+# Cloud Run enruta al puerto de $PORT (8080 por defecto); entrypoint.sh lo honra.
+EXPOSE 8080
+CMD ["sh", "/app/entrypoint.sh"]
