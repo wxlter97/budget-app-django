@@ -18,6 +18,24 @@ PROJECT="$(gcloud config get-value project 2>/dev/null)"
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
 RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
+echo "==> Proyecto: ${PROJECT} (${PROJECT_NUMBER})"
+
+# Preflight: los secrets tienen que existir Y tener una versión con datos.
+for secret in django-secret-key database-url; do
+  if ! gcloud secrets versions access latest --secret="$secret" >/dev/null 2>&1; then
+    echo "ERROR: el secret '$secret' no existe o no tiene ninguna versión con datos." >&2
+    echo "Cargá el valor (crea el secret si hace falta):" >&2
+    if [ "$secret" = "django-secret-key" ]; then
+      echo "  python -c \"import secrets; print(secrets.token_urlsafe(64))\" | gcloud secrets create $secret --data-file=-" >&2
+      echo "  (si ya existe vacío: cambiá 'create' por 'versions add')" >&2
+    else
+      echo "  printf %s 'postgres://USER:PASS@HOST/neondb?sslmode=require' | gcloud secrets create $secret --data-file=-" >&2
+      echo "  (si ya existe vacío: cambiá 'create' por 'versions add')" >&2
+    fi
+    exit 1
+  fi
+done
+
 # La service account de runtime de Cloud Run tiene que poder leer los secrets.
 # add-iam-policy-binding es idempotente: si ya está, no pasa nada.
 echo "==> Concediendo acceso a los secrets a ${RUNTIME_SA}"
