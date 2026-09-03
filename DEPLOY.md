@@ -1,7 +1,5 @@
 # Deploy — Neon + Cloud Run + Vercel (sin Celery)
 
-Arquitectura de la puesta en producción para uso personal:
-
 ```
 Vercel ──HTTPS──> Cloud Run (Django + Gunicorn) ──> Neon (Postgres)
   cliente Expo web   API REST /api/v1                 serverless
@@ -9,10 +7,12 @@ Vercel ──HTTPS──> Cloud Run (Django + Gunicorn) ──> Neon (Postgres)
 ```
 
 **Sin Celery**: las tareas programadas (recurrentes, cuotas, cierre de mes) no
-corren solas. Se disparan a mano cuando haga falta — ver [§6](#6-tareas-sin-celery).
+corren solas. Se disparan a mano — ver [§6](#6-tareas-sin-celery).
 
-Todo cabe en las capas gratuitas para uso personal. El único costo posible es el
-almacenamiento de imágenes viejas en Artifact Registry (ver [§7](#7-limpieza-y-costos)).
+> **Shell**: los comandos están en **bash** (git-bash en Windows sirve). La
+> continuación de línea es `\`. Si usás PowerShell, cambiá cada `\` por un
+> backtick `` ` `` — **no mezcles**: pegar backticks en bash rompe el comando
+> (bash los interpreta como sustitución y cada `--flag` corre suelto).
 
 ---
 
@@ -21,84 +21,76 @@ almacenamiento de imágenes viejas en Artifact Registry (ver [§7](#7-limpieza-y
 | Herramienta | Instalación |
 |---|---|
 | `gcloud` CLI | https://cloud.google.com/sdk/docs/install → `gcloud init` |
-| Cuenta Neon | https://neon.tech (login con GitHub) |
-| Cuenta Vercel | https://vercel.com (login con GitHub) |
+| Cuenta Neon | https://neon.tech |
+| Cuenta Vercel | https://vercel.com |
 | Node 20+ | ya lo tenés para `web/` |
 
-```powershell
+```bash
 gcloud auth login
-gcloud config set project TU_PROJECT_ID
+gcloud config set project TU_PROJECT_ID          # p. ej. budget-wxlter
 gcloud config set run/region us-east1
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com
 ```
-
-> Región: `us-east1` va bien desde México y queda cerca de Neon `aws-us-east-1`.
 
 ---
 
 ## 1. Base de datos — Neon
 
 1. **New Project** → nombre `budget`, región **AWS US East (N. Virginia)**.
-2. En *Connection Details* copiá el connection string. Neon da dos:
-   - **Direct** (`ep-xxx.us-east-1.aws.neon.tech`) — usá este.
-   - Pooled (`ep-xxx-pooler...`) — solo si algún día ponés `--max-instances > 1`;
-     en ese caso además `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True`.
-3. Verificá que termina en `?sslmode=require`. Queda algo así:
+2. En *Connection Details* copiá el connection string **Direct** (no el pooled).
+3. Verificá que termina en `?sslmode=require`:
    ```
-   postgres://budget_owner:npg_XXXX@ep-cool-name-123456.us-east-1.aws.neon.tech/neondb?sslmode=require
+   postgres://budget_owner:npg_XXXX@ep-nombre-123456.us-east-1.aws.neon.tech/neondb?sslmode=require
    ```
 
-No hace falta crear tablas: las migraciones corren solas al arrancar el contenedor.
+Las migraciones corren solas al arrancar el contenedor; no hay que crear tablas.
 
 ---
 
 ## 2. Backend — Cloud Run
 
-### 2.1 Secretos
+### 2.1 Secretos (una vez)
 
-```powershell
-python -c "import secrets; print(secrets.token_urlsafe(64))" | gcloud secrets create django-secret-key --data-file=-
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(64))" \
+  | gcloud secrets create django-secret-key --data-file=-
 
-# pegá tu connection string de Neon entre las comillas
-"postgres://budget_owner:npg_XXXX@ep-xxx.us-east-1.aws.neon.tech/neondb?sslmode=require" | gcloud secrets create database-url --data-file=-
+# pegá tu connection string de Neon entre las comillas:
+printf %s 'postgres://budget_owner:npg_XXXX@ep-xxx.us-east-1.aws.neon.tech/neondb?sslmode=require' \
+  | gcloud secrets create database-url --data-file=-
 ```
 
-### 2.2 Primer deploy
+Para **actualizar** un secreto más adelante: `... | gcloud secrets versions add django-secret-key --data-file=-`
 
-Desde `budget/` (usa el `Dockerfile`):
+### 2.2 Deploy
 
-```powershell
-gcloud run deploy budget-api `
-  --source . `
-  --region us-east1 `
-  --allow-unauthenticated `
-  --max-instances 1 `
-  --cpu 1 --memory 1Gi --cpu-boost `
-  --concurrency 8 `
-  --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" `
-  --set-env-vars "DJANGO_DEBUG=False,DJANGO_ALLOWED_HOSTS=.run.app,DJANGO_CSRF_TRUSTED_ORIGINS=https://*.run.app,DJANGO_DB_CONN_MAX_AGE=0,DJANGO_TIME_ZONE=America/Mexico_City,DJANGO_LANGUAGE_CODE=es"
+```bash
+cd budget
+bash deploy-cloudrun.sh
 ```
 
+El script corre el `gcloud run deploy` con todas las flags (secrets + env vars).
 Anotá la URL que imprime: `https://budget-api-XXXXXXXX-ue.a.run.app`.
-
-> `CORS_ALLOWED_ORIGINS` se agrega en el [§4](#4-conectar-cors), cuando ya exista
-> la URL de Vercel. Hasta entonces el front no puede llamar al API — es esperado.
 
 Comprobá:
 - `https://budget-api-XXXX.a.run.app/healthz/` → `{"status":"ok"}`
 - `https://budget-api-XXXX.a.run.app/api/docs/` → Swagger
 
-### 2.3 Usuario
+> `CORS_ALLOWED_ORIGINS` se agrega en el [§4](#4-conectar-cors), cuando exista la
+> URL de Vercel. Hasta entonces el front no puede llamar al API — es esperado.
+>
+> La revisión rota que quedó del intento fallido no molesta: el próximo deploy
+> exitoso se lleva el tráfico.
 
-Para **uso normal** no necesitás nada: registrate desde la web (`/auth/register/`).
+### 2.3 Superusuario (solo para `/admin/`)
 
-Para el **admin de Django** (`/admin/`) creá un superusuario con un Job:
+Para uso normal no hace falta: registrate desde la web. Para el admin de Django:
 
-```powershell
-gcloud run jobs deploy budget-admin `
-  --source . --region us-east1 `
-  --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" `
-  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0,DJANGO_SUPERUSER_USERNAME=admin,DJANGO_SUPERUSER_EMAIL=tu@correo.com,DJANGO_SUPERUSER_PASSWORD=una-clave-larga" `
+```bash
+gcloud run jobs deploy budget-admin \
+  --source . --region us-east1 \
+  --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
+  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0,DJANGO_SUPERUSER_USERNAME=admin,DJANGO_SUPERUSER_EMAIL=tu@correo.com,DJANGO_SUPERUSER_PASSWORD=una-clave-larga" \
   --command python --args "manage.py,createsuperuser,--noinput"
 
 gcloud run jobs execute budget-admin --region us-east1 --wait
@@ -110,106 +102,85 @@ gcloud run jobs execute budget-admin --region us-east1 --wait
 
 ### Opción A — conectar el repo (recomendada)
 
-Requiere que `web/` tenga remoto en GitHub.
-
-1. Vercel → **Add New… → Project** → importá el repo `web/`.
-2. Vercel lee `vercel.json`, así que **no toques** Build Command ni Output
-   Directory (ya vienen: `expo export -p web` → `dist`, con rewrite SPA).
-3. **Environment Variables** → agregá para *Production* y *Preview*:
+1. Vercel → **Add New… → Project** → importá `wxlter97/moneyapp`.
+2. Vercel lee `vercel.json`: **no toques** Build Command ni Output Directory.
+3. **Environment Variables** → para *Production* y *Preview*:
    ```
    EXPO_PUBLIC_API_URL = https://budget-api-XXXXXXXX-ue.a.run.app/api/v1
    ```
-4. **Deploy**. Anotá la URL: `https://budget-web.vercel.app` (o el nombre que
-   elijas).
+4. **Deploy**. Anotá la URL: `https://moneyapp.vercel.app` (o la que asigne).
 
-A partir de acá, cada push a `main` redeploya solo. Los PRs generan *preview
-deployments*.
+Cada push a `main` redeploya. Los PRs generan preview deployments.
 
-### Opción B — deploy manual con la CLI
+### Opción B — CLI
 
-Sin necesidad de repo en GitHub:
-
-```powershell
+```bash
 cd web
-npx vercel login            # una sola vez
-npx vercel link             # crea/asocia el proyecto
-npx vercel env add EXPO_PUBLIC_API_URL production
-# pegás: https://budget-api-XXXXXXXX-ue.a.run.app/api/v1
-npm run deploy:web          # = npx vercel deploy --prod
+npx vercel login
+npx vercel link
+npx vercel env add EXPO_PUBLIC_API_URL production   # pegás la URL .../api/v1
+npm run deploy:web                                   # = npx vercel deploy --prod
 ```
-
-El build corre en Vercel (usa el `buildCommand` de `vercel.json`).
 
 ---
 
 ## 4. Conectar CORS
 
-Ya con la URL de Vercel, actualizá el backend:
+Con la URL de Vercel ya conocida:
 
-```powershell
-gcloud run services update budget-api --region us-east1 `
-  --update-env-vars "CORS_ALLOWED_ORIGINS=https://budget-web.vercel.app"
+```bash
+export MSYS_NO_PATHCONV=1   # solo git-bash en Windows
+gcloud run services update budget-api --region us-east1 \
+  --update-env-vars "CORS_ALLOWED_ORIGINS=https://moneyapp.vercel.app"
 ```
 
-Si más adelante ponés dominio propio, sumá los orígenes separados por coma en
-`CORS_ALLOWED_ORIGINS`, `DJANGO_ALLOWED_HOSTS` y `DJANGO_CSRF_TRUSTED_ORIGINS`.
-
-> Los *preview deployments* de Vercel usan URLs `https://budget-web-<hash>.vercel.app`.
-> Si querés que funcionen contra este backend, agregá también
-> `https://budget-web-*.vercel.app` — pero `CORS_ALLOWED_ORIGINS` no acepta
-> comodines; para previews conviene un backend aparte o probar en local.
+Dominio propio más adelante: sumá los orígenes con coma en `CORS_ALLOWED_ORIGINS`,
+`DJANGO_ALLOWED_HOSTS` y `DJANGO_CSRF_TRUSTED_ORIGINS`.
 
 ---
 
 ## 5. Prueba de humo
 
-1. Abrí `https://budget-web.vercel.app`.
-2. Registro → login → crear workspace → crear cartera → crear transacción.
-3. Recargá en `/dashboard` (verifica el rewrite SPA de Vercel).
+1. Abrí la URL de Vercel.
+2. Registro → login → workspace → cartera → transacción.
+3. Recargá en `/dashboard` (verifica el rewrite SPA).
 4. `https://budget-api-XXXX.a.run.app/admin/` con el superusuario.
 
-La **primera** request del día tarda ~2-4 s (Cloud Run despierta el contenedor +
-Neon despierta la DB). Después, normal.
+La **primera** request del día tarda ~2-4 s (Cloud Run + Neon despiertan).
 
 ---
 
 ## 6. Tareas sin Celery
 
-Los `@shared_task` se pueden ejecutar sincrónicamente llamándolos como función.
-Un Job que las corre las tres:
+Los `@shared_task` se ejecutan sincrónicamente llamándolos como función:
 
-```powershell
-gcloud run jobs deploy budget-cron `
-  --source . --region us-east1 `
-  --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" `
-  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" `
-  --command python `
+```bash
+gcloud run jobs deploy budget-cron \
+  --source . --region us-east1 \
+  --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
+  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
+  --command python \
   --args "manage.py,shell,-c,from apps.transactions.tasks import generate_recurring_transactions, post_due_installments; from apps.reports.tasks import close_previous_month; generate_recurring_transactions(); post_due_installments(); close_previous_month()"
 
 gcloud run jobs execute budget-cron --region us-east1 --wait
 ```
 
-Si querés que corra solo cada día: **Cloud Scheduler → Cloud Run Job** (también
-dentro de free tier, 3 jobs de scheduler gratis).
+Para que corra solo cada día: **Cloud Scheduler → Cloud Run Job** (3 jobs gratis).
 
 ---
 
 ## 7. Limpieza y costos
 
-- **Artifact Registry**: cada `--source` deja una imagen en el repo
-  `cloud-run-source-deploy`. Poné una política de limpieza una vez:
-  ```powershell
-  gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy `
-    --location us-east1 --policy-file - <<< '[{"name":"keep-3","action":{"type":"Keep"},"mostRecentVersions":{"keepCount":3}}]'
+- **Artifact Registry**: política de limpieza una vez (deja las 3 imágenes más nuevas):
+  ```bash
+  printf '[{"name":"keep-3","action":{"type":"Keep"},"mostRecentVersions":{"keepCount":3}}]' > /tmp/cleanup.json
+  gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy \
+    --location us-east1 --policy-file /tmp/cleanup.json
   ```
-- **Neon free**: 0.5 GB de datos y ~190 h de cómputo/mes. Un presupuesto personal
-  usa unos pocos MB. Auto-suspende a los 5 min (no se puede desactivar en free).
-- **Cloud Run free**: 2 M requests, 360 000 GiB-s, 180 000 vCPU-s al mes. Uso
-  personal ni lo roza.
-- **Vercel Hobby**: gratis para uso no comercial. ~100 GB de ancho de banda y
-  6000 min de build al mes; de sobra.
-- **Backups**: Neon free retiene ~24 h de historial. Para más tranquilidad, un
-  `pg_dump` periódico a donde quieras.
+- **Neon free**: 0.5 GB, ~190 h cómputo/mes, auto-suspende a los 5 min.
+- **Cloud Run free**: 2 M req, 360 000 GiB-s, 180 000 vCPU-s al mes.
+- **Vercel Hobby**: gratis uso no comercial, ~100 GB banda/mes.
+- **Backups**: Neon free retiene ~24 h. Un `pg_dump` periódico si querés más.
 
 ---
 
@@ -217,7 +188,7 @@ dentro de free tier, 3 jobs de scheduler gratis).
 
 | Qué | Comando |
 |---|---|
-| Backend | `gcloud run deploy budget-api --source . --region us-east1` (las env vars persisten) |
-| Frontend | push a `main` (Opción A), o `npm run deploy:web` (Opción B) |
-| Cambiar una env var del backend | `gcloud run services update budget-api --region us-east1 --update-env-vars "CLAVE=valor"` |
-| Cambiar `EXPO_PUBLIC_API_URL` | panel de Vercel → Settings → Environment Variables, y redeploy |
+| Backend | `bash deploy-cloudrun.sh` (las env vars persisten entre deploys) |
+| Frontend | push a `main` (Opción A) o `npm run deploy:web` (Opción B) |
+| Env var backend | `gcloud run services update budget-api --region us-east1 --update-env-vars "K=V"` |
+| Ver logs del arranque | `gcloud run services logs read budget-api --region us-east1 --limit 50` |
