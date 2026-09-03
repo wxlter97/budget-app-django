@@ -68,6 +68,9 @@ class Wallet(BaseModel):
     )
     kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=KIND_BANK)
     currency = models.CharField(max_length=3, default="USD")
+    # Color de acento en hex ("#RRGGBB"), estilo Buddy. Vacío = color por
+    # defecto según el tipo/subtipo en el cliente.
+    color = models.CharField(max_length=9, blank=True, default="")
 
     # Saldo/valor inicial (punto de partida fijo, editable).
     opening_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)

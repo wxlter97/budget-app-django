@@ -24,6 +24,7 @@ class WalletSerializer(serializers.ModelSerializer):
             "name",
             "purpose",
             "kind",
+            "color",
             "parent",
             "currency",
             "opening_balance",

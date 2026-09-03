@@ -41,6 +41,16 @@ class WalletArchiveOrderTests(APITestCase):
         self.assertEqual(res.data["kind"], "credit")
         self.assertEqual(res.data["credit_limit"], "1000.00")
 
+    def test_color_roundtrip(self):
+        res = self.client.patch(
+            f"/api/v1/wallets/{self.w1.id}/",
+            {"color": "#F0568F"},
+            format="json",
+            **self._h(),
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["color"], "#F0568F")
+
     def test_archive_hides_from_list_but_keeps_net_worth(self):
         before = net_worth_breakdown(self.ws)["net"]
         res = self.client.post(f"/api/v1/wallets/{self.w2.id}/archive/", **self._h())
