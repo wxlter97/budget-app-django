@@ -14,6 +14,20 @@ REGION="${REGION:-us-east1}"
 SERVICE="${SERVICE:-budget-api}"
 TZ="${TZ:-America/Mexico_City}"
 
+PROJECT="$(gcloud config get-value project 2>/dev/null)"
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+# La service account de runtime de Cloud Run tiene que poder leer los secrets.
+# add-iam-policy-binding es idempotente: si ya está, no pasa nada.
+echo "==> Concediendo acceso a los secrets a ${RUNTIME_SA}"
+for secret in django-secret-key database-url; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --member="serviceAccount:${RUNTIME_SA}" \
+    --role="roles/secretmanager.secretAccessor" \
+    --quiet >/dev/null
+done
+
 gcloud run deploy "$SERVICE" \
   --source . \
   --region "$REGION" \

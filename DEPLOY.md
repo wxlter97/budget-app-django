@@ -62,6 +62,20 @@ printf %s 'postgres://budget_owner:npg_XXXX@ep-xxx.us-east-1.aws.neon.tech/neond
 
 Para **actualizar** un secreto más adelante: `... | gcloud secrets versions add django-secret-key --data-file=-`
 
+El `deploy-cloudrun.sh` le concede a la service account de runtime de Cloud Run
+(`PROJECT_NUMBER-compute@developer.gserviceaccount.com`) el rol
+`roles/secretmanager.secretAccessor` sobre ambos secrets (idempotente). Si
+preferís hacerlo a mano:
+
+```bash
+PN=$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')
+for s in django-secret-key database-url; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:${PN}-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
+```
+
 ### 2.2 Deploy
 
 ```bash
