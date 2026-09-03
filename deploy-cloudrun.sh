@@ -10,9 +10,6 @@
 #   REGION (us-east1)   SERVICE (budget-api)   TZ (America/Mexico_City)
 set -euo pipefail
 
-# git-bash (Windows): que no convierta las rutas tipo https://*.run.app
-export MSYS_NO_PATHCONV=1
-
 REGION="${REGION:-us-east1}"
 SERVICE="${SERVICE:-budget-api}"
 TZ="${TZ:-America/Mexico_City}"

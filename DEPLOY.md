@@ -129,7 +129,6 @@ npm run deploy:web                                   # = npx vercel deploy --pro
 Con la URL de Vercel ya conocida:
 
 ```bash
-export MSYS_NO_PATHCONV=1   # solo git-bash en Windows
 gcloud run services update budget-api --region us-east1 \
   --update-env-vars "CORS_ALLOWED_ORIGINS=https://moneyapp.vercel.app"
 ```
