@@ -14,9 +14,11 @@ from apps.transactions.models import (
     Category,
     CategoryBudget,
     CategoryProvision,
+    InstallmentPurchase,
+    RecurringExpense,
     Transaction,
 )
-from apps.transactions.services import visible_transactions
+from apps.transactions.services import _advance, visible_transactions
 from apps.workspaces.models import Workspace
 
 from .models import MonthlySnapshot
@@ -42,8 +44,9 @@ def net_worth_breakdown(workspace, user=None) -> dict:
 
     Con ``user`` se excluyen las carteras privadas de las que no es owner.
     """
+    # Incluye las archivadas: siguen sumando al patrimonio neto (como en Buddy).
     wallets = list(
-        _visible(Wallet.objects.filter(workspace=workspace, is_active=True), user)
+        _visible(Wallet.objects.filter(workspace=workspace), user)
     )
     net = sum(
         (w.current_balance for w in wallets if w.counts_toward_net_worth),
@@ -63,10 +66,18 @@ def net_worth(workspace) -> Decimal:
     return net_worth_breakdown(workspace)["net"]
 
 
+# Dinero que "sale" y se clasifica: gastos + transferencias con categoría
+# (p. ej. mover a ahorro). No cuenta ingresos ni transferencias sin categoría.
+_OUTFLOW_Q = Q(type=Transaction.TYPE_EXPENSE) | Q(
+    type=Transaction.TYPE_TRANSFER, category__isnull=False
+)
+
+
 def spending_by_category(workspace, user, year, month):
     rows = (
         visible_transactions(workspace, user)
-        .filter(date__year=year, date__month=month, type=Transaction.TYPE_EXPENSE)
+        .filter(date__year=year, date__month=month)
+        .filter(_OUTFLOW_Q, category__isnull=False)
         .values("category_id", "category__name")
         .annotate(spent=Sum("amount"))
         .order_by("-spent")
@@ -91,12 +102,8 @@ def budget_vs_actual(workspace, user, year, month):
         row["category"]: row["spent"]
         for row in (
             visible_transactions(workspace, user)
-            .filter(
-                date__year=year,
-                date__month=month,
-                type=Transaction.TYPE_EXPENSE,
-                counts_toward_budget=True,
-            )
+            .filter(date__year=year, date__month=month, counts_toward_budget=True)
+            .filter(_OUTFLOW_Q)
             .values("category")
             .annotate(spent=Sum("amount"))
         )
@@ -107,18 +114,20 @@ def budget_vs_actual(workspace, user, year, month):
     }
 
     cat_ids = set(budgets) | set(spent)
-    names = dict(
-        Category.objects.filter(id__in=cat_ids).values_list("id", "name")
-    )
+    cats = {
+        str(c.id): c
+        for c in Category.objects.filter(id__in=cat_ids).select_related("parent")
+    }
 
     rows = []
     for cid in cat_ids:
         budgeted = budgets.get(cid, Decimal("0"))
         used = spent.get(cid, Decimal("0"))
+        cat = cats.get(str(cid))
         rows.append(
             {
                 "category": str(cid),
-                "category_name": names.get(cid),
+                "category_name": cat.name if cat else None,
                 "budgeted": budgeted,
                 "spent": used,
                 "remaining": budgeted - used,
@@ -132,7 +141,52 @@ def budget_vs_actual(workspace, user, year, month):
         "spent": sum((r["spent"] for r in rows), Decimal("0")),
         "remaining": sum((r["remaining"] for r in rows), Decimal("0")),
     }
-    return {"year": year, "month": month, "rows": rows, "totals": totals}
+    groups = _group_budget_rows(rows, cats)
+    return {
+        "year": year,
+        "month": month,
+        "rows": rows,
+        "groups": groups,
+        "totals": totals,
+    }
+
+
+def _group_budget_rows(rows, cats):
+    """Agrupa las filas de presupuesto por su grupo (categoría padre).
+
+    Una categoría sin padre es su propio grupo. El resultado alimenta el
+    anillo "restante para gastar" y las tarjetas por grupo del cliente.
+    """
+    buckets = {}
+    order = []
+    for row in rows:
+        cat = cats.get(row["category"])
+        if cat is not None and cat.parent_id is not None:
+            gid, gname = cat.parent_id, (cat.parent.name if cat.parent else None)
+        elif cat is not None:
+            gid, gname = cat.id, cat.name
+        else:
+            gid, gname = None, None
+        key = str(gid) if gid else "__none__"
+        if key not in buckets:
+            buckets[key] = {
+                "group": str(gid) if gid else None,
+                "group_name": gname or "Sin grupo",
+                "budgeted": Decimal("0"),
+                "spent": Decimal("0"),
+                "remaining": Decimal("0"),
+                "rows": [],
+            }
+            order.append(key)
+        b = buckets[key]
+        b["rows"].append(row)
+        b["budgeted"] += row["budgeted"]
+        b["spent"] += row["spent"]
+        b["remaining"] += row["remaining"]
+
+    result = [buckets[k] for k in order]
+    result.sort(key=lambda g: (g["group_name"] or "").lower())
+    return result
 
 
 def monthly_cashflow(workspace, user, months=6, until=None):
@@ -177,6 +231,78 @@ def dashboard_summary(workspace, user, today=None):
             workspace, user, today.year, today.month
         )[:5],
     }
+
+
+def upcoming_scheduled(workspace, user, until=None, since=None):
+    """Ocurrencias futuras de gastos recurrentes + cuotas, SIN crearlas.
+
+    Alimenta la tarjeta "PROGRAMADO" y los marcadores de la lista. `since`
+    por defecto hoy, `until` por defecto fin del mes en curso.
+    """
+    today = timezone.localdate()
+    since = since or today
+    if until is None:
+        until = (today.replace(day=1) + relativedelta(months=1)) - relativedelta(days=1)
+
+    def _wallet_ok(w):
+        return w.visibility == Wallet.VISIBILITY_SHARED or w.owner_id == getattr(
+            user, "id", None
+        )
+
+    items = []
+
+    recurring = RecurringExpense.objects.filter(
+        workspace=workspace, is_active=True, next_due_date__lte=until
+    ).select_related("category", "wallet")
+    for rec in recurring:
+        if not _wallet_ok(rec.wallet):
+            continue
+        due = rec.next_due_date
+        guard = 0
+        while due <= until and guard < 400:
+            guard += 1
+            if due >= since:
+                items.append(
+                    {
+                        "date": due,
+                        "kind": "recurring",
+                        "source_id": rec.id,
+                        "description": rec.category.name,
+                        "amount": rec.amount,
+                        "category": rec.category_id,
+                        "category_name": rec.category.name,
+                        "wallet": rec.wallet_id,
+                        "wallet_name": rec.wallet.name,
+                    }
+                )
+            due = _advance(due, rec.frequency)
+
+    installments = InstallmentPurchase.objects.filter(
+        workspace=workspace
+    ).select_related("category", "wallet")
+    for pur in installments:
+        if not _wallet_ok(pur.wallet):
+            continue
+        for n in range(pur.installments_paid + 1, pur.installments_total + 1):
+            due = pur.start_date + relativedelta(months=n - 1)
+            if due < since or due > until:
+                continue
+            items.append(
+                {
+                    "date": due,
+                    "kind": "installment",
+                    "source_id": pur.id,
+                    "description": f"{pur.description} (cuota {n}/{pur.installments_total})",
+                    "amount": pur.installment_amount,
+                    "category": pur.category_id,
+                    "category_name": pur.category.name,
+                    "wallet": pur.wallet_id,
+                    "wallet_name": pur.wallet.name,
+                }
+            )
+
+    items.sort(key=lambda i: i["date"])
+    return items
 
 
 def close_month(year, month, workspace=None):

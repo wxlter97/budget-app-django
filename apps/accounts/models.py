@@ -31,6 +31,19 @@ class Wallet(BaseModel):
         (PURPOSE_ASSET, "Activo"),
     ]
 
+    # Subtipo dentro del `purpose` (sobre todo para iconografía y para saber si
+    # aplica `credit_limit`). Estilo Buddy: Gastos / Crédito / Efectivo / Personalizada.
+    KIND_BANK = "bank"
+    KIND_CREDIT = "credit"
+    KIND_CASH = "cash"
+    KIND_CUSTOM = "custom"
+    KIND_CHOICES = [
+        (KIND_BANK, "Cuenta bancaria"),
+        (KIND_CREDIT, "Crédito"),
+        (KIND_CASH, "Efectivo"),
+        (KIND_CUSTOM, "Personalizada"),
+    ]
+
     VISIBILITY_SHARED = "shared"
     VISIBILITY_PRIVATE = "private"
     VISIBILITY_CHOICES = [
@@ -53,6 +66,7 @@ class Wallet(BaseModel):
     purpose = models.CharField(
         max_length=10, choices=PURPOSE_CHOICES, default=PURPOSE_SPENDING
     )
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=KIND_BANK)
     currency = models.CharField(max_length=3, default="USD")
 
     # Saldo/valor inicial (punto de partida fijo, editable).
@@ -71,6 +85,11 @@ class Wallet(BaseModel):
     )
     goal_date = models.DateField(null=True, blank=True)
     monthly_contribution = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+
+    # Límite de crédito (solo tarjetas de crédito / líneas de crédito).
+    credit_limit = models.DecimalField(
         max_digits=14, decimal_places=2, null=True, blank=True
     )
 
@@ -103,10 +122,16 @@ class Wallet(BaseModel):
     )
 
     is_active = models.BooleanField(default=True)
+    # Archivada: se oculta de la lista de carteras pero sigue contando para el
+    # patrimonio neto (igual que en Buddy).
+    is_archived = models.BooleanField(default=False)
+    # Orden manual en la lista de carteras.
+    sort_order = models.PositiveIntegerField(default=0)
     # Cartera preseleccionada al crear una transacción. Máx. una por workspace.
     is_default = models.BooleanField(default=False)
 
     class Meta:
+        ordering = ["sort_order", "name"]
         constraints = [
             models.UniqueConstraint(
                 fields=["workspace"],

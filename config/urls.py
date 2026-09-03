@@ -14,6 +14,7 @@ from apps.reports.api import (
     CashflowView,
     DashboardSummaryView,
     NetWorthView,
+    ScheduledView,
 )
 from apps.users.api import (
     MeView,
@@ -33,6 +34,7 @@ api_v1_patterns = [
     path("reports/net-worth/", NetWorthView.as_view(), name="report-net-worth"),
     path("reports/cashflow/", CashflowView.as_view(), name="report-cashflow"),
     path("reports/summary/", DashboardSummaryView.as_view(), name="report-summary"),
+    path("reports/scheduled/", ScheduledView.as_view(), name="report-scheduled"),
     path(
         "email-import/inbound/",
         InboundEmailWebhookView.as_view(),

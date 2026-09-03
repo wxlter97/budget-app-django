@@ -1,6 +1,8 @@
 from django.db.models import Q
 from django_filters import rest_framework as filters
 from rest_framework import serializers
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 from apps.accounts.models import Wallet
 from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewSet
@@ -24,24 +26,96 @@ def _visible_wallets(workspace, user):
 # Category
 # ---------------------------------------------------------------------------
 class CategorySerializer(serializers.ModelSerializer):
+    is_group = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Category
-        fields = ("id", "name", "icon", "color", "type", "parent", "created_at", "updated_at")
-        read_only_fields = ("id", "created_at", "updated_at")
+        fields = (
+            "id", "name", "icon", "color", "type", "parent", "sort_order",
+            "is_group", "created_at", "updated_at",
+        )
+        read_only_fields = ("id", "is_group", "created_at", "updated_at")
 
     def validate_parent(self, parent):
-        if parent is not None and parent.workspace_id != self.context["workspace"].id:
+        if parent is None:
+            return parent
+        if parent.workspace_id != self.context["workspace"].id:
             raise serializers.ValidationError("La categoría padre es de otro workspace.")
+        if parent.parent_id is not None:
+            raise serializers.ValidationError(
+                "El padre debe ser un grupo (una categoría de primer nivel)."
+            )
+        if self.instance is not None and parent.id == self.instance.id:
+            raise serializers.ValidationError("Una categoría no puede ser su propio grupo.")
         return parent
+
+    def validate(self, attrs):
+        # Si la categoría tiene subcategorías, no puede volverse hija de otra
+        # (solo se permiten 2 niveles).
+        parent = attrs.get("parent", getattr(self.instance, "parent", None))
+        if (
+            parent is not None
+            and self.instance is not None
+            and self.instance.subcategories.exists()
+        ):
+            raise serializers.ValidationError(
+                {"parent": "Este grupo tiene subcategorías; no puede volverse subcategoría."}
+            )
+        if parent is not None:
+            attrs.setdefault("type", parent.type if not self.instance else self.instance.type)
+        return attrs
 
     def create(self, validated_data):
         validated_data["workspace"] = self.context["workspace"]
         return super().create(validated_data)
 
 
+class CategoryReorderSerializer(serializers.Serializer):
+    ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
+
+
 class CategoryViewSet(WorkspaceScopedViewSet):
     serializer_class = CategorySerializer
     queryset = Category.objects.select_related("workspace", "parent").all()
+    filterset_fields = {"type": ["exact"], "parent": ["exact", "isnull"]}
+
+    @action(detail=False, methods=["post"])
+    def reorder(self, request):
+        """`{"ids": [...]}` — fija `sort_order` según el orden recibido."""
+        ser = CategoryReorderSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        ids = [str(i) for i in ser.validated_data["ids"]]
+        owned = {
+            str(c.id): c
+            for c in Category.objects.filter(
+                workspace=request.workspace, id__in=ids
+            )
+        }
+        for position, cid in enumerate(ids):
+            cat = owned.get(cid)
+            if cat and cat.sort_order != position:
+                cat.sort_order = position
+                cat.save(update_fields=["sort_order", "updated_at"])
+        return Response({"reordered": len(owned)})
+
+    @action(detail=False, methods=["get"])
+    def deleted(self, request):
+        """Categorías soft-deleted del workspace (para restaurarlas)."""
+        qs = Category.all_objects.filter(
+            workspace=request.workspace, is_deleted=True
+        ).select_related("parent")
+        return Response(CategorySerializer(qs, many=True, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        cat = Category.all_objects.filter(
+            workspace=request.workspace, id=pk, is_deleted=True
+        ).first()
+        if cat is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        cat.is_deleted = False
+        cat.save(update_fields=["is_deleted", "updated_at"])
+        return Response(CategorySerializer(cat, context=self.get_serializer_context()).data)
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +193,16 @@ class TransactionSerializer(serializers.ModelSerializer):
                     {"to_wallet": "La cartera destino debe ser distinta de la origen."}
                 )
             self._check_wallet(to_wallet, workspace, user, "to_wallet")
-            attrs["category"] = None
             attrs["to_wallet"] = to_wallet
-            attrs["counts_toward_budget"] = False
+            # La categoría es opcional en transferencias (p. ej. mover a
+            # "Ahorro"). Si viene, se valida su workspace; su `type` no importa.
+            if category is not None:
+                if category.workspace_id != workspace.id:
+                    raise serializers.ValidationError(
+                        {"category": "La categoría es de otro workspace."}
+                    )
+            else:
+                attrs["counts_toward_budget"] = False
         else:
             if category is None:
                 raise serializers.ValidationError(

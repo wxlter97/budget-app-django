@@ -16,9 +16,22 @@ class Category(BaseModel):
     icon = models.CharField(max_length=50, blank=True)
     color = models.CharField(max_length=20, blank=True)
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
+    # Jerarquía de 2 niveles estilo Buddy: una categoría sin `parent` es un
+    # GRUPO (bucket de presupuesto, p. ej. "Vivienda"); con `parent` es una
+    # categoría asignable a transacciones. El `parent` debe ser siempre un
+    # grupo (nunca otra subcategoría) — lo valida el serializer.
     parent = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="subcategories"
     )
+    # Orden manual dentro del grupo (o entre grupos si es grupo).
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["sort_order", "name"]
+
+    @property
+    def is_group(self) -> bool:
+        return self.parent_id is None
 
     def __str__(self):
         return self.name
@@ -84,8 +97,12 @@ class Transaction(BaseModel):
 
     def save(self, *args, **kwargs):
         if self.type == self.TYPE_TRANSFER:
-            self.category = None
-            self.counts_toward_budget = False
+            # Una transferencia puede llevar categoría opcional (p. ej. mover
+            # dinero a "Ahorro"): si la tiene y `counts_toward_budget`, cuenta
+            # contra el presupuesto de esa categoría/grupo. Sin categoría no
+            # cuenta nunca.
+            if self.category_id is None:
+                self.counts_toward_budget = False
         elif self.category_id:
             # income / expense: el tipo lo manda la categoría (así, editar la
             # categoría de una transacción cambia su efecto sobre el saldo).
@@ -130,15 +147,47 @@ class CategoryProvision(BaseModel):
 
 
 class RecurringExpense(BaseModel):
+    FREQUENCY_WEEKLY = "weekly"
+    FREQUENCY_BIWEEKLY = "biweekly"
+    FREQUENCY_EVERY_3_WEEKS = "every_3_weeks"
+    FREQUENCY_EVERY_4_WEEKS = "every_4_weeks"
     FREQUENCY_MONTHLY = "monthly"
+    FREQUENCY_EVERY_2_MONTHS = "every_2_months"
+    FREQUENCY_EVERY_3_MONTHS = "every_3_months"
+    FREQUENCY_EVERY_4_MONTHS = "every_4_months"
+    FREQUENCY_EVERY_6_MONTHS = "every_6_months"
     FREQUENCY_YEARLY = "yearly"
-    FREQUENCY_CHOICES = [(FREQUENCY_MONTHLY, "Mensual"), (FREQUENCY_YEARLY, "Anual")]
+    FREQUENCY_CHOICES = [
+        (FREQUENCY_WEEKLY, "Cada semana"),
+        (FREQUENCY_BIWEEKLY, "Cada dos semanas"),
+        (FREQUENCY_EVERY_3_WEEKS, "Cada tres semanas"),
+        (FREQUENCY_EVERY_4_WEEKS, "Cada cuatro semanas"),
+        (FREQUENCY_MONTHLY, "Cada mes"),
+        (FREQUENCY_EVERY_2_MONTHS, "Cada dos meses"),
+        (FREQUENCY_EVERY_3_MONTHS, "Cada tres meses"),
+        (FREQUENCY_EVERY_4_MONTHS, "Cada cuatro meses"),
+        (FREQUENCY_EVERY_6_MONTHS, "Cada seis meses"),
+        (FREQUENCY_YEARLY, "Cada año"),
+    ]
+    # (frecuencia -> kwargs para dateutil.relativedelta)
+    FREQUENCY_DELTAS = {
+        FREQUENCY_WEEKLY: {"weeks": 1},
+        FREQUENCY_BIWEEKLY: {"weeks": 2},
+        FREQUENCY_EVERY_3_WEEKS: {"weeks": 3},
+        FREQUENCY_EVERY_4_WEEKS: {"weeks": 4},
+        FREQUENCY_MONTHLY: {"months": 1},
+        FREQUENCY_EVERY_2_MONTHS: {"months": 2},
+        FREQUENCY_EVERY_3_MONTHS: {"months": 3},
+        FREQUENCY_EVERY_4_MONTHS: {"months": 4},
+        FREQUENCY_EVERY_6_MONTHS: {"months": 6},
+        FREQUENCY_YEARLY: {"years": 1},
+    }
 
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="recurring_expenses")
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="recurring_expenses")
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="recurring_expenses")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
-    frequency = models.CharField(max_length=10, choices=FREQUENCY_CHOICES, default=FREQUENCY_MONTHLY)
+    frequency = models.CharField(max_length=16, choices=FREQUENCY_CHOICES, default=FREQUENCY_MONTHLY)
     next_due_date = models.DateField()
     is_active = models.BooleanField(default=True)
 
