@@ -16,6 +16,9 @@ class WalletSerializer(serializers.ModelSerializer):
         max_digits=16, decimal_places=2, read_only=True
     )
     progress_pct = serializers.FloatField(read_only=True, allow_null=True)
+    available_credit = serializers.DecimalField(
+        max_digits=16, decimal_places=2, read_only=True, allow_null=True
+    )
 
     class Meta:
         model = Wallet
@@ -32,6 +35,7 @@ class WalletSerializer(serializers.ModelSerializer):
             "aggregated_balance",
             "counts_toward_net_worth",
             "credit_limit",
+            "available_credit",
             "goal_amount",
             "goal_date",
             "monthly_contribution",

@@ -169,5 +169,13 @@ class Wallet(BaseModel):
             return None
         return float(self.current_balance) / float(self.goal_amount)
 
+    @property
+    def available_credit(self):
+        """Crédito disponible de una tarjeta: límite + saldo (el saldo es
+        negativo cuando debes). ``None`` si no es tarjeta o no tiene límite."""
+        if self.kind != self.KIND_CREDIT or self.credit_limit is None:
+            return None
+        return self.credit_limit + self.current_balance
+
     def __str__(self):
         return f"{self.name} ({self.workspace})"

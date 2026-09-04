@@ -66,12 +66,60 @@ def generate_recurring_transactions(as_of=None):
     return created
 
 
+def _installment_txn_kwargs(purchase, n, date, *, user=None):
+    """Campos de la Transaction para la cuota ``n`` de ``purchase``.
+
+    Tarjeta de crédito (`payment_wallet`): la cuota es una TRANSFERENCIA de la
+    cartera de pago hacia la tarjeta. Resto: un GASTO contra `wallet`.
+    """
+    desc = f"{purchase.description} (cuota {n}/{purchase.installments_total})"
+    if purchase.payment_wallet_id:
+        return dict(
+            type=Transaction.TYPE_TRANSFER,
+            wallet=purchase.payment_wallet,
+            to_wallet=purchase.wallet,
+            category=None,
+            amount=purchase.installment_amount,
+            description=desc,
+            date=date,
+            source=Transaction.SOURCE_INSTALLMENT,
+            created_by=user,
+        )
+    return dict(
+        wallet=purchase.wallet,
+        category=purchase.category,
+        amount=purchase.installment_amount,
+        description=desc,
+        date=date,
+        source=Transaction.SOURCE_INSTALLMENT,
+        created_by=user,
+    )
+
+
+def post_initial_installment_charge(purchase, *, user=None):
+    """Solo compras con tarjeta: registra el cargo del total contra la tarjeta
+    el día de la compra (ya debes todo y baja tu crédito disponible)."""
+    if not purchase.payment_wallet_id:
+        return None
+    return Transaction.objects.create(
+        wallet=purchase.wallet,
+        category=purchase.category,
+        amount=purchase.total_amount,
+        description=f"{purchase.description} (compra a {purchase.installments_total} cuotas)",
+        date=purchase.start_date,
+        source=Transaction.SOURCE_INSTALLMENT,
+        created_by=user,
+    )
+
+
 def post_due_installments(as_of=None):
     """Registra las cuotas vencidas de cada compra a plazo no terminada."""
     as_of = as_of or timezone.localdate()
     created = []
 
-    for purchase in InstallmentPurchase.objects.select_related("category", "wallet"):
+    for purchase in InstallmentPurchase.objects.select_related(
+        "category", "wallet", "payment_wallet"
+    ):
         if purchase.installments_paid >= purchase.installments_total:
             continue
 
@@ -88,12 +136,7 @@ def post_due_installments(as_of=None):
             with db_transaction.atomic():
                 created.append(
                     Transaction.objects.create(
-                        wallet=purchase.wallet,
-                        category=purchase.category,
-                        amount=purchase.installment_amount,
-                        description=f"{purchase.description} (cuota {n}/{purchase.installments_total})",
-                        date=due_date,
-                        source=Transaction.SOURCE_INSTALLMENT,
+                        **_installment_txn_kwargs(purchase, n, due_date)
                     )
                 )
                 purchase.installments_paid = n
@@ -113,13 +156,7 @@ def post_next_installment(purchase, *, user=None, on_date=None):
     date = on_date or purchase.start_date + relativedelta(months=n - 1)
     with db_transaction.atomic():
         txn = Transaction.objects.create(
-            wallet=purchase.wallet,
-            category=purchase.category,
-            amount=purchase.installment_amount,
-            description=f"{purchase.description} (cuota {n}/{purchase.installments_total})",
-            date=date,
-            source=Transaction.SOURCE_INSTALLMENT,
-            created_by=user,
+            **_installment_txn_kwargs(purchase, n, date, user=user)
         )
         purchase.installments_paid = n
         purchase.save(update_fields=["installments_paid", "updated_at"])

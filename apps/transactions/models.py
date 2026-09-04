@@ -196,9 +196,28 @@ class RecurringExpense(BaseModel):
 
 
 class InstallmentPurchase(BaseModel):
-    """Compra a plazo: genera una Transaction por cuota mensual."""
+    """Compra a plazo: genera una Transaction por cuota mensual.
+
+    Dos modelos según `payment_wallet`:
+
+    - **Sin `payment_wallet`** (plan de tienda / débito): no se registra nada al
+      crear; cada cuota es un GASTO de `installment_amount` contra `wallet`.
+    - **Con `payment_wallet`** (tarjeta de crédito): al crear se carga el
+      `total_amount` completo como gasto contra `wallet` (la tarjeta) — ya debes
+      todo y baja tu disponible; cada cuota es una TRANSFERENCIA de
+      `installment_amount` desde `payment_wallet` hacia `wallet`.
+    """
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="installment_purchases")
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="installment_purchases")
+    # Tarjeta de crédito: cartera desde la que se pagan las cuotas. Si se define,
+    # el total se carga a `wallet` al crear y cada cuota es una transferencia.
+    payment_wallet = models.ForeignKey(
+        Wallet,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="installment_payments",
+    )
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="installment_purchases")
     description = models.CharField(max_length=255)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2)
@@ -206,6 +225,10 @@ class InstallmentPurchase(BaseModel):
     installments_total = models.PositiveSmallIntegerField()
     installments_paid = models.PositiveSmallIntegerField(default=0)
     start_date = models.DateField()
+
+    @property
+    def is_credit_card(self) -> bool:
+        return self.payment_wallet_id is not None
 
     @property
     def is_completed(self):
