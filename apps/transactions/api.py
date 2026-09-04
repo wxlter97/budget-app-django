@@ -1,4 +1,5 @@
 from django.db.models import Q
+from django.utils import timezone
 from django_filters import rest_framework as filters
 from rest_framework import serializers
 from rest_framework.decorators import action
@@ -363,7 +364,12 @@ class InstallmentPurchaseViewSet(WorkspaceScopedViewSet):
         from .services import post_next_installment
 
         purchase = self.get_object()
-        txn = post_next_installment(purchase, user=request.user)
+        # El pago manual se registra con fecha de hoy (cuándo lo pagaste de
+        # verdad), no con la fecha teórica del calendario de cuotas — eso lo
+        # usa el job automático `post_due_installments`.
+        txn = post_next_installment(
+            purchase, user=request.user, on_date=timezone.localdate()
+        )
         if txn is None:
             return Response(
                 {"detail": "La compra ya está completa."}, status=400

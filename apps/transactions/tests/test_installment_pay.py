@@ -44,6 +44,8 @@ class InstallmentPayTests(APITestCase):
         self.assertEqual(txn.amount, Decimal("100.00"))
         self.assertEqual(txn.source, Transaction.SOURCE_INSTALLMENT)
         self.assertIn("cuota 1/12", txn.description)
+        # El pago manual se fecha hoy, no en la fecha teórica del calendario.
+        self.assertEqual(txn.date, dt.date.today())
 
     def test_pay_when_complete_is_400(self):
         self.purchase.installments_paid = 12
