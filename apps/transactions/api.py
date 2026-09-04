@@ -234,6 +234,15 @@ class TransactionFilter(filters.FilterSet):
 
     date_after = filters.DateFilter(field_name="date", lookup_expr="gte")
     date_before = filters.DateFilter(field_name="date", lookup_expr="lte")
+    search = filters.CharFilter(method="filter_search")
+
+    def filter_search(self, queryset, name, value):
+        """Coincidencia parcial sobre descripción, categoría o cartera."""
+        return queryset.filter(
+            Q(description__icontains=value)
+            | Q(category__name__icontains=value)
+            | Q(wallet__name__icontains=value)
+        )
 
     class Meta:
         model = Transaction
