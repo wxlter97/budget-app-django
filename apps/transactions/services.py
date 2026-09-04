@@ -25,9 +25,10 @@ def visible_transactions(workspace, user):
 
 
 def _advance(date, frequency):
-    if frequency == RecurringExpense.FREQUENCY_YEARLY:
-        return date + relativedelta(years=1)
-    return date + relativedelta(months=1)
+    delta = RecurringExpense.FREQUENCY_DELTAS.get(
+        frequency, RecurringExpense.FREQUENCY_DELTAS[RecurringExpense.FREQUENCY_MONTHLY]
+    )
+    return date + relativedelta(**delta)
 
 
 def generate_recurring_transactions(as_of=None):

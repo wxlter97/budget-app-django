@@ -75,11 +75,33 @@ class BudgetTotalsSerializer(serializers.Serializer):
     remaining = _Money()
 
 
+class BudgetGroupSerializer(serializers.Serializer):
+    group = serializers.UUIDField(allow_null=True)
+    group_name = serializers.CharField()
+    budgeted = _Money()
+    spent = _Money()
+    remaining = _Money()
+    rows = BudgetRowSerializer(many=True)
+
+
 class BudgetReportSerializer(serializers.Serializer):
     year = serializers.IntegerField()
     month = serializers.IntegerField()
     rows = BudgetRowSerializer(many=True)
+    groups = BudgetGroupSerializer(many=True)
     totals = BudgetTotalsSerializer()
+
+
+class ScheduledItemSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    kind = serializers.ChoiceField(choices=["recurring", "installment"])
+    source_id = serializers.UUIDField()
+    description = serializers.CharField()
+    amount = _Money()
+    category = serializers.UUIDField(allow_null=True)
+    category_name = serializers.CharField(allow_null=True)
+    wallet = serializers.UUIDField()
+    wallet_name = serializers.CharField()
 
 
 class CashflowPointSerializer(serializers.Serializer):
@@ -164,3 +186,35 @@ class DashboardSummaryView(_BaseReportView):
     def get(self, request):
         data = services.dashboard_summary(request.workspace, request.user)
         return Response(DashboardSummarySerializer(data).data)
+
+
+class ScheduledView(_BaseReportView):
+    """Transacciones programadas (recurrentes + cuotas) próximas, sin crearlas.
+
+    `?until=YYYY-MM-DD` (default: fin del mes actual), `?since=YYYY-MM-DD`
+    (default: hoy).
+    """
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("until", str, description="Fecha límite (default: fin de mes)"),
+            OpenApiParameter("since", str, description="Desde (default: hoy)"),
+        ],
+        responses=ScheduledItemSerializer(many=True),
+    )
+    def get(self, request):
+        from datetime import date
+
+        def _parse(name):
+            raw = request.query_params.get(name)
+            if not raw:
+                return None
+            try:
+                return date.fromisoformat(raw)
+            except ValueError:
+                raise ValidationError({name: "Fecha ISO inválida (YYYY-MM-DD)."})
+
+        data = services.upcoming_scheduled(
+            request.workspace, request.user, until=_parse("until"), since=_parse("since")
+        )
+        return Response(ScheduledItemSerializer(data, many=True).data)
