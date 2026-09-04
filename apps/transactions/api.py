@@ -356,3 +356,17 @@ class InstallmentPurchaseViewSet(WorkspaceScopedViewSet):
     queryset = InstallmentPurchase.objects.select_related(
         "workspace", "category", "wallet"
     ).all()
+
+    @action(detail=True, methods=["post"])
+    def pay(self, request, pk=None):
+        """Registra la siguiente cuota: crea la transacción y avanza el contador."""
+        from .services import post_next_installment
+
+        purchase = self.get_object()
+        txn = post_next_installment(purchase, user=request.user)
+        if txn is None:
+            return Response(
+                {"detail": "La compra ya está completa."}, status=400
+            )
+        purchase.refresh_from_db()
+        return Response(self.get_serializer(purchase).data)
