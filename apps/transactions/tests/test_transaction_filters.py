@@ -44,6 +44,8 @@ class TransactionFilterTests(APITestCase):
             wallet=cls.acc, category=cls.food, amount=10, date=dt.date(2026, 7, 20)
         )
         cls.aug_food = txn(cls.food, 5, 20)
+        cls.aug_food.description = "Almuerzo en la oficina"
+        cls.aug_food.save(update_fields=["description"])
         cls.aug_salary = txn(cls.salary, 1, 1000, source=Transaction.SOURCE_EMAIL_IMPORT)
         cls.sep = Transaction.objects.create(
             wallet=cls.acc, category=cls.food, amount=30, date=dt.date(2026, 9, 2)
@@ -75,3 +77,14 @@ class TransactionFilterTests(APITestCase):
 
     def test_no_filter_returns_all_visible(self):
         self.assertEqual(len(self._list()), 4)
+
+    def test_search_matches_description(self):
+        ids = self._list(search="almuerzo")
+        self.assertEqual(ids, {str(self.aug_food.id)})
+
+    def test_search_matches_category_name(self):
+        ids = self._list(search="sueldo")
+        self.assertEqual(ids, {str(self.aug_salary.id)})
+
+    def test_search_no_match_returns_empty(self):
+        self.assertEqual(self._list(search="inexistente"), set())
