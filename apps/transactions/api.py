@@ -305,6 +305,7 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
 class CategoryBudgetViewSet(WorkspaceScopedViewSet):
     serializer_class = CategoryBudgetSerializer
     queryset = CategoryBudget.objects.select_related("workspace", "category").all()
+    filterset_fields = {"month": ["exact"], "year": ["exact"], "category": ["exact"]}
 
 
 # ---------------------------------------------------------------------------
