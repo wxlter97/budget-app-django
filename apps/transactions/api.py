@@ -305,6 +305,7 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
 class CategoryBudgetViewSet(WorkspaceScopedViewSet):
     serializer_class = CategoryBudgetSerializer
     queryset = CategoryBudget.objects.select_related("workspace", "category").all()
+    filterset_fields = {"month": ["exact"], "year": ["exact"], "category": ["exact"]}
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +334,9 @@ class RecurringExpenseViewSet(WorkspaceScopedViewSet):
 # InstallmentPurchase
 # ---------------------------------------------------------------------------
 class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.ModelSerializer):
-    workspace_child_fields = ("category", "wallet")
+    workspace_child_fields = ("category", "wallet", "payment_wallet")
     is_completed = serializers.BooleanField(read_only=True)
+    is_credit_card = serializers.BooleanField(read_only=True)
     remaining_amount = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True
     )
@@ -342,20 +344,49 @@ class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.
     class Meta:
         model = InstallmentPurchase
         fields = (
-            "id", "wallet", "category", "description", "total_amount",
-            "installment_amount", "installments_total", "installments_paid",
-            "start_date", "is_completed", "remaining_amount",
-            "created_at", "updated_at",
+            "id", "wallet", "payment_wallet", "category", "description",
+            "total_amount", "installment_amount", "installments_total",
+            "installments_paid", "start_date", "is_completed", "is_credit_card",
+            "remaining_amount", "created_at", "updated_at",
         )
         read_only_fields = (
-            "id", "is_completed", "remaining_amount", "created_at", "updated_at",
+            "id", "is_completed", "is_credit_card", "remaining_amount",
+            "created_at", "updated_at",
         )
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        payment_wallet = attrs.get("payment_wallet") or getattr(
+            self.instance, "payment_wallet", None
+        )
+        wallet = attrs.get("wallet") or getattr(self.instance, "wallet", None)
+        if payment_wallet is not None:
+            if wallet is not None and payment_wallet.id == wallet.id:
+                raise serializers.ValidationError(
+                    {"payment_wallet": "Debe ser distinta de la tarjeta."}
+                )
+            # Compra con tarjeta: el contador arranca en 0 (el total se carga al
+            # crear; las cuotas ya pagadas se registran pulsando "pagar").
+            if self.instance is None:
+                attrs["installments_paid"] = 0
+        return attrs
+
+    def create(self, validated_data):
+        purchase = super().create(validated_data)
+        if purchase.payment_wallet_id:
+            from .services import post_initial_installment_charge
+
+            request = self.context.get("request")
+            post_initial_installment_charge(
+                purchase, user=getattr(request, "user", None)
+            )
+        return purchase
 
 
 class InstallmentPurchaseViewSet(WorkspaceScopedViewSet):
     serializer_class = InstallmentPurchaseSerializer
     queryset = InstallmentPurchase.objects.select_related(
-        "workspace", "category", "wallet"
+        "workspace", "category", "wallet", "payment_wallet"
     ).all()
 
     @action(detail=True, methods=["post"])
