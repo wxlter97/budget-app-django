@@ -205,3 +205,45 @@ Para que corra solo cada día: **Cloud Scheduler → Cloud Run Job** (3 jobs gra
 | Frontend | push a `main` (Opción A) o `npm run deploy:web` (Opción B) |
 | Env var backend | `gcloud run services update budget-api --region us-east1 --update-env-vars "K=V"` |
 | Ver logs del arranque | `gcloud run services logs read budget-api --region us-east1 --limit 50` |
+
+---
+
+## 9. Deploy automático al hacer merge a `main`
+
+### Backend — GitHub Actions + Workload Identity Federation
+
+`.github/workflows/deploy.yml` corre `gcloud run deploy --source .` en cada push a
+`main`. No usa claves de service account: autentica por OIDC.
+
+**Setup (una vez):**
+
+```bash
+cd budget
+bash scripts/setup-gh-deploy.sh
+```
+
+Imprime `WIF_PROVIDER` y `DEPLOY_SA`. Guardalos en GitHub:
+**repo → Settings → Secrets and variables → Actions → pestaña _Variables_** →
+`New repository variable` para cada uno.
+
+Después, cada merge a `main` dispara el workflow *Deploy* (pestaña Actions).
+Hace build, deploy, corre migraciones al arrancar (`entrypoint.sh`) y un
+smoke test de `/healthz/`. Para lanzarlo a mano: Actions → Deploy → *Run workflow*.
+
+> El workflow **no** pasa `--set-env-vars` ni `--set-secrets`: `gcloud run deploy`
+> conserva la config existente (incluido `CORS_ALLOWED_ORIGINS`). Para *cambiar*
+> una env var seguí usando `deploy-cloudrun.sh` o `gcloud run services update`.
+
+### Frontend — Vercel (integración de Git)
+
+Si el proyecto de Vercel está **conectado al repo** `wxlter97/moneyapp`
+(Vercel → Project → Settings → Git), cada push a `main` ya redeploya a producción
+y cada PR genera un *preview* — no hay que hacer nada.
+
+Comprobalo en el dashboard de Vercel. Si no está conectado:
+Vercel → *Add New… → Project* → importá el repo → en *Environment Variables*
+poné `EXPO_PUBLIC_API_URL = https://budget-api-dssz7o3ila-ue.a.run.app/api/v1`
+→ Deploy. `vercel.json` ya trae build command y output dir.
+
+El repo web también tiene `.github/workflows/ci.yml` (typecheck + tests + build)
+que corre en cada PR y push a `main`.

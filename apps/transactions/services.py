@@ -100,3 +100,27 @@ def post_due_installments(as_of=None):
                 purchase.save(update_fields=["installments_paid", "updated_at"])
 
     return created
+
+
+def post_next_installment(purchase, *, user=None, on_date=None):
+    """Registra UNA cuota de `purchase`: crea la Transaction y avanza el contador.
+
+    Devuelve la Transaction creada, o None si la compra ya está completa.
+    """
+    if purchase.installments_paid >= purchase.installments_total:
+        return None
+    n = purchase.installments_paid + 1
+    date = on_date or purchase.start_date + relativedelta(months=n - 1)
+    with db_transaction.atomic():
+        txn = Transaction.objects.create(
+            wallet=purchase.wallet,
+            category=purchase.category,
+            amount=purchase.installment_amount,
+            description=f"{purchase.description} (cuota {n}/{purchase.installments_total})",
+            date=date,
+            source=Transaction.SOURCE_INSTALLMENT,
+            created_by=user,
+        )
+        purchase.installments_paid = n
+        purchase.save(update_fields=["installments_paid", "updated_at"])
+    return txn

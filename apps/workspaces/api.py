@@ -97,15 +97,90 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
     def rotate_inbound_token(self, request, pk=None):
         """Genera un token de importación nuevo (invalida la dirección anterior). Solo owner."""
         workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+        workspace.rotate_inbound_token()
+        return Response(self.get_serializer(workspace).data)
+
+    @action(detail=True, methods=["post"])
+    def reset(self, request, pk=None):
+        """Borra los datos del workspace. Solo owner. Irreversible.
+
+        Body: ``{"scope": "movimientos" | "todo", "confirm": true}``.
+        - ``movimientos`` (default): borra transacciones, recurrentes, cuotas,
+          presupuestos y snapshots; deja carteras y categorías, y resetea el
+          saldo de cada cartera a su ``opening_balance``.
+        - ``todo``: además borra carteras y categorías.
+        """
+        from django.db import transaction as db_transaction
+
+        from apps.accounts.models import Wallet
+        from apps.accounts.services import recompute_wallet_balance
+        from apps.reports.models import MonthlySnapshot
+        from apps.transactions.models import (
+            Category,
+            CategoryBudget,
+            InstallmentPurchase,
+            RecurringExpense,
+            Transaction,
+        )
+
+        workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+
+        scope = request.data.get("scope", "movimientos")
+        if scope not in ("movimientos", "todo"):
+            raise serializers.ValidationError({"scope": "Debe ser 'movimientos' o 'todo'."})
+        if request.data.get("confirm") is not True:
+            raise serializers.ValidationError(
+                {"confirm": "Enviá confirm=true para ejecutar el reinicio."}
+            )
+
+        deleted = {}
+        with db_transaction.atomic():
+            deleted["transactions"] = Transaction.all_objects.filter(
+                wallet__workspace=workspace
+            ).delete()[0]
+            deleted["recurring_expenses"] = RecurringExpense.all_objects.filter(
+                workspace=workspace
+            ).delete()[0]
+            deleted["installment_purchases"] = InstallmentPurchase.all_objects.filter(
+                workspace=workspace
+            ).delete()[0]
+            deleted["category_budgets"] = CategoryBudget.all_objects.filter(
+                workspace=workspace
+            ).delete()[0]
+            deleted["monthly_snapshots"] = MonthlySnapshot.all_objects.filter(
+                workspace=workspace
+            ).delete()[0]
+
+            if scope == "todo":
+                # Carteras: hijas antes que padres (parent es on_delete=PROTECT).
+                wallets = Wallet.all_objects.filter(workspace=workspace)
+                while wallets.exists():
+                    leaves = wallets.filter(children__isnull=True)
+                    if not leaves.exists():
+                        leaves = wallets  # por si hay ciclos raros
+                    deleted["wallets"] = deleted.get("wallets", 0) + leaves.delete()[0]
+                cats = Category.all_objects.filter(workspace=workspace)
+                while cats.exists():
+                    leaves = cats.filter(subcategories__isnull=True)
+                    if not leaves.exists():
+                        leaves = cats
+                    deleted["categories"] = deleted.get("categories", 0) + leaves.delete()[0]
+            else:
+                for wallet in Wallet.objects.filter(workspace=workspace):
+                    recompute_wallet_balance(wallet)
+
+        return Response({"scope": scope, "deleted": deleted})
+
+    def _require_owner(self, workspace, user):
         membership = next(
             (m for m in workspace.memberships.all()
-             if m.user_id == request.user.id and not m.is_deleted),
+             if m.user_id == user.id and not m.is_deleted),
             None,
         )
         if membership is None or membership.role != Membership.ROLE_OWNER:
-            raise PermissionDenied("Solo el owner puede rotar el token.")
-        workspace.rotate_inbound_token()
-        return Response(self.get_serializer(workspace).data)
+            raise PermissionDenied("Solo el owner puede hacer esto.")
 
 
 # ---------------------------------------------------------------------------
