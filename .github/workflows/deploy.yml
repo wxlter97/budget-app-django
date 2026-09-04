@@ -1,0 +1,54 @@
+name: Deploy
+
+# Redeploy del backend a Cloud Run en cada push a main (después del merge de un PR).
+# Requiere haber corrido una vez `bash scripts/setup-gh-deploy.sh` y guardado
+# las variables WIF_PROVIDER y DEPLOY_SA en el repo (Settings → Actions → Variables).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # `--source .` reconstruye la imagen vía Cloud Build. No se pasan env vars
+      # ni secrets: `gcloud run deploy` conserva los que ya tiene el servicio
+      # (incluido CORS_ALLOWED_ORIGINS). Las migraciones corren al arrancar el
+      # contenedor (entrypoint.sh, RUN_MIGRATIONS=1).
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy budget-api \
+            --project budget-wxlter \
+            --region us-east1 \
+            --source . \
+            --quiet
+
+      - name: Smoke test
+        run: |
+          URL=$(gcloud run services describe budget-api --project budget-wxlter --region us-east1 --format='value(status.url)')
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz/") || true
+            [ "$code" = "200" ] && { echo "healthz OK"; exit 0; }
+            echo "intento $i: $code"; sleep 6
+          done
+          echo "healthz no respondió 200"; exit 1
