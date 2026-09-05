@@ -5,8 +5,12 @@ reemplazar nada) y por `import_backup` (borra y enseguida repuebla desde un
 respaldo) -- así ambos caminos quedan consistentes con un solo lugar que sabe
 el orden correcto de borrado.
 """
+from django.conf import settings
+from django.core.mail import send_mail
 from django.db import transaction as db_transaction
 from django.utils import timezone
+
+from .models import Invitation
 
 BACKUP_FORMAT = "budget-app-backup"
 BACKUP_VERSION = 1
@@ -14,6 +18,41 @@ BACKUP_VERSION = 1
 
 class BackupError(Exception):
     """Respaldo con formato inválido o incompleto -- se traduce a 400."""
+
+
+def get_or_create_invitation(workspace, email, role, invited_by):
+    """Invitación pendiente para ``email`` en ``workspace``: reutiliza la
+    existente (reinvitar = reenviar el mismo enlace) o crea una nueva."""
+    invitation = Invitation.objects.filter(
+        workspace=workspace, email__iexact=email, status=Invitation.STATUS_PENDING
+    ).first()
+    if invitation is not None:
+        return invitation
+    return Invitation.objects.create(
+        workspace=workspace, email=email, role=role, invited_by=invited_by
+    )
+
+
+def send_invitation_email(invitation):
+    """Correo de invitación vía el `EMAIL_BACKEND` configurado (Mailgun por
+    SMTP en producción; consola en dev sin credenciales)."""
+    link = f"{settings.INVITE_ACCEPT_URL_BASE}/{invitation.token}"
+    if invitation.invited_by:
+        invited_by_name = invitation.invited_by.get_full_name() or invitation.invited_by.username
+    else:
+        invited_by_name = "Alguien"
+    send_mail(
+        subject=f'Te invitaron a "{invitation.workspace.name}" en Budget',
+        message=(
+            f"{invited_by_name} te invitó a compartir el presupuesto "
+            f'"{invitation.workspace.name}" en Budget.\n\n'
+            f"Abrí este enlace desde tu celular para unirte:\n{link}\n\n"
+            f"Si todavía no tenés cuenta, registrate primero con este mismo "
+            f"correo ({invitation.email}) y después volvé a abrir el enlace."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[invitation.email],
+    )
 
 
 def wipe_workspace_data(workspace, scope="movimientos"):

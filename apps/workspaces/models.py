@@ -66,6 +66,55 @@ class Membership(BaseModel):
         return f"{self.user} in {self.workspace} ({self.role})"
 
 
+def generate_invite_token():
+    return secrets.token_urlsafe(24)
+
+
+class Invitation(BaseModel):
+    """
+    Invitación a un workspace por correo, para alguien que TODAVÍA NO tiene
+    cuenta (si ya la tiene, `MembershipViewSet.create` lo agrega directo sin
+    pasar por acá). Se manda un correo con un enlace que trae `token`; al
+    abrirlo -- ya logueado con una cuenta de ese mismo correo, registrándose
+    si hacía falta -- se acepta con `accept` y recién ahí se crea la
+    Membership.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_DECLINED = "declined"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pendiente"),
+        (STATUS_ACCEPTED, "Aceptada"),
+        (STATUS_DECLINED, "Rechazada"),
+    ]
+
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="invitations")
+    email = models.EmailField()
+    role = models.CharField(max_length=10, choices=Membership.ROLE_CHOICES, default=Membership.ROLE_MEMBER)
+    token = models.CharField(max_length=64, unique=True, default=generate_invite_token, editable=False)
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            # No dos invitaciones pendientes al mismo correo en el mismo
+            # workspace -- reinvitar reutiliza la existente (ver services).
+            models.UniqueConstraint(
+                fields=["workspace", "email"],
+                condition=models.Q(status="pending", is_deleted=False),
+                name="one_pending_invitation_per_email_per_workspace",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.email} -> {self.workspace} ({self.status})"
+
+
 class ExchangeRate(BaseModel):
     """
     Tasa manual (sin API externa, fuera de alcance): ``1 <currency> =

@@ -105,6 +105,17 @@ def ingest_inbound_email(*, to, sender, subject="", text="", workspace=None):
         wallet = Wallet.objects.filter(
             workspace=workspace, card_last4=parsed.card_last4
         ).first()
+    if wallet is None:
+        # Fallback por banco: si el correo no trae los últimos 4 dígitos (o
+        # no matchean ninguna cartera) y el workspace tiene EXACTAMENTE una
+        # cartera activa marcada con este banco, asumimos que es esa -- con
+        # dos o más queda ambiguo y se deja sin asignar (el usuario la elige
+        # a mano al confirmar).
+        candidates = list(
+            Wallet.objects.filter(workspace=workspace, bank_schema=schema, is_active=True)
+        )
+        if len(candidates) == 1:
+            wallet = candidates[0]
 
     return EmailImportLog.objects.create(
         status=EmailImportLog.STATUS_PENDING,

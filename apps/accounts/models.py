@@ -108,6 +108,17 @@ class Wallet(BaseModel):
         max_digits=5, decimal_places=2, null=True, blank=True
     )
     due_date = models.DateField(null=True, blank=True)
+    # Banco emisor (opcional). Referencia por string a `email_import` para no
+    # crear un import circular (esa app ya importa `Wallet`). Sirve para
+    # auto-detectar a qué cartera aplica un correo bancario entrante cuando
+    # el `card_last4` no alcanza (p. ej. el banco no lo incluye en el correo).
+    bank_schema = models.ForeignKey(
+        "email_import.BankEmailSchema",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="wallets",
+    )
     counterparty = models.CharField(
         max_length=100, blank=True, help_text="Persona/entidad de la deuda"
     )

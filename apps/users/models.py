@@ -13,6 +13,9 @@ class User(AbstractUser):
     """
 
     email = models.EmailField("correo electrónico", unique=True)
+    # La llena "Continuar con Google" con el `picture` del token; vacía para
+    # cuentas creadas con usuario/contraseña que nunca hicieron login social.
+    profile_photo_url = models.URLField("foto de perfil", blank=True, default="")
 
     def __str__(self):
         return self.get_username()

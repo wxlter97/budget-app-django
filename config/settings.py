@@ -237,7 +237,7 @@ SIMPLE_JWT = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "budget API",
     "DESCRIPTION": "API REST de presupuesto personal/compartido (iOS + web).",
-    "VERSION": "1.3.0",
+    "VERSION": "1.4.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SWAGGER_UI_DIST": "SIDECAR",
@@ -326,6 +326,39 @@ if not DEBUG:
     CSRF_TRUSTED_ORIGINS = env.list("DJANGO_CSRF_TRUSTED_ORIGINS", default=[])
 
 DEFAULT_FROM_EMAIL = env("DJANGO_DEFAULT_FROM_EMAIL", default="no-reply@budget.local")
+
+# ---------------------------------------------------------------------------
+# Correo saliente (invitaciones de workspace) vía Mailgun (relay SMTP).
+# Sin credenciales configuradas: en DEBUG cae a la consola (no falla); en
+# producción usa el backend SMTP real -- si faltan credenciales ahí, el envío
+# falla ruidosamente en vez de fingir que mandó el correo.
+# ---------------------------------------------------------------------------
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND",
+    default=(
+        "django.core.mail.backends.console.EmailBackend"
+        if DEBUG
+        else "django.core.mail.backends.smtp.EmailBackend"
+    ),
+)
+EMAIL_HOST = env("EMAIL_HOST", default="smtp.mailgun.org")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+
+# Base del enlace que lleva la invitación (se le concatena "/<token>"). Un
+# deep link de la app; el fallback es el esquema propio para que abra
+# directo en el celular en vez de un sitio web que no existe.
+INVITE_ACCEPT_URL_BASE = env("INVITE_ACCEPT_URL_BASE", default="budget://invite")
+
+# ---------------------------------------------------------------------------
+# "Continuar con Google": client ID(s) OAuth contra los que se valida el
+# id_token (uno por plataforma -- iOS, Android, web -- todos apuntan a la
+# misma cuenta de Google Cloud). Vacío = se acepta cualquier audiencia (solo
+# para desarrollo local sin credenciales reales todavía).
+# ---------------------------------------------------------------------------
+GOOGLE_CLIENT_IDS = [c for c in env.list("GOOGLE_CLIENT_IDS", default=[]) if c]
 
 # ---------------------------------------------------------------------------
 # Importación por correo bancario (webhook de correo entrante)

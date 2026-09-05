@@ -38,6 +38,7 @@ class WalletSerializer(serializers.ModelSerializer):
     available_credit = serializers.DecimalField(
         max_digits=16, decimal_places=2, read_only=True, allow_null=True
     )
+    bank_name = serializers.CharField(source="bank_schema.bank_name", read_only=True, default=None)
 
     class Meta:
         model = Wallet
@@ -65,6 +66,8 @@ class WalletSerializer(serializers.ModelSerializer):
             "interest_rate",
             "due_date",
             "counterparty",
+            "bank_schema",
+            "bank_name",
             "visibility",
             "owner",
             "is_active",

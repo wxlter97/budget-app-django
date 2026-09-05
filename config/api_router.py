@@ -14,11 +14,17 @@ from apps.transactions.api import (
     TagViewSet,
     TransactionViewSet,
 )
-from apps.workspaces.api import ExchangeRateViewSet, MembershipViewSet, WorkspaceViewSet
+from apps.workspaces.api import (
+    ExchangeRateViewSet,
+    InvitationViewSet,
+    MembershipViewSet,
+    WorkspaceViewSet,
+)
 
 router = DefaultRouter()
 router.register("workspaces", WorkspaceViewSet, basename="workspace")
 router.register("memberships", MembershipViewSet, basename="membership")
+router.register("invitations", InvitationViewSet, basename="invitation")
 router.register("exchange-rates", ExchangeRateViewSet, basename="exchangerate")
 
 router.register("wallets", WalletViewSet, basename="wallet")
