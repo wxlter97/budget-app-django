@@ -44,8 +44,13 @@ class ReportEndpointTests(APITestCase):
         cls.salary = Category.objects.create(
             workspace=cls.ws_a, name="Sueldo", type=Category.TYPE_INCOME
         )
+        cls.food_group = Category.objects.create(
+            workspace=cls.ws_a, name="Comida (grupo)", type=Category.TYPE_EXPENSE
+        )
+        # Subcategoría, no el grupo: el presupuesto sólo se puede fijar ahí
+        # (ver `CategoryBudgetSerializer.validate_category`).
         cls.food = Category.objects.create(
-            workspace=cls.ws_a, name="Comida", type=Category.TYPE_EXPENSE
+            workspace=cls.ws_a, name="Comida", type=Category.TYPE_EXPENSE, parent=cls.food_group
         )
         cls.transport = Category.objects.create(
             workspace=cls.ws_a, name="Transporte", type=Category.TYPE_EXPENSE

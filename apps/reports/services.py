@@ -128,9 +128,21 @@ def budget_vs_actual(workspace, user, year, month):
     desde la moneda de cada transacción -- ver ``apps.workspaces.currency``.
     """
     rate_map = get_rate_map(workspace)
+    # Un grupo CON subcategorías no debería tener presupuesto propio aparte
+    # (ver `CategoryBudgetSerializer.validate_category`, que ya lo impide
+    # hacia adelante) -- este filtro sanea cualquier resto que haya quedado
+    # de antes de esa validación, que si no duplicaría el total del grupo
+    # con el de sus subcategorías. Un grupo SIN subcategorías sigue siendo
+    # presupuestable directamente (es su propia unidad).
+    groups_with_children = set(
+        Category.objects.filter(
+            workspace=workspace, parent__isnull=False, is_deleted=False
+        ).values_list("parent_id", flat=True)
+    )
     budgets = {
         b.category_id: b.amount
         for b in CategoryBudget.objects.filter(workspace=workspace, year=year, month=month)
+        if b.category_id not in groups_with_children
     }
     spent: dict = {}
     for row in (
