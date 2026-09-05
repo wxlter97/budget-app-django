@@ -279,6 +279,8 @@ class TransactionFilter(filters.FilterSet):
 
     date_after = filters.DateFilter(field_name="date", lookup_expr="gte")
     date_before = filters.DateFilter(field_name="date", lookup_expr="lte")
+    amount_min = filters.NumberFilter(field_name="amount", lookup_expr="gte")
+    amount_max = filters.NumberFilter(field_name="amount", lookup_expr="lte")
     search = filters.CharFilter(method="filter_search")
 
     def filter_search(self, queryset, name, value):

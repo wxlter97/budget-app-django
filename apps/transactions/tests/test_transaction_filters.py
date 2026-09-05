@@ -88,3 +88,27 @@ class TransactionFilterTests(APITestCase):
 
     def test_search_no_match_returns_empty(self):
         self.assertEqual(self._list(search="inexistente"), set())
+
+    def test_amount_min_filter(self):
+        ids = self._list(amount_min="20")
+        self.assertEqual(
+            ids, {str(self.aug_food.id), str(self.aug_salary.id), str(self.sep.id)}
+        )
+
+    def test_amount_max_filter(self):
+        ids = self._list(amount_max="10")
+        self.assertEqual(ids, {str(self.jul.id)})
+
+    def test_amount_range_combines_min_and_max(self):
+        ids = self._list(amount_min="15", amount_max="30")
+        self.assertEqual(ids, {str(self.aug_food.id), str(self.sep.id)})
+
+    def test_wallet_filter(self):
+        other_wallet = Wallet.objects.create(
+            workspace=self.ws, name="Otra", purpose=Wallet.PURPOSE_SPENDING
+        )
+        other = Transaction.objects.create(
+            wallet=other_wallet, category=self.food, amount=50, date=dt.date(2026, 9, 3)
+        )
+        ids = self._list(wallet=str(other_wallet.id))
+        self.assertEqual(ids, {str(other.id)})
