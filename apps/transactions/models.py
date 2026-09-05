@@ -271,3 +271,28 @@ class InstallmentPurchase(BaseModel):
 
     def __str__(self):
         return f"{self.description} ({self.installments_paid}/{self.installments_total})"
+
+
+class RecurringSuggestionDismissal(BaseModel):
+    """"No, gracias" a una sugerencia de "esto parece recurrente" (ver
+    ``services.detect_recurring_candidates``) -- para no repetírsela.
+
+    Se identifica por categoría + cartera + monto típico redondeado al
+    entero más cercano, no por transacción puntual: así un centavo de
+    diferencia de un mes a otro sigue reconociendo el mismo patrón.
+    """
+
+    workspace = models.ForeignKey(
+        Workspace, on_delete=models.CASCADE, related_name="recurring_dismissals"
+    )
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="+")
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="+")
+    approx_amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "category", "wallet", "approx_amount"],
+                name="unique_recurring_suggestion_dismissal",
+            )
+        ]

@@ -128,6 +128,26 @@ class DashboardSummarySerializer(serializers.Serializer):
     top_expense_categories = SpendRowSerializer(many=True)
 
 
+class TrendMonthSerializer(serializers.Serializer):
+    year = serializers.IntegerField()
+    month = serializers.IntegerField()
+
+
+class CategoryTrendSerializer(serializers.Serializer):
+    category = serializers.UUIDField()
+    category_name = serializers.CharField(allow_null=True)
+    # Un monto por mes, en el mismo orden que `months` de la respuesta.
+    amounts = serializers.ListField(child=_Money())
+    # Mes en curso vs. el anterior -- puede ser negativo (bajó).
+    change = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+    change_pct = serializers.FloatField(allow_null=True, read_only=True)
+
+
+class CategoryTrendsSerializer(serializers.Serializer):
+    months = TrendMonthSerializer(many=True)
+    categories = CategoryTrendSerializer(many=True)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints de agregación (solo lectura, workspace del header)
 # ---------------------------------------------------------------------------
@@ -180,6 +200,23 @@ class CashflowView(_BaseReportView):
         months = max(1, min(months, 24))
         data = services.monthly_cashflow(request.workspace, request.user, months=months)
         return Response(CashflowPointSerializer(data, many=True).data)
+
+
+class CategoryTrendsView(_BaseReportView):
+    """Gasto por categoría mes a mes + cuáles crecieron más. `?months=` (default 6, máx 24)."""
+
+    @extend_schema(
+        parameters=[OpenApiParameter("months", int, description="1-24 (default 6)")],
+        responses=CategoryTrendsSerializer,
+    )
+    def get(self, request):
+        try:
+            months = int(request.query_params.get("months", 6))
+        except (TypeError, ValueError):
+            raise ValidationError({"months": "Debe ser un entero."})
+        months = max(1, min(months, 24))
+        data = services.category_trends(request.workspace, request.user, months=months)
+        return Response(CategoryTrendsSerializer(data).data)
 
 
 class DashboardSummaryView(_BaseReportView):

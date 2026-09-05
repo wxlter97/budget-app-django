@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from apps.accounts.models import Wallet
 from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewSet
 
+from . import services
 from .models import (
     Category,
     CategoryBudget,
@@ -479,11 +480,51 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
         read_only_fields = ("id", "created_at", "updated_at")
 
 
+class RecurringSuggestionSerializer(serializers.Serializer):
+    type = serializers.ChoiceField(choices=Transaction.TYPE_CHOICES)
+    category = serializers.UUIDField()
+    category_name = serializers.CharField()
+    wallet = serializers.UUIDField()
+    wallet_name = serializers.CharField()
+    suggested_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    occurrences = serializers.IntegerField()
+    last_date = serializers.DateField()
+    suggested_next_due_date = serializers.DateField()
+
+
+class RecurringSuggestionDismissSerializer(serializers.Serializer):
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    wallet = serializers.PrimaryKeyRelatedField(queryset=Wallet.objects.all())
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
 class RecurringExpenseViewSet(WorkspaceScopedViewSet):
     serializer_class = RecurringExpenseSerializer
     queryset = RecurringExpense.objects.select_related(
         "workspace", "category", "wallet"
     ).all()
+
+    @action(detail=False, methods=["get"])
+    def suggestions(self, request):
+        """Candidatas a recurrente detectadas en el historial -- ver
+        `services.detect_recurring_candidates`. No crea nada: para eso,
+        `POST /recurring-expenses/` con estos mismos datos."""
+        data = services.detect_recurring_candidates(request.workspace, request.user)
+        return Response(RecurringSuggestionSerializer(data, many=True).data)
+
+    @action(detail=False, methods=["post"], url_path="dismiss-suggestion")
+    def dismiss_suggestion(self, request):
+        """"No, gracias" a una sugerencia -- no se le vuelve a mostrar."""
+        serializer = RecurringSuggestionDismissSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cat = serializer.validated_data["category"]
+        wallet = serializer.validated_data["wallet"]
+        if cat.workspace_id != request.workspace.id or wallet.workspace_id != request.workspace.id:
+            raise ValidationError("La categoría o la cartera son de otro workspace.")
+        services.dismiss_recurring_suggestion(
+            request.workspace, cat, wallet, serializer.validated_data["amount"]
+        )
+        return Response(status=204)
 
 
 # ---------------------------------------------------------------------------

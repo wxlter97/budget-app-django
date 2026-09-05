@@ -8,6 +8,7 @@ from .models import (
     CategoryProvision,
     InstallmentPurchase,
     RecurringExpense,
+    RecurringSuggestionDismissal,
     Transaction,
 )
 
@@ -51,6 +52,13 @@ class RecurringExpenseAdmin(BaseModelAdmin):
     search_fields = ("category__name", "workspace__name")
     raw_id_fields = ("workspace", "category", "wallet")
     date_hierarchy = "next_due_date"
+
+
+@admin.register(RecurringSuggestionDismissal)
+class RecurringSuggestionDismissalAdmin(BaseModelAdmin):
+    list_display = ("workspace", "category", "wallet", "approx_amount")
+    search_fields = ("category__name", "wallet__name", "workspace__name")
+    raw_id_fields = ("workspace", "category", "wallet")
 
 
 @admin.register(InstallmentPurchase)

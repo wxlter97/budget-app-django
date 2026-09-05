@@ -4,6 +4,8 @@ Las funciones son idempotentes respecto al estado que llevan los propios
 modelos (`RecurringExpense.next_due_date`, `InstallmentPurchase.installments_paid`):
 correrlas dos veces el mismo día no duplica nada.
 """
+from decimal import ROUND_HALF_UP, Decimal
+
 from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -161,3 +163,117 @@ def post_next_installment(purchase, *, user=None, on_date=None):
         purchase.installments_paid = n
         purchase.save(update_fields=["installments_paid", "updated_at"])
     return txn
+
+
+# ---------------------------------------------------------------------------
+# Detección de recurrentes ("esto se repite hace 3 meses, ¿lo marco como
+# recurrente?", Fase 2 del roadmap)
+# ---------------------------------------------------------------------------
+def _approx_amount(amount) -> Decimal:
+    """Redondea al entero más cercano -- para que una sugerencia descartada
+    siga reconociéndose aunque el monto varíe unos centavos de mes a mes."""
+    return Decimal(amount).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+def detect_recurring_candidates(workspace, user, months=4, min_occurrences=3):
+    """Transacciones que se repiten mes a mes en la misma categoría+cartera,
+    con un monto parecido, y que todavía no están marcadas como recurrentes.
+
+    Reglas, a propósito conservadoras para no inundar de falsos positivos una
+    categoría con mucho movimiento como "Comida":
+
+    - Como mucho UNA transacción por mes en esa categoría+cartera -- si hay
+      más de una en algún mes, no es "una suscripción", es gasto normal y se
+      descarta el grupo entero.
+    - Aparece en al menos ``min_occurrences`` de los últimos ``months`` meses.
+    - El monto no varía más de 15% (o $2, lo que sea mayor) entre la
+      ocurrencia más chica y la más grande.
+    - No hay ya un `RecurringExpense` activo para esa categoría+cartera.
+    - El usuario no la descartó antes (`RecurringSuggestionDismissal`).
+    """
+    from .models import RecurringSuggestionDismissal
+
+    until = timezone.localdate().replace(day=1)
+    since = until - relativedelta(months=months - 1)
+
+    txns = (
+        visible_transactions(workspace, user)
+        .filter(date__gte=since, type__in=[Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE])
+        .exclude(source__in=[Transaction.SOURCE_RECURRING, Transaction.SOURCE_INSTALLMENT])
+        .exclude(category__isnull=True)
+        .select_related("category", "wallet")
+        .order_by("date")
+    )
+
+    groups: dict = {}
+    for t in txns:
+        key = (t.type, t.category_id, t.wallet_id)
+        g = groups.setdefault(
+            key,
+            {
+                "type": t.type,
+                "category_id": t.category_id,
+                "category_name": t.category.name,
+                "wallet_id": t.wallet_id,
+                "wallet_name": t.wallet.name,
+                "by_month": {},
+            },
+        )
+        g["by_month"].setdefault((t.date.year, t.date.month), []).append(t)
+
+    already_recurring = set(
+        RecurringExpense.objects.filter(workspace=workspace, is_active=True).values_list(
+            "category_id", "wallet_id"
+        )
+    )
+    dismissed = {
+        (d.category_id, d.wallet_id, d.approx_amount)
+        for d in RecurringSuggestionDismissal.objects.filter(workspace=workspace)
+    }
+
+    candidates = []
+    for g in groups.values():
+        by_month = g["by_month"]
+        if any(len(v) > 1 for v in by_month.values()):
+            continue
+        if len(by_month) < min_occurrences:
+            continue
+        if (g["category_id"], g["wallet_id"]) in already_recurring:
+            continue
+
+        amounts = [v[0].amount for v in by_month.values()]
+        avg = sum(amounts) / len(amounts)
+        tolerance = max(Decimal("2"), avg * Decimal("0.15"))
+        if max(amounts) - min(amounts) > tolerance:
+            continue
+
+        approx = _approx_amount(avg)
+        if (g["category_id"], g["wallet_id"], approx) in dismissed:
+            continue
+
+        last_txn = max((v[0] for v in by_month.values()), key=lambda t: t.date)
+        candidates.append(
+            {
+                "type": g["type"],
+                "category": g["category_id"],
+                "category_name": g["category_name"],
+                "wallet": g["wallet_id"],
+                "wallet_name": g["wallet_name"],
+                "suggested_amount": avg.quantize(Decimal("0.01")),
+                "occurrences": len(by_month),
+                "last_date": last_txn.date,
+                "suggested_next_due_date": last_txn.date + relativedelta(months=1),
+            }
+        )
+
+    candidates.sort(key=lambda c: -c["occurrences"])
+    return candidates
+
+
+def dismiss_recurring_suggestion(workspace, category, wallet, amount):
+    from .models import RecurringSuggestionDismissal
+
+    RecurringSuggestionDismissal.objects.get_or_create(
+        workspace=workspace, category=category, wallet=wallet,
+        approx_amount=_approx_amount(amount),
+    )

@@ -8,7 +8,7 @@ from apps.common.api import WorkspaceScopedViewSet
 from apps.workspaces.models import Membership
 
 from .models import Wallet
-from .services import recompute_wallet_balance
+from .services import goal_projection, recompute_wallet_balance
 
 
 class WalletSerializer(serializers.ModelSerializer):
@@ -126,6 +126,14 @@ class WalletReorderSerializer(serializers.Serializer):
     ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
 
 
+class GoalProjectionSerializer(serializers.Serializer):
+    remaining = serializers.DecimalField(max_digits=16, decimal_places=2)
+    monthly_rate = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    months_to_goal = serializers.IntegerField(allow_null=True)
+    projected_date = serializers.DateField(allow_null=True)
+    on_track = serializers.BooleanField(allow_null=True)
+
+
 class WalletViewSet(WorkspaceScopedViewSet):
     """Carteras del workspace activo. Las privadas solo las ve su owner."""
 
@@ -173,6 +181,21 @@ class WalletViewSet(WorkspaceScopedViewSet):
         wallet.is_archived = False
         wallet.save(update_fields=["is_archived", "updated_at"])
         return Response(self.get_serializer(wallet).data)
+
+    @action(detail=True, methods=["get"])
+    def projection(self, request, pk=None):
+        """Proyección de la meta de ahorro de esta cartera -- ver
+        `services.goal_projection`. 404 si no es una cartera de ahorro con
+        meta (nada que proyectar)."""
+        wallet = self._owned_wallet(pk)
+        if wallet is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        data = goal_projection(wallet)
+        if data is None:
+            return Response(
+                {"detail": "Esta cartera no tiene una meta de ahorro."}, status=404
+            )
+        return Response(GoalProjectionSerializer(data).data)
 
     @action(detail=False, methods=["post"])
     def reorder(self, request):

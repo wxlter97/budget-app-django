@@ -253,6 +253,50 @@ def monthly_cashflow(workspace, user, months=6, until=None):
     return series
 
 
+def category_trends(workspace, user, months=6):
+    """Gasto mensual por categoría de los últimos `months` meses + cuáles
+    crecieron (o bajaron) más entre el mes en curso y el anterior.
+
+    Reusa `spending_by_category` mes a mes -- son pocos meses (máx. 24) y el
+    workspace de una app personal no tiene tantas categorías, así que
+    N queries chicas es más simple que armar una sola con `TruncMonth`.
+    """
+    until = timezone.localdate().replace(day=1)
+    periods = []
+    cursor = until
+    for _ in range(months):
+        periods.append((cursor.year, cursor.month))
+        cursor -= relativedelta(months=1)
+    periods.reverse()
+
+    by_cat: dict[str, dict] = {}
+    for idx, (year, month) in enumerate(periods):
+        for row in spending_by_category(workspace, user, year, month):
+            key = row["category"]
+            if key not in by_cat:
+                by_cat[key] = {
+                    "category": key,
+                    "category_name": row["category_name"],
+                    "amounts": [Decimal("0")] * months,
+                }
+            by_cat[key]["amounts"][idx] = row["spent"]
+
+    categories = list(by_cat.values())
+    for c in categories:
+        last, prev = c["amounts"][-1], c["amounts"][-2] if months > 1 else Decimal("0")
+        c["change"] = last - prev
+        c["change_pct"] = float(c["change"] / prev * 100) if prev else None
+
+    # El que más creció primero -- lo que interesa mostrar es "esto se te
+    # disparó", no un orden alfabético ni por total.
+    categories.sort(key=lambda c: c["change"], reverse=True)
+
+    return {
+        "months": [{"year": y, "month": m} for y, m in periods],
+        "categories": categories,
+    }
+
+
 def dashboard_summary(workspace, user, today=None):
     today = today or timezone.localdate()
     from apps.email_import.models import EmailImportLog

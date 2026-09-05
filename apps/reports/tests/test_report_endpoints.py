@@ -130,6 +130,35 @@ class ReportEndpointTests(APITestCase):
             self.assertIn(key, resp.data)
         self.assertEqual(resp.data["top_expense_categories"][0]["category_name"], "Comida")
 
+    def test_category_trends_shape_and_growth(self):
+        # Mes anterior: Comida gastó 100; este mes (setUpTestData) gasta 350.
+        prev_month = day(1) - dt.timedelta(days=1)
+        Transaction.objects.create(
+            wallet=self.acc, category=self.food, amount=Decimal("100.00"),
+            date=prev_month.replace(day=1),
+        )
+        resp = self.client.get("/api/v1/reports/category-trends/?months=2")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data["months"]), 2)
+        by_name = {c["category_name"]: c for c in resp.data["categories"]}
+        self.assertEqual(by_name["Comida"]["amounts"], ["100.00", "350.00"])
+        self.assertEqual(by_name["Comida"]["change"], "250.00")
+        self.assertAlmostEqual(by_name["Comida"]["change_pct"], 250.0)
+        # Transporte no tuvo mes anterior -> change_pct es None (no dividir por 0).
+        self.assertEqual(by_name["Transporte"]["amounts"], ["0.00", "80.00"])
+        self.assertIsNone(by_name["Transporte"]["change_pct"])
+        # Ordenado por el que más creció primero.
+        self.assertEqual(resp.data["categories"][0]["category_name"], "Comida")
+
+    def test_category_trends_excludes_other_workspace(self):
+        resp = self.client.get("/api/v1/reports/category-trends/?months=1")
+        names = {c["category_name"] for c in resp.data["categories"]}
+        self.assertNotIn("Otro", names)
+
+    def test_category_trends_months_is_capped(self):
+        resp = self.client.get("/api/v1/reports/category-trends/?months=999")
+        self.assertEqual(len(resp.data["months"]), 24)
+
     def test_private_account_excluded_for_non_owner(self):
         private = Wallet.objects.create(
             workspace=self.ws_a, name="Secreta", purpose=Wallet.PURPOSE_SAVINGS,
