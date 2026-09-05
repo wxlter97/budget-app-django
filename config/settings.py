@@ -237,7 +237,7 @@ SIMPLE_JWT = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "budget API",
     "DESCRIPTION": "API REST de presupuesto personal/compartido (iOS + web).",
-    "VERSION": "1.4.0",
+    "VERSION": "1.5.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SWAGGER_UI_DIST": "SIDECAR",
