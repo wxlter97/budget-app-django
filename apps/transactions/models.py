@@ -103,6 +103,13 @@ class Transaction(BaseModel):
     )
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
     is_recurring = models.BooleanField(default=False)
+    # Todas las partes de una misma transacción dividida comparten este UUID
+    # (ver TransactionViewSet.split); null en una transacción normal. No es
+    # una FK a otro modelo -- cada parte es una Transaction real e
+    # independiente (misma cartera/fecha, categoría y monto propios), así
+    # que el saldo y los reportes por categoría ya funcionan solos, sin
+    # ningún caso especial.
+    split_group = models.UUIDField(null=True, blank=True, db_index=True)
 
     class Meta:
         ordering = ["-date", "-created_at"]

@@ -1,5 +1,8 @@
 import mimetypes
+import uuid
+from decimal import Decimal
 
+from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.http import FileResponse
 from django.utils import timezone
@@ -154,11 +157,16 @@ class TransactionSerializer(serializers.ModelSerializer):
             "counts_toward_budget",
             "source",
             "is_recurring",
+            "split_group",
             "created_by",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "currency", "created_by", "created_at", "updated_at")
+        # split_group no se manda nunca a mano: sólo lo asigna la acción
+        # `split` (ver más abajo) al partir una transacción en varias.
+        read_only_fields = (
+            "id", "currency", "split_group", "created_by", "created_at", "updated_at",
+        )
 
     def get_has_receipt(self, obj) -> bool:
         return bool(obj.receipt)
@@ -239,6 +247,30 @@ class TransactionSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class TransactionSplitPartSerializer(serializers.Serializer):
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    description = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Tiene que ser mayor que 0.")
+        return value
+
+
+class TransactionSplitSerializer(serializers.Serializer):
+    """Body de la acción `split`: al menos 2 partes, cada una con su propia
+    categoría y monto. La suma exacta contra el monto original se valida
+    en la vista (ahí ya se conoce la transacción a dividir)."""
+
+    parts = TransactionSplitPartSerializer(many=True)
+
+    def validate_parts(self, parts):
+        if len(parts) < 2:
+            raise serializers.ValidationError("Hacen falta al menos 2 partes.")
+        return parts
+
+
 class TransactionFilter(filters.FilterSet):
     """Filtros de querystring para la lista de transacciones.
 
@@ -267,6 +299,7 @@ class TransactionFilter(filters.FilterSet):
             "source": ["exact"],
             "is_recurring": ["exact"],
             "counts_toward_budget": ["exact"],
+            "split_group": ["exact"],
         }
 
 
@@ -324,6 +357,66 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             txn.receipt = None
             txn.save(update_fields=["receipt", "updated_at"])
         return Response(status=204)
+
+    @action(detail=True, methods=["post"])
+    def split(self, request, pk=None):
+        """
+        Divide esta transacción (gasto o ingreso, no transferencia) en
+        varias partes, cada una con su propia categoría y monto -- p. ej.
+        una compra de supermercado repartida entre "Comida" e "Higiene".
+        Las partes tienen que sumar exactamente el monto original.
+
+        Reemplaza la transacción original (soft-delete) por N transacciones
+        nuevas, mismas cartera/fecha, unidas por `split_group` -- el saldo
+        de la cartera y los reportes por categoría no necesitan ningún caso
+        especial: cada parte es una Transaction real e independiente.
+        """
+        txn = self.get_object()
+        if txn.type == Transaction.TYPE_TRANSFER:
+            raise ValidationError("No se puede dividir una transferencia.")
+        if txn.split_group:
+            raise ValidationError("Esta transacción ya está dividida.")
+
+        serializer = TransactionSplitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        parts = serializer.validated_data["parts"]
+
+        workspace = self.request.workspace
+        for p in parts:
+            cat = p["category"]
+            if cat.workspace_id != workspace.id:
+                raise ValidationError({"parts": "Una categoría es de otro workspace."})
+            if cat.type != txn.type:
+                raise ValidationError(
+                    {"parts": f"Una categoría no es de tipo «{txn.type}»."}
+                )
+
+        total = sum((p["amount"] for p in parts), Decimal("0"))
+        if total != txn.amount:
+            raise ValidationError(
+                {"parts": f"Las partes suman {total}, pero la transacción es de {txn.amount}."}
+            )
+
+        group_id = uuid.uuid4()
+        with db_transaction.atomic():
+            new_parts = [
+                Transaction.objects.create(
+                    type=txn.type,
+                    wallet=txn.wallet,
+                    category=p["category"],
+                    amount=p["amount"],
+                    description=p.get("description") or txn.description,
+                    date=txn.date,
+                    counts_toward_budget=txn.counts_toward_budget,
+                    created_by=txn.created_by,
+                    source=txn.source,
+                    split_group=group_id,
+                )
+                for p in parts
+            ]
+            txn.soft_delete()
+
+        return Response(self.get_serializer(new_parts, many=True).data, status=201)
 
 
 # ---------------------------------------------------------------------------

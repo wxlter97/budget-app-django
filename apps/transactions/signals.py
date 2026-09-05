@@ -36,6 +36,26 @@ def _sync_balance_on_save(sender, instance, created, **kwargs):
     _apply_diff(balance_deltas(prev), balance_deltas(instance))
 
 
+def _clear_split_group_if_alone(split_group) -> None:
+    """Si a una transacción dividida le queda una sola parte viva (se
+    borraron o rechazaron las demás), ya no es "dividida" -- se le limpia
+    el grupo para que vuelva a comportarse como una transacción normal."""
+    if not split_group:
+        return
+    remaining = Transaction.objects.filter(split_group=split_group)
+    if remaining.count() == 1:
+        remaining.update(split_group=None)
+
+
+@receiver(post_save, sender=Transaction)
+def _clear_split_group_on_soft_delete(sender, instance, **kwargs):
+    # El soft-delete llega como un save() con is_deleted=True (ver arriba);
+    # ahí es donde una parte "desaparece" para todo lo demás.
+    if instance.is_deleted:
+        _clear_split_group_if_alone(instance.split_group)
+
+
 @receiver(post_delete, sender=Transaction)
 def _sync_balance_on_delete(sender, instance, **kwargs):
     _apply_diff(balance_deltas(instance), {})
+    _clear_split_group_if_alone(instance.split_group)
