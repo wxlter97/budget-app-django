@@ -1,8 +1,13 @@
+import mimetypes
+
 from django.db.models import Q
+from django.http import FileResponse
 from django.utils import timezone
 from django_filters import rest_framework as filters
 from rest_framework import serializers
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
 from apps.accounts.models import Wallet
@@ -128,6 +133,10 @@ class TransactionSerializer(serializers.ModelSerializer):
     type = serializers.ChoiceField(
         choices=Transaction.TYPE_CHOICES, required=False
     )
+    # El archivo en sí no viaja acá (se sube/lee por la acción `receipt`,
+    # ver más abajo) — esto es sólo para que el cliente sepa si mostrar el
+    # ícono de "tiene recibo" sin pedir el binario.
+    has_receipt = serializers.SerializerMethodField()
 
     class Meta:
         model = Transaction
@@ -141,6 +150,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             "currency",
             "description",
             "date",
+            "has_receipt",
             "counts_toward_budget",
             "source",
             "is_recurring",
@@ -149,6 +159,9 @@ class TransactionSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("id", "created_by", "created_at", "updated_at")
+
+    def get_has_receipt(self, obj) -> bool:
+        return bool(obj.receipt)
 
     def _check_wallet(self, wallet, workspace, user, field):
         if wallet is None:
@@ -272,6 +285,45 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         return super().get_queryset().filter(
             Q(wallet__visibility=Wallet.VISIBILITY_SHARED) | Q(wallet__owner=user)
         )
+
+    RECEIPT_MAX_SIZE = 8 * 1024 * 1024  # 8 MB
+    RECEIPT_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+
+    # Una sola URL (`/transactions/{id}/receipt/`), tres métodos: subir
+    # (reemplaza si ya había uno), ver el archivo, y borrarlo. `get_object()`
+    # ya aplica el scoping de workspace del viewset — no hace falta repetirlo.
+    @action(detail=True, methods=["post"], parser_classes=[MultiPartParser])
+    def receipt(self, request, pk=None):
+        txn = self.get_object()
+        file = request.FILES.get("file")
+        if not file:
+            raise ValidationError({"file": "Requerido."})
+        if file.size > self.RECEIPT_MAX_SIZE:
+            raise ValidationError({"file": "El archivo pesa más de 8 MB."})
+        if file.content_type not in self.RECEIPT_CONTENT_TYPES:
+            raise ValidationError({"file": "Formato no soportado (usá JPG, PNG, WEBP o HEIC)."})
+
+        if txn.receipt:
+            txn.receipt.delete(save=False)
+        txn.receipt.save(file.name, file, save=True)
+        return Response(self.get_serializer(txn).data)
+
+    @receipt.mapping.get
+    def receipt_download(self, request, pk=None):
+        txn = self.get_object()
+        if not txn.receipt:
+            raise NotFound("Esta transacción no tiene recibo.")
+        content_type = mimetypes.guess_type(txn.receipt.name)[0] or "application/octet-stream"
+        return FileResponse(txn.receipt.open("rb"), content_type=content_type)
+
+    @receipt.mapping.delete
+    def receipt_remove(self, request, pk=None):
+        txn = self.get_object()
+        if txn.receipt:
+            txn.receipt.delete(save=False)
+            txn.receipt = None
+            txn.save(update_fields=["receipt", "updated_at"])
+        return Response(status=204)
 
 
 # ---------------------------------------------------------------------------

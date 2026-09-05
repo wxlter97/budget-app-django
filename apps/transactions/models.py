@@ -6,6 +6,13 @@ from apps.common.models import BaseModel
 from apps.workspaces.models import Workspace
 
 
+def receipt_upload_path(instance: "Transaction", filename: str) -> str:
+    """Namespaced por workspace y transacción, para no pisar archivos entre
+    workspaces y para poder borrar/reemplazar sin ambigüedad."""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    return f"receipts/{instance.wallet.workspace_id}/{instance.id}.{ext}"
+
+
 class Category(BaseModel):
     TYPE_INCOME = "income"
     TYPE_EXPENSE = "expense"
@@ -77,6 +84,11 @@ class Transaction(BaseModel):
     currency = models.CharField(max_length=3, default="USD")
     description = models.CharField(max_length=255, blank=True)
     date = models.DateField()
+    # Foto del recibo/comprobante (opcional). Se sube y se lee por
+    # `/transactions/{id}/receipt/`, nunca por una URL directa del storage
+    # (ver STORAGES en settings) — así el archivo queda protegido por la
+    # misma membresía de workspace que el resto del API.
+    receipt = models.ImageField(upload_to=receipt_upload_path, null=True, blank=True)
     # Si es False, el gasto no cuenta contra el presupuesto de su categoría
     # (sigue afectando el saldo y el resumen de gastos del mes).
     counts_toward_budget = models.BooleanField(default=True)
