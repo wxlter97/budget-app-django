@@ -71,3 +71,55 @@ class CategoryBudgetApiTests(APITestCase):
             category=str(self.cat.id), amount="99.00", month=9, year=2026
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def _set_forward(self, **data):
+        return self.client.post(
+            "/api/v1/category-budgets/set-forward/", data, **{HEADER: str(self.ws.id)}
+        )
+
+    def test_set_forward_creates_current_and_future_months(self):
+        res = self._set_forward(
+            category=str(self.cat.id), amount="300.00", month=9, year=2026
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["months_touched"], 37)  # mes actual + 36 de horizonte
+        dec = CategoryBudget.objects.get(category=self.cat, month=12, year=2026)
+        self.assertEqual(dec.amount, Decimal("300.00"))
+        far = CategoryBudget.objects.get(category=self.cat, month=9, year=2029)
+        self.assertEqual(far.amount, Decimal("300.00"))
+
+    def test_set_forward_stops_at_customized_future_month(self):
+        CategoryBudget.objects.create(
+            workspace=self.ws, category=self.cat, amount=Decimal("300"), month=9, year=2026
+        )
+        CategoryBudget.objects.create(
+            workspace=self.ws, category=self.cat, amount=Decimal("300"), month=10, year=2026
+        )
+        # Noviembre ya fue personalizado por el usuario con otro monto.
+        CategoryBudget.objects.create(
+            workspace=self.ws, category=self.cat, amount=Decimal("500"), month=11, year=2026
+        )
+
+        res = self._set_forward(
+            category=str(self.cat.id), amount="350.00", month=9, year=2026
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["months_touched"], 2)  # septiembre + octubre
+
+        sep = CategoryBudget.objects.get(category=self.cat, month=9, year=2026)
+        oct_ = CategoryBudget.objects.get(category=self.cat, month=10, year=2026)
+        nov = CategoryBudget.objects.get(category=self.cat, month=11, year=2026)
+        self.assertEqual(sep.amount, Decimal("350.00"))
+        self.assertEqual(oct_.amount, Decimal("350.00"))
+        self.assertEqual(nov.amount, Decimal("500"))  # intacto
+
+    def test_set_forward_never_touches_past_months(self):
+        past = CategoryBudget.objects.create(
+            workspace=self.ws, category=self.cat, amount=Decimal("100"), month=1, year=2026
+        )
+        res = self._set_forward(
+            category=str(self.cat.id), amount="400.00", month=9, year=2026
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        past.refresh_from_db()
+        self.assertEqual(past.amount, Decimal("100"))
