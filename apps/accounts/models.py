@@ -164,9 +164,14 @@ class Wallet(BaseModel):
 
     @property
     def progress_pct(self):
-        """Avance hacia la meta de ahorro (0..1+), o None si no hay meta."""
+        """Avance hacia la meta (ahorro) o hacia saldar la deuda (0..1+),
+        o None si no hay meta/monto total. En una deuda `current_balance` es
+        lo PENDIENTE (con signo), no lo aportado -- el avance real es
+        `1 - |pendiente| / total`."""
         if not self.goal_amount:
             return None
+        if self.purpose == self.PURPOSE_DEBT:
+            return 1 - abs(float(self.current_balance)) / float(self.goal_amount)
         return float(self.current_balance) / float(self.goal_amount)
 
     @property
