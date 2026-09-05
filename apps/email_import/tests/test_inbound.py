@@ -79,6 +79,18 @@ class IngestServiceTests(TestCase):
         with self.assertRaises(WorkspaceNotResolved):
             resolve_workspace("import+nope@inbound.budget.local")
 
+    def test_resolve_workspace_ignores_token_case(self):
+        # Mailgun (y la mayoría de MTAs) normalizan el destinatario a
+        # minúsculas antes de mandarlo al webhook, aunque el token guardado
+        # tenga mayúsculas (viene de `secrets.token_urlsafe`). Regresión del
+        # bug real donde esto causaba un 404 en producción. Token fijo (en
+        # vez del aleatorio de setUpTestData) para no depender de que el
+        # random generado tenga alguna mayúscula.
+        self.ws.inbound_token = "zkMMj7jMMn9F"
+        self.ws.save(update_fields=["inbound_token"])
+        lowered = f"import+{self.ws.inbound_token.lower()}@inbound.budget.local"
+        self.assertEqual(resolve_workspace(lowered), self.ws)
+
     def test_successful_ingest_creates_pending_log_and_matches_wallet(self):
         log = ingest_inbound_email(
             to=self._to(), sender="alertas@demobank.com",

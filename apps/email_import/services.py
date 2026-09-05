@@ -45,7 +45,12 @@ def resolve_workspace(to_addresses):
         if not match:
             continue
         try:
-            return Workspace.objects.get(inbound_token=match.group(1))
+            # `iexact`, no `=`: casi todos los proveedores de correo entrante
+            # (Mailgun incluido) normalizan el destinatario a minúsculas antes
+            # de mandarlo, y el token guardado puede tener mayúsculas (viene
+            # de `secrets.token_urlsafe`) — una comparación exacta pierde el
+            # workspace real y esto se ve como un 404 "misterioso".
+            return Workspace.objects.get(inbound_token__iexact=match.group(1))
         except Workspace.DoesNotExist:
             continue
     raise WorkspaceNotResolved(f"Sin workspace para {to_addresses!r}")
