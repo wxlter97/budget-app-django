@@ -74,6 +74,7 @@ LOCAL_APPS = [
     "apps.savings",
     "apps.reports",
     "apps.email_import",
+    "apps.quickadd",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -215,6 +216,7 @@ REST_FRAMEWORK = {
         "user": env("THROTTLE_USER", default="1000/hour"),
         "auth": env("THROTTLE_AUTH", default="10/min"),      # login / registro
         "inbound": env("THROTTLE_INBOUND", default="120/min"),  # webhook de correo
+        "quick_add": env("THROTTLE_QUICK_ADD", default="60/min"),  # Atajo de Apple Shortcuts
     },
 }
 if RUNNING_TESTS:

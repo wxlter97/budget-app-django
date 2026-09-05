@@ -9,6 +9,7 @@ from drf_spectacular.views import (
 from rest_framework_simplejwt.views import TokenVerifyView
 
 from apps.email_import.api import InboundEmailWebhookView
+from apps.quickadd.api import QuickAddView
 from apps.reports.api import (
     BudgetReportView,
     CashflowView,
@@ -40,6 +41,7 @@ api_v1_patterns = [
         InboundEmailWebhookView.as_view(),
         name="email-import-inbound",
     ),
+    path("quick-add/", QuickAddView.as_view(), name="quick-add"),
     *api_v1_router,
 ]
 
