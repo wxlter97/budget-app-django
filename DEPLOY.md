@@ -173,10 +173,19 @@ gcloud run jobs deploy budget-cron \
   --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
   --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
   --command python \
-  --args "manage.py,shell,-c,from apps.transactions.tasks import generate_recurring_transactions, post_due_installments; from apps.reports.tasks import close_previous_month; generate_recurring_transactions(); post_due_installments(); close_previous_month()"
+  --args "manage.py,shell,-c,from apps.transactions.tasks import generate_recurring_transactions, post_due_installments; from apps.reports.tasks import close_previous_month; from apps.notifications.tasks import send_daily_reminders; generate_recurring_transactions(); post_due_installments(); close_previous_month(); send_daily_reminders()"
 
 gcloud run jobs execute budget-cron --region us-east1 --wait
 ```
+
+`send_daily_reminders` es idempotente (una tabla de log evita reavisar lo
+mismo), así que no pasa nada si corre a una hora que no es la ideal para un
+recordatorio (la `CELERY_BEAT_SCHEDULE` de `config/settings.py` lo pone a las
+7am sólo como referencia para cuando sí haya Celery corriendo, p. ej. en
+`docker-compose`). Si te importa que llegue puntual a la mañana, creá un
+segundo Cloud Scheduler → Cloud Run Job apuntando sólo a
+`send_daily_reminders()` a la hora que prefieras (todavía entra en el tier
+gratis de 3 jobs).
 
 Para que corra solo cada día: **Cloud Scheduler → Cloud Run Job** (3 jobs gratis).
 

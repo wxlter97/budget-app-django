@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from apps.accounts.api import WalletViewSet
 from apps.email_import.api import BankEmailSchemaViewSet, EmailImportLogViewSet
+from apps.notifications.api import PushDeviceViewSet
 from apps.quickadd.api import PersonalAccessTokenViewSet
 from apps.reports.api import MonthlySnapshotViewSet
 from apps.transactions.api import (
@@ -32,5 +33,7 @@ router.register("bank-email-schemas", BankEmailSchemaViewSet, basename="bankemai
 router.register("email-import-logs", EmailImportLogViewSet, basename="emailimportlog")
 
 router.register("personal-tokens", PersonalAccessTokenViewSet, basename="personaltoken")
+
+router.register("push-devices", PushDeviceViewSet, basename="pushdevice")
 
 urlpatterns = router.urls

@@ -75,6 +75,7 @@ LOCAL_APPS = [
     "apps.reports",
     "apps.email_import",
     "apps.quickadd",
+    "apps.notifications",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -301,6 +302,10 @@ CELERY_BEAT_SCHEDULE = {
     "close-previous-month": {
         "task": "apps.reports.tasks.close_previous_month",
         "schedule": crontab(hour=0, minute=5, day_of_month=1),
+    },
+    "send-daily-reminders": {
+        "task": "apps.notifications.tasks.send_daily_reminders",
+        "schedule": crontab(hour=7, minute=0),  # a la hora en que la gente ya despertó
     },
 }
 
