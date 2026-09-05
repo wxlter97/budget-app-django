@@ -19,8 +19,13 @@ class CategoryBudgetApiTests(APITestCase):
         Membership.objects.create(
             workspace=self.ws, user=self.user, role=Membership.ROLE_OWNER
         )
+        self.group = Category.objects.create(
+            workspace=self.ws, name="Comida (grupo)", type=Category.TYPE_EXPENSE
+        )
+        # Los presupuestos sólo se pueden fijar en subcategorías, nunca en el
+        # grupo -- ver `CategoryBudgetSerializer.validate_category`.
         self.cat = Category.objects.create(
-            workspace=self.ws, name="Comida", type=Category.TYPE_EXPENSE
+            workspace=self.ws, name="Comida", type=Category.TYPE_EXPENSE, parent=self.group
         )
         self.client.force_authenticate(self.user)
 
@@ -62,6 +67,24 @@ class CategoryBudgetApiTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         b.refresh_from_db()
         self.assertEqual(b.amount, Decimal("250.00"))
+
+    def test_group_cannot_have_its_own_budget(self):
+        res = self._post(
+            category=str(self.group.id), amount="300.00", month=9, year=2026
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(CategoryBudget.objects.count(), 0)
+
+    def test_childless_group_can_still_be_budgeted_directly(self):
+        # Un grupo sin subcategorías es su propia unidad presupuestable --
+        # no hay "hijas" con las que pudiera duplicarse el total.
+        leaf_group = Category.objects.create(
+            workspace=self.ws, name="Otros", type=Category.TYPE_EXPENSE
+        )
+        res = self._post(
+            category=str(leaf_group.id), amount="150.00", month=9, year=2026
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
 
     def test_duplicate_same_month_is_rejected(self):
         CategoryBudget.objects.create(
@@ -112,6 +135,13 @@ class CategoryBudgetApiTests(APITestCase):
         self.assertEqual(sep.amount, Decimal("350.00"))
         self.assertEqual(oct_.amount, Decimal("350.00"))
         self.assertEqual(nov.amount, Decimal("500"))  # intacto
+
+    def test_set_forward_rejects_group(self):
+        res = self._set_forward(
+            category=str(self.group.id), amount="300.00", month=9, year=2026
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(CategoryBudget.objects.count(), 0)
 
     def test_set_forward_never_touches_past_months(self):
         past = CategoryBudget.objects.create(

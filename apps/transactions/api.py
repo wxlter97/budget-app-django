@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.db import transaction as db_transaction
 from django.db.models import Case, Count, DecimalField, F, Max, Min, Q, Sum, When
+from django.db.models.deletion import ProtectedError
 from django.http import FileResponse
 from django.utils import timezone
 from django_filters import rest_framework as filters
@@ -141,6 +142,34 @@ class CategoryViewSet(WorkspaceScopedViewSet):
         cat.is_deleted = False
         cat.save(update_fields=["is_deleted", "updated_at"])
         return Response(CategorySerializer(cat, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["delete"], url_path="purge")
+    def purge(self, request, pk=None):
+        """Borra DEFINITIVAMENTE una categoría ya eliminada (soft-delete) --
+        para poder vaciar "Eliminadas", que si no se va acumulando para
+        siempre. Sólo opera sobre lo que ya está soft-deleted, y sólo si no
+        queda nada real colgando de ella (si no, 400 en vez de arrastrar un
+        borrado en cascada silencioso sobre presupuestos/recurrentes)."""
+        cat = Category.all_objects.filter(
+            workspace=request.workspace, id=pk, is_deleted=True
+        ).first()
+        if cat is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        if cat.subcategories.filter(is_deleted=False).exists():
+            raise ValidationError("Tiene subcategorías activas; eliminalas primero.")
+        if (
+            cat.budgets.exists()
+            or cat.recurring_expenses.exists()
+            or cat.installment_purchases.exists()
+        ):
+            raise ValidationError(
+                "Tiene presupuestos o recurrentes asociados; no se puede borrar del todo."
+            )
+        try:
+            cat.delete()
+        except ProtectedError:
+            raise ValidationError("Tiene movimientos asociados; no se puede borrar del todo.")
+        return Response(status=204)
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +602,13 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
     def validate_category(self, category):
         if category.workspace_id != self.context["workspace"].id:
             raise serializers.ValidationError("La categoría es de otro workspace.")
+        # Un grupo SIN subcategorías puede presupuestarse directamente (es su
+        # propia unidad, como cualquier categoría hoja). Uno CON subcategorías
+        # no: su presupuesto es la suma de las suyas, no algo aparte.
+        if category.parent_id is None and category.subcategories.filter(is_deleted=False).exists():
+            raise serializers.ValidationError(
+                "Este grupo tiene subcategorías; presupuéstalas a ellas en vez de al grupo."
+            )
         return category
 
     def validate_month(self, value):
@@ -630,6 +666,10 @@ class CategoryBudgetViewSet(WorkspaceScopedViewSet):
         category = serializer.validated_data["category"]
         if category.workspace_id != request.workspace.id:
             raise ValidationError({"category": "La categoría es de otro workspace."})
+        if category.parent_id is None and category.subcategories.filter(is_deleted=False).exists():
+            raise ValidationError(
+                {"category": "Este grupo tiene subcategorías; presupuéstalas a ellas en vez de al grupo."}
+            )
         amount = serializer.validated_data["amount"]
         month = serializer.validated_data["month"]
         year = serializer.validated_data["year"]
@@ -686,6 +726,19 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
             "is_active", "created_at", "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        next_due = attrs.get("next_due_date")
+        current = getattr(self.instance, "next_due_date", None)
+        # Sólo rechaza si de verdad está ELIGIENDO una fecha pasada nueva --
+        # si no cambió (p. ej. ya estaba vencido y sólo se edita el monto),
+        # no bloquea: eso lo resuelve el job de generación, no este form.
+        if next_due is not None and next_due != current and next_due < timezone.localdate():
+            raise serializers.ValidationError(
+                {"next_due_date": "No puede ser una fecha pasada."}
+            )
+        return attrs
 
 
 class RecurringSuggestionSerializer(serializers.Serializer):
