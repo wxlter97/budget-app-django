@@ -11,12 +11,14 @@ que se mantiene incrementalmente vía signals sobre Transaction (ver
 apps/transactions/signals.py) y se puede reconstruir con
 `recompute_wallet_balance` / `manage.py recompute_balances`.
 """
+import calendar
 import math
 from collections import defaultdict
+from datetime import date as date_cls
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from django.db.models import Case, DecimalField, F, Sum, When
+from django.db.models import Case, DecimalField, F, Q, Sum, When
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
@@ -169,3 +171,181 @@ def goal_projection(wallet, months=6):
         "projected_date": projected_date,
         "on_track": on_track,
     }
+
+
+# ---------------------------------------------------------------------------
+# Estado de cuenta de tarjeta de crédito ("cuánto debo a esta fecha", Fase 3
+# del roadmap): cuánto hay que transferir para estar al día con el corte más
+# reciente, sin depender de que el usuario abra la app justo el día del corte.
+# ---------------------------------------------------------------------------
+
+
+def _clamped_date(year: int, month: int, day: int) -> date_cls:
+    """``day`` puede no existir en ``month`` (p. ej. corte el 31 en febrero):
+    se recorta al último día real del mes, como hacen los bancos."""
+    last_day = calendar.monthrange(year, month)[1]
+    return date_cls(year, month, min(day, last_day))
+
+
+def _cutoff_on_or_before(billing_cycle_day: int, on: date_cls) -> date_cls:
+    """Última fecha de corte (día ``billing_cycle_day`` de cada mes) que ya
+    pasó, en o antes de ``on``."""
+    cutoff = _clamped_date(on.year, on.month, billing_cycle_day)
+    if cutoff > on:
+        prev = on.replace(day=1) - relativedelta(days=1)
+        cutoff = _clamped_date(prev.year, prev.month, billing_cycle_day)
+    return cutoff
+
+
+def _next_cutoff(billing_cycle_day: int, cutoff_date: date_cls) -> date_cls:
+    nxt = cutoff_date + relativedelta(months=1)
+    return _clamped_date(nxt.year, nxt.month, billing_cycle_day)
+
+
+def _payment_due_date(wallet: Wallet, cutoff_date: date_cls):
+    """Fecha límite de pago correspondiente a un corte: si el día de pago cae
+    después del día de corte dentro del mismo mes, es ese mismo mes; si no,
+    es al mes siguiente (el caso típico: corte el 3, pago el 20)."""
+    if not wallet.payment_due_day:
+        return None
+    target = cutoff_date
+    if wallet.payment_due_day <= wallet.billing_cycle_day:
+        target = cutoff_date + relativedelta(months=1)
+    return _clamped_date(target.year, target.month, wallet.payment_due_day)
+
+
+def _statement_components(wallet, until_date):
+    """(gastado, abonado, cuotas vencidas) de ``wallet`` acumulado hasta
+    ``until_date`` inclusive. Ver `credit_card_statement` para el criterio."""
+    from apps.transactions.models import InstallmentPurchase, Transaction
+
+    spent = (
+        Transaction.objects.filter(
+            wallet=wallet, type=Transaction.TYPE_EXPENSE, date__lte=until_date
+        )
+        .exclude(source=Transaction.SOURCE_INSTALLMENT)
+        .aggregate(total=Sum("amount"))["total"]
+        or Decimal("0")
+    )
+    # Rarísimo pero posible: esta tarjeta financia una compra a plazo AJENA
+    # (es `payment_wallet` de otra cartera) -- esas cuotas salen de acá como
+    # transferencia, y sí son gasto real de esta tarjeta.
+    spent += (
+        Transaction.objects.filter(
+            wallet=wallet,
+            type=Transaction.TYPE_TRANSFER,
+            source=Transaction.SOURCE_INSTALLMENT,
+            date__lte=until_date,
+        ).aggregate(total=Sum("amount"))["total"]
+        or Decimal("0")
+    )
+
+    paid = (
+        Transaction.objects.filter(
+            to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__lte=until_date
+        )
+        .exclude(source=Transaction.SOURCE_INSTALLMENT)
+        .aggregate(total=Sum("amount"))["total"]
+        or Decimal("0")
+    )
+
+    installments_due = Decimal("0")
+    lines = []
+    for purchase in InstallmentPurchase.objects.filter(wallet=wallet).select_related(
+        "category"
+    ):
+        n_due = 0
+        for n in range(1, purchase.installments_total + 1):
+            cuota_date = purchase.start_date + relativedelta(months=n - 1)
+            if cuota_date > until_date:
+                break
+            n_due = n
+        if n_due:
+            amount_due = purchase.installment_amount * n_due
+            installments_due += amount_due
+            lines.append(
+                {
+                    "id": purchase.id,
+                    "description": purchase.description,
+                    "installments_due": n_due,
+                    "installments_total": purchase.installments_total,
+                    "amount_due": amount_due,
+                }
+            )
+
+    return spent, paid, installments_due, lines
+
+
+def credit_card_statement(wallet, as_of=None):
+    """Cuánto hay que pagarle a esta tarjeta para estar al día, a la fecha
+    ``as_of`` (hoy por defecto). ``None`` si `wallet` no es una tarjeta de
+    crédito con fecha de corte configurada (`kind=credit` + `billing_cycle_day`).
+
+    El total (`total_due`) es ACUMULADO desde que existe la tarjeta hasta el
+    corte más reciente que ya cerró en o antes de `as_of`: lo que no se pagó
+    de un corte anterior sigue apareciendo hasta que se abone (así es como
+    funciona una tarjeta real, no se resetea sola cada mes). Se compone de:
+
+    - los gastos normales cargados a la tarjeta (sin contar el cargo total
+      inicial de una compra a plazo -- ese cargo baja el disponible, pero lo
+      que hay que *pagar* cada mes es solo la cuota, no la compra completa),
+    - más las cuotas de compras a plazo que ya vencieron,
+    - menos los abonos/pagos reales que ya se hicieron a la tarjeta.
+
+    También incluye la actividad del período abierto (desde el corte hasta
+    `as_of`, aún no vencida) como referencia de cuánto se lleva acumulado
+    para el próximo corte.
+    """
+    if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day:
+        return None
+
+    as_of = as_of or timezone.localdate()
+    cutoff_date = _cutoff_on_or_before(wallet.billing_cycle_day, as_of)
+    next_cutoff_date = _next_cutoff(wallet.billing_cycle_day, cutoff_date)
+    payment_due_date = _payment_due_date(wallet, cutoff_date)
+
+    spent, paid, installments_due, lines = _statement_components(wallet, cutoff_date)
+    total_due = spent - paid + installments_due
+
+    spent_open, paid_open, installments_open, _ = _statement_components(wallet, as_of)
+    current_period_spent = (spent_open - spent) + (installments_open - installments_due)
+    current_period_paid = paid_open - paid
+
+    return {
+        "cutoff_date": cutoff_date,
+        "next_cutoff_date": next_cutoff_date,
+        "payment_due_date": payment_due_date,
+        "spent": spent,
+        "paid": paid,
+        "installments_due": installments_due,
+        "total_due": total_due,
+        "current_period_spent": current_period_spent,
+        "current_period_paid": current_period_paid,
+        "installment_lines": lines,
+    }
+
+
+def credit_card_statements_summary(workspace, user, as_of=None):
+    """`credit_card_statement` de cada tarjeta de crédito visible del
+    workspace (con fecha de corte configurada), para el listado de Herramientas."""
+    wallets = (
+        Wallet.objects.filter(workspace=workspace, kind=Wallet.KIND_CREDIT, is_archived=False)
+        .exclude(billing_cycle_day__isnull=True)
+        .filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
+        .order_by("sort_order", "name")
+    )
+    results = []
+    for w in wallets:
+        data = credit_card_statement(w, as_of=as_of)
+        if data is None:
+            continue
+        results.append(
+            {
+                "wallet_id": w.id,
+                "wallet_name": w.name,
+                "currency": w.currency,
+                "card_last4": w.card_last4,
+                **data,
+            }
+        )
+    return results
