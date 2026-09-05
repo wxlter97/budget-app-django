@@ -598,10 +598,79 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class SetForwardBudgetSerializer(serializers.Serializer):
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    month = serializers.IntegerField(min_value=1, max_value=12)
+    year = serializers.IntegerField(min_value=2000, max_value=2100)
+
+
 class CategoryBudgetViewSet(WorkspaceScopedViewSet):
     serializer_class = CategoryBudgetSerializer
     queryset = CategoryBudget.objects.select_related("workspace", "category").all()
     filterset_fields = {"month": ["exact"], "year": ["exact"], "category": ["exact"]}
+
+    # Cuántos meses hacia adelante puede materializar `set_forward` como
+    # máximo en una sola llamada, para no crear filas indefinidamente si el
+    # usuario nunca vuelve a tocar esa categoría (3 años de margen).
+    FORWARD_HORIZON_MONTHS = 36
+
+    @action(detail=False, methods=["post"], url_path="set-forward")
+    def set_forward(self, request):
+        """
+        Fija el presupuesto de una categoría para un mes y lo propaga a los
+        meses siguientes: cada mes futuro que no tenía presupuesto propio, o
+        que coincidía con el monto anterior de este mes, se actualiza al
+        nuevo monto -- hasta el primer mes que el usuario ya haya
+        personalizado con un valor distinto, donde se corta la propagación.
+        Los meses anteriores nunca se tocan, así se conserva el histórico.
+        """
+        serializer = SetForwardBudgetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        category = serializer.validated_data["category"]
+        if category.workspace_id != request.workspace.id:
+            raise ValidationError({"category": "La categoría es de otro workspace."})
+        amount = serializer.validated_data["amount"]
+        month = serializer.validated_data["month"]
+        year = serializer.validated_data["year"]
+
+        current = CategoryBudget.objects.filter(
+            category=category, month=month, year=year
+        ).first()
+        old_amount = current.amount if current else None
+        if current:
+            current.amount = amount
+            current.save(update_fields=["amount"])
+        else:
+            current = CategoryBudget.objects.create(
+                workspace=request.workspace, category=category,
+                month=month, year=year, amount=amount,
+            )
+
+        months_touched = 1
+        cm, cy = month, year
+        for _ in range(self.FORWARD_HORIZON_MONTHS):
+            cm += 1
+            if cm > 12:
+                cm = 1
+                cy += 1
+            future = CategoryBudget.objects.filter(category=category, month=cm, year=cy).first()
+            if future is None:
+                CategoryBudget.objects.create(
+                    workspace=request.workspace, category=category,
+                    month=cm, year=cy, amount=amount,
+                )
+                months_touched += 1
+            elif old_amount is not None and future.amount == old_amount:
+                future.amount = amount
+                future.save(update_fields=["amount"])
+                months_touched += 1
+            else:
+                break  # mes ya personalizado por el usuario: no seguimos
+
+        data = CategoryBudgetSerializer(current).data
+        data["months_touched"] = months_touched
+        return Response(data)
 
 
 # ---------------------------------------------------------------------------
