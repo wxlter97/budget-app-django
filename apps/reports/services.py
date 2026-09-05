@@ -6,7 +6,7 @@ puede llamar a mano para cualquier (año, mes).
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from django.db.models import F, Q, Sum
+from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.accounts.models import Wallet
@@ -19,13 +19,23 @@ from apps.transactions.models import (
     Transaction,
 )
 from apps.transactions.services import _advance, visible_transactions
+from apps.workspaces.currency import convert, get_rate_map
 from apps.workspaces.models import Workspace
 
 from .models import MonthlySnapshot
 
 
-def _sum(qs, field):
-    return qs.aggregate(s=Sum(field))["s"] or Decimal("0")
+def _sum_converted(qs, rate_map, amount_field="amount", currency_field="currency"):
+    """Como `_sum`, pero convirtiendo cada fila a la moneda base antes de
+    sumar -- `Sum()` de la base de datos no puede aplicar una tasa distinta
+    por fila. Las filas en una moneda sin tasa configurada simplemente no
+    se cuentan (ver `apps.workspaces.currency.convert`)."""
+    total = Decimal("0")
+    for row in qs.values(amount_field, currency_field):
+        converted = convert(row[amount_field], row[currency_field], rate_map)
+        if converted is not None:
+            total += converted
+    return total
 
 
 def _visible(qs, user):
@@ -36,7 +46,9 @@ def _visible(qs, user):
 
 def net_worth_breakdown(workspace, user=None) -> dict:
     """
-    Patrimonio neto + totales por tipo de cartera.
+    Patrimonio neto + totales por tipo de cartera, convertidos a
+    ``workspace.base_currency`` (ver ``apps.workspaces.currency``) -- una
+    cartera en una moneda sin tasa configurada no entra en ningún total.
 
     - ``net``       = Σ ``current_balance`` (propio, sin hijos, para no doble-contar)
                       de las carteras activas con ``counts_toward_net_worth=True``.
@@ -48,18 +60,23 @@ def net_worth_breakdown(workspace, user=None) -> dict:
     wallets = list(
         _visible(Wallet.objects.filter(workspace=workspace), user)
     )
+    rate_map = get_rate_map(workspace)
+    converted = [
+        (w, convert(w.current_balance, w.currency, rate_map)) for w in wallets
+    ]
+
     net = sum(
-        (w.current_balance for w in wallets if w.counts_toward_net_worth),
+        (c for w, c in converted if w.counts_toward_net_worth and c is not None),
         Decimal("0"),
     )
     by_purpose = {
         purpose: sum(
-            (w.current_balance for w in wallets if w.purpose == purpose),
+            (c for w, c in converted if w.purpose == purpose and c is not None),
             Decimal("0"),
         )
         for purpose, _ in Wallet.PURPOSE_CHOICES
     }
-    return {"net": net, "by_purpose": by_purpose}
+    return {"net": net, "by_purpose": by_purpose, "base_currency": workspace.base_currency}
 
 
 def net_worth(workspace) -> Decimal:
@@ -74,40 +91,58 @@ _OUTFLOW_Q = Q(type=Transaction.TYPE_EXPENSE) | Q(
 
 
 def spending_by_category(workspace, user, year, month):
+    rate_map = get_rate_map(workspace)
     rows = (
         visible_transactions(workspace, user)
         .filter(date__year=year, date__month=month)
         .filter(_OUTFLOW_Q, category__isnull=False)
-        .values("category_id", "category__name")
-        .annotate(spent=Sum("amount"))
-        .order_by("-spent")
+        .values("category_id", "category__name", "amount", "currency")
     )
-    return [
-        {
-            "category": str(r["category_id"]),
-            "category_name": r["category__name"],
-            "spent": r["spent"],
-        }
-        for r in rows
-    ]
+
+    totals: dict[str, dict] = {}
+    order = []
+    for r in rows:
+        converted = convert(r["amount"], r["currency"], rate_map)
+        if converted is None:
+            continue
+        key = str(r["category_id"])
+        if key not in totals:
+            totals[key] = {
+                "category": key,
+                "category_name": r["category__name"],
+                "spent": Decimal("0"),
+            }
+            order.append(key)
+        totals[key]["spent"] += converted
+
+    result = [totals[k] for k in order]
+    result.sort(key=lambda r: -r["spent"])
+    return result
 
 
 def budget_vs_actual(workspace, user, year, month):
-    """Presupuesto vs. gasto real por categoría para un mes."""
+    """Presupuesto vs. gasto real por categoría para un mes.
+
+    ``budgeted`` se asume siempre en ``workspace.base_currency`` (el monto
+    del presupuesto no está atado a ninguna cartera); ``spent`` se convierte
+    desde la moneda de cada transacción -- ver ``apps.workspaces.currency``.
+    """
+    rate_map = get_rate_map(workspace)
     budgets = {
         b.category_id: b.amount
         for b in CategoryBudget.objects.filter(workspace=workspace, year=year, month=month)
     }
-    spent = {
-        row["category"]: row["spent"]
-        for row in (
-            visible_transactions(workspace, user)
-            .filter(date__year=year, date__month=month, counts_toward_budget=True)
-            .filter(_OUTFLOW_Q)
-            .values("category")
-            .annotate(spent=Sum("amount"))
-        )
-    }
+    spent: dict = {}
+    for row in (
+        visible_transactions(workspace, user)
+        .filter(date__year=year, date__month=month, counts_toward_budget=True)
+        .filter(_OUTFLOW_Q)
+        .values("category", "amount", "currency")
+    ):
+        converted = convert(row["amount"], row["currency"], rate_map)
+        if converted is None:
+            continue
+        spent[row["category"]] = spent.get(row["category"], Decimal("0")) + converted
     provisions = {
         p.category_id: p.accumulated_amount
         for p in CategoryProvision.objects.filter(category__workspace=workspace)
@@ -145,6 +180,7 @@ def budget_vs_actual(workspace, user, year, month):
     return {
         "year": year,
         "month": month,
+        "base_currency": workspace.base_currency,
         "rows": rows,
         "groups": groups,
         "totals": totals,
@@ -191,6 +227,7 @@ def _group_budget_rows(rows, cats):
 
 def monthly_cashflow(workspace, user, months=6, until=None):
     until = (until or timezone.localdate()).replace(day=1)
+    rate_map = get_rate_map(workspace)
     periods = []
     cursor = until
     for _ in range(months):
@@ -202,8 +239,8 @@ def monthly_cashflow(workspace, user, months=6, until=None):
     series = []
     for year, month in periods:
         month_txns = txns.filter(date__year=year, date__month=month)
-        income = _sum(month_txns.filter(type=Transaction.TYPE_INCOME), "amount")
-        expenses = _sum(month_txns.filter(type=Transaction.TYPE_EXPENSE), "amount")
+        income = _sum_converted(month_txns.filter(type=Transaction.TYPE_INCOME), rate_map)
+        expenses = _sum_converted(month_txns.filter(type=Transaction.TYPE_EXPENSE), rate_map)
         series.append(
             {
                 "year": year,
@@ -216,6 +253,50 @@ def monthly_cashflow(workspace, user, months=6, until=None):
     return series
 
 
+def category_trends(workspace, user, months=6):
+    """Gasto mensual por categoría de los últimos `months` meses + cuáles
+    crecieron (o bajaron) más entre el mes en curso y el anterior.
+
+    Reusa `spending_by_category` mes a mes -- son pocos meses (máx. 24) y el
+    workspace de una app personal no tiene tantas categorías, así que
+    N queries chicas es más simple que armar una sola con `TruncMonth`.
+    """
+    until = timezone.localdate().replace(day=1)
+    periods = []
+    cursor = until
+    for _ in range(months):
+        periods.append((cursor.year, cursor.month))
+        cursor -= relativedelta(months=1)
+    periods.reverse()
+
+    by_cat: dict[str, dict] = {}
+    for idx, (year, month) in enumerate(periods):
+        for row in spending_by_category(workspace, user, year, month):
+            key = row["category"]
+            if key not in by_cat:
+                by_cat[key] = {
+                    "category": key,
+                    "category_name": row["category_name"],
+                    "amounts": [Decimal("0")] * months,
+                }
+            by_cat[key]["amounts"][idx] = row["spent"]
+
+    categories = list(by_cat.values())
+    for c in categories:
+        last, prev = c["amounts"][-1], c["amounts"][-2] if months > 1 else Decimal("0")
+        c["change"] = last - prev
+        c["change_pct"] = float(c["change"] / prev * 100) if prev else None
+
+    # El que más creció primero -- lo que interesa mostrar es "esto se te
+    # disparó", no un orden alfabético ni por total.
+    categories.sort(key=lambda c: c["change"], reverse=True)
+
+    return {
+        "months": [{"year": y, "month": m} for y, m in periods],
+        "categories": categories,
+    }
+
+
 def dashboard_summary(workspace, user, today=None):
     today = today or timezone.localdate()
     from apps.email_import.models import EmailImportLog
@@ -224,6 +305,7 @@ def dashboard_summary(workspace, user, today=None):
     return {
         "month": this_month,
         "net_worth": net_worth_breakdown(workspace, user)["net"],
+        "base_currency": workspace.base_currency,
         "pending_email_imports": EmailImportLog.objects.filter(
             workspace=workspace, status=EmailImportLog.STATUS_PENDING
         ).count(),
@@ -311,6 +393,7 @@ def close_month(year, month, workspace=None):
     snapshots = []
 
     for ws in workspaces:
+        rate_map = get_rate_map(ws)
         month_txns = Transaction.objects.filter(
             wallet__workspace=ws, date__year=year, date__month=month
         )
@@ -320,11 +403,11 @@ def close_month(year, month, workspace=None):
             month=month,
             defaults={
                 "total_net_worth": net_worth(ws),
-                "total_income": _sum(
-                    month_txns.filter(type=Transaction.TYPE_INCOME), "amount"
+                "total_income": _sum_converted(
+                    month_txns.filter(type=Transaction.TYPE_INCOME), rate_map
                 ),
-                "total_expenses": _sum(
-                    month_txns.filter(type=Transaction.TYPE_EXPENSE), "amount"
+                "total_expenses": _sum_converted(
+                    month_txns.filter(type=Transaction.TYPE_EXPENSE), rate_map
                 ),
             },
         )
@@ -336,19 +419,20 @@ def close_month(year, month, workspace=None):
 
 def _rollover_provisions(workspace, year, month):
     """Suma el sobrante (presupuesto - gasto real) de cada categoría a su provisión."""
+    rate_map = get_rate_map(workspace)
     budgets = CategoryBudget.objects.filter(
         workspace=workspace, year=year, month=month
     ).select_related("category")
 
     for budget in budgets:
-        spent = _sum(
+        spent = _sum_converted(
             Transaction.objects.filter(
                 category=budget.category,
                 date__year=year,
                 date__month=month,
                 counts_toward_budget=True,
             ),
-            "amount",
+            rate_map,
         )
         leftover = budget.amount - spent
         if leftover <= 0:

@@ -44,6 +44,29 @@ class Category(BaseModel):
         return self.name
 
 
+class Tag(BaseModel):
+    """Etiqueta libre para agrupar transacciones que cruzan categorías (p.
+    ej. "viaje-cancún": comida + transporte + hospedaje en un mismo total),
+    a diferencia de Category que es de un solo nivel jerárquico fijo. El
+    usuario las crea escribiendo el nombre directamente al elegirlas en una
+    transacción (ver `TransactionSerializer.tag_names`) -- no hace falta un
+    paso previo de "crear etiqueta"."""
+
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="tags")
+    name = models.CharField(max_length=40)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "name"], name="unique_tag_name_per_workspace"
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class Transaction(BaseModel):
     TYPE_INCOME = "income"
     TYPE_EXPENSE = "expense"
@@ -58,11 +81,13 @@ class Transaction(BaseModel):
     SOURCE_EMAIL_IMPORT = "email_import"
     SOURCE_RECURRING = "recurring"
     SOURCE_INSTALLMENT = "installment"
+    SOURCE_QUICK_ADD = "quick_add"
     SOURCE_CHOICES = [
         (SOURCE_MANUAL, "Manual"),
         (SOURCE_EMAIL_IMPORT, "Importada por correo"),
         (SOURCE_RECURRING, "Gasto recurrente"),
         (SOURCE_INSTALLMENT, "Cuota de compra a plazo"),
+        (SOURCE_QUICK_ADD, "Alta rápida (Atajo)"),
     ]
 
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
@@ -81,6 +106,10 @@ class Transaction(BaseModel):
         Category, on_delete=models.PROTECT, null=True, blank=True, related_name="transactions"
     )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
+    # Denormalizado de `wallet.currency` en cada save() -- nunca se manda
+    # desde el cliente (ver TransactionSerializer). Guardarlo acá (en vez de
+    # sólo hacer join a Wallet) es lo que permite sumar/reportar sin
+    # confundir monedas cuando el workspace tiene carteras en más de una.
     currency = models.CharField(max_length=3, default="USD")
     description = models.CharField(max_length=255, blank=True)
     date = models.DateField()
@@ -97,6 +126,15 @@ class Transaction(BaseModel):
     )
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
     is_recurring = models.BooleanField(default=False)
+    # Todas las partes de una misma transacción dividida comparten este UUID
+    # (ver TransactionViewSet.split); null en una transacción normal. No es
+    # una FK a otro modelo -- cada parte es una Transaction real e
+    # independiente (misma cartera/fecha, categoría y monto propios), así
+    # que el saldo y los reportes por categoría ya funcionan solos, sin
+    # ningún caso especial.
+    split_group = models.UUIDField(null=True, blank=True, db_index=True)
+    # Etiquetas libres, transversales a la categoría (ver Tag). Opcional.
+    tags = models.ManyToManyField(Tag, blank=True, related_name="transactions")
 
     class Meta:
         ordering = ["-date", "-created_at"]
@@ -108,6 +146,12 @@ class Transaction(BaseModel):
         ]
 
     def save(self, *args, **kwargs):
+        # Siempre la de `wallet` (de donde sale la plata), nunca la que
+        # mande el cliente -- así nunca queda desincronizada de la cartera
+        # real, ni en transferencias entre carteras de distinta moneda
+        # (conversión automática ahí: fuera de alcance por ahora).
+        if self.wallet_id:
+            self.currency = self.wallet.currency
         if self.type == self.TYPE_TRANSFER:
             # Una transferencia puede llevar categoría opcional (p. ej. mover
             # dinero a "Ahorro"): si la tiene y `counts_toward_budget`, cuenta
@@ -252,3 +296,28 @@ class InstallmentPurchase(BaseModel):
 
     def __str__(self):
         return f"{self.description} ({self.installments_paid}/{self.installments_total})"
+
+
+class RecurringSuggestionDismissal(BaseModel):
+    """"No, gracias" a una sugerencia de "esto parece recurrente" (ver
+    ``services.detect_recurring_candidates``) -- para no repetírsela.
+
+    Se identifica por categoría + cartera + monto típico redondeado al
+    entero más cercano, no por transacción puntual: así un centavo de
+    diferencia de un mes a otro sigue reconociendo el mismo patrón.
+    """
+
+    workspace = models.ForeignKey(
+        Workspace, on_delete=models.CASCADE, related_name="recurring_dismissals"
+    )
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="+")
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="+")
+    approx_amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "category", "wallet", "approx_amount"],
+                name="unique_recurring_suggestion_dismissal",
+            )
+        ]

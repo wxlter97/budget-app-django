@@ -21,6 +21,11 @@ class Workspace(BaseModel):
     """
     name = models.CharField(max_length=100)
 
+    # Moneda en la que se expresan los totales agregados (patrimonio neto,
+    # presupuesto, flujo de caja) cuando el workspace tiene carteras en más
+    # de una moneda -- ver ExchangeRate y apps.workspaces.currency.
+    base_currency = models.CharField(max_length=3, default="USD")
+
     # Identifica al workspace en la dirección de importación por correo
     # (import+<inbound_token>@<dominio>). Rotable si se filtra.
     inbound_token = models.CharField(
@@ -59,3 +64,24 @@ class Membership(BaseModel):
 
     def __str__(self):
         return f"{self.user} in {self.workspace} ({self.role})"
+
+
+class ExchangeRate(BaseModel):
+    """
+    Tasa manual (sin API externa, fuera de alcance): ``1 <currency> =
+    <rate_to_base> <workspace.base_currency>``. Sin tasa configurada para
+    una moneda, las carteras/transacciones en esa moneda simplemente no
+    entran en los totales agregados -- ver ``apps.workspaces.currency``.
+    """
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="exchange_rates")
+    currency = models.CharField(max_length=3)
+    rate_to_base = models.DecimalField(max_digits=18, decimal_places=6)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["workspace", "currency"], name="unique_rate_per_currency")
+        ]
+        ordering = ["currency"]
+
+    def __str__(self):
+        return f"1 {self.currency} = {self.rate_to_base} {self.workspace.base_currency}"

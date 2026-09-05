@@ -11,7 +11,7 @@ from apps.common.api import (
     WorkspaceScopedViewSet,
 )
 
-from .models import Membership, Workspace
+from .models import ExchangeRate, Membership, Workspace
 
 User = Membership._meta.get_field("user").related_model
 
@@ -28,6 +28,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         model = Workspace
         fields = (
             "id", "name", "role", "member_count",
+            "base_currency",
             "inbound_token", "inbound_email",
             "created_at", "updated_at",
         )
@@ -107,22 +108,13 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
         Body: ``{"scope": "movimientos" | "todo", "confirm": true}``.
         - ``movimientos`` (default): borra transacciones, recurrentes, cuotas,
-          presupuestos y snapshots; deja carteras y categorías, y resetea el
-          saldo de cada cartera a su ``opening_balance``.
-        - ``todo``: además borra carteras y categorías.
+          presupuestos y snapshots; deja carteras, categorías y etiquetas, y
+          resetea el saldo de cada cartera a su ``opening_balance``.
+        - ``todo``: además borra carteras, categorías y etiquetas.
         """
         from django.db import transaction as db_transaction
 
-        from apps.accounts.models import Wallet
-        from apps.accounts.services import recompute_wallet_balance
-        from apps.reports.models import MonthlySnapshot
-        from apps.transactions.models import (
-            Category,
-            CategoryBudget,
-            InstallmentPurchase,
-            RecurringExpense,
-            Transaction,
-        )
+        from .services import wipe_workspace_data
 
         workspace = self.get_object()
         self._require_owner(workspace, request.user)
@@ -135,43 +127,45 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
                 {"confirm": "Enviá confirm=true para ejecutar el reinicio."}
             )
 
-        deleted = {}
         with db_transaction.atomic():
-            deleted["transactions"] = Transaction.all_objects.filter(
-                wallet__workspace=workspace
-            ).delete()[0]
-            deleted["recurring_expenses"] = RecurringExpense.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-            deleted["installment_purchases"] = InstallmentPurchase.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-            deleted["category_budgets"] = CategoryBudget.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-            deleted["monthly_snapshots"] = MonthlySnapshot.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-
-            if scope == "todo":
-                # Carteras: hijas antes que padres (parent es on_delete=PROTECT).
-                wallets = Wallet.all_objects.filter(workspace=workspace)
-                while wallets.exists():
-                    leaves = wallets.filter(children__isnull=True)
-                    if not leaves.exists():
-                        leaves = wallets  # por si hay ciclos raros
-                    deleted["wallets"] = deleted.get("wallets", 0) + leaves.delete()[0]
-                cats = Category.all_objects.filter(workspace=workspace)
-                while cats.exists():
-                    leaves = cats.filter(subcategories__isnull=True)
-                    if not leaves.exists():
-                        leaves = cats
-                    deleted["categories"] = deleted.get("categories", 0) + leaves.delete()[0]
-            else:
-                for wallet in Wallet.objects.filter(workspace=workspace):
-                    recompute_wallet_balance(wallet)
+            deleted = wipe_workspace_data(workspace, scope=scope)
 
         return Response({"scope": scope, "deleted": deleted})
+
+    @action(detail=True, methods=["get"])
+    def backup(self, request, pk=None):
+        """Respaldo completo del workspace en JSON (carteras, categorías,
+        etiquetas, presupuestos, recurrentes, compras a plazo y
+        transacciones -- sin fotos de recibo) para descargar y, más
+        adelante, restaurar con `restore`. Solo owner."""
+        from .services import export_backup
+
+        workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+        return Response(export_backup(workspace))
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        """Restaura este workspace desde un respaldo de `backup`.
+        IRREVERSIBLE: primero borra TODO lo que hay en el workspace (como
+        `reset` con ``scope=todo``) y después recrea todo desde el archivo.
+        Solo owner. Body: ``{..backup.., "confirm": true}``."""
+        from .services import BackupError, import_backup
+
+        workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+
+        if request.data.get("confirm") is not True:
+            raise serializers.ValidationError(
+                {"confirm": "Enviá confirm=true para ejecutar la restauración."}
+            )
+
+        try:
+            summary = import_backup(workspace, request.data, request.user)
+        except BackupError as exc:
+            raise serializers.ValidationError({"detail": str(exc)})
+
+        return Response({"restored": summary})
 
     def _require_owner(self, workspace, user):
         membership = next(
@@ -258,3 +252,67 @@ class MembershipViewSet(WorkspaceScopedViewSet):
 
             raise ValidationError("No puedes expulsar al último owner del workspace.")
         instance.soft_delete()
+
+
+# ---------------------------------------------------------------------------
+# ExchangeRate
+# ---------------------------------------------------------------------------
+class ExchangeRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExchangeRate
+        fields = ("id", "currency", "rate_to_base", "updated_at")
+        read_only_fields = ("id", "updated_at")
+        # Sin esto, el `unique_together` implícito de la UniqueConstraint del
+        # modelo rechazaría con 400 el caso normal de actualizar la tasa de
+        # una moneda ya cargada -- el upsert de `create()` ya cubre eso.
+        extra_kwargs = {"currency": {"validators": []}}
+
+    def validate_currency(self, value):
+        value = value.upper()
+        if len(value) != 3 or not value.isalpha():
+            raise serializers.ValidationError("Tiene que ser un código ISO 4217 de 3 letras (p. ej. EUR).")
+        return value
+
+    def validate_rate_to_base(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Tiene que ser mayor que 0.")
+        return value
+
+    def validate(self, attrs):
+        workspace = self.context["workspace"]
+        currency = attrs.get("currency", getattr(self.instance, "currency", None))
+        if currency == workspace.base_currency:
+            raise serializers.ValidationError(
+                {"currency": f"Ya es la moneda base del workspace ({workspace.base_currency})."}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        # Upsert por (workspace, currency): cargar una tasa para una moneda
+        # que ya tenía una simplemente la actualiza, en vez de rechazar con
+        # un error de unicidad -- es el flujo normal de "corregir la tasa".
+        rate, _ = ExchangeRate.objects.update_or_create(
+            workspace=self.context["workspace"],
+            currency=validated_data["currency"],
+            defaults={"rate_to_base": validated_data["rate_to_base"]},
+        )
+        return rate
+
+
+class ExchangeRateViewSet(WorkspaceScopedViewSet):
+    """
+    Tasas de cambio manuales del workspace activo, para expresar los totales
+    agregados (patrimonio neto, presupuesto, flujo de caja) en una sola
+    moneda cuando hay carteras en más de una. Cualquier miembro puede
+    cargarlas -- no son destructivas como para restringirlas al owner.
+    """
+
+    serializer_class = ExchangeRateSerializer
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership]
+    queryset = ExchangeRate.objects.all()
+
+    def perform_destroy(self, instance):
+        # Hard delete: si fuera soft-delete, la UniqueConstraint (workspace,
+        # currency) seguiría "ocupada" por la fila borrada y no se podría
+        # volver a cargar una tasa para esa misma moneda.
+        instance.delete()

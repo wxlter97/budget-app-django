@@ -1,6 +1,9 @@
 import mimetypes
+import uuid
+from decimal import Decimal
 
-from django.db.models import Q
+from django.db import transaction as db_transaction
+from django.db.models import Case, Count, DecimalField, F, Max, Min, Q, Sum, When
 from django.http import FileResponse
 from django.utils import timezone
 from django_filters import rest_framework as filters
@@ -13,13 +16,17 @@ from rest_framework.response import Response
 from apps.accounts.models import Wallet
 from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewSet
 
+from . import services
 from .models import (
     Category,
     CategoryBudget,
     InstallmentPurchase,
     RecurringExpense,
+    Tag,
     Transaction,
 )
+
+_MONEY = DecimalField(max_digits=14, decimal_places=2)
 
 
 def _visible_wallets(workspace, user):
@@ -125,6 +132,84 @@ class CategoryViewSet(WorkspaceScopedViewSet):
 
 
 # ---------------------------------------------------------------------------
+# Tag
+# ---------------------------------------------------------------------------
+class TagSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Tag
+        fields = ("id", "name", "created_at")
+        read_only_fields = ("id", "created_at")
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Requerido.")
+        workspace = self.context["workspace"]
+        qs = Tag.objects.filter(workspace=workspace, name__iexact=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("Ya existe una etiqueta con ese nombre.")
+        return value
+
+    def create(self, validated_data):
+        validated_data["workspace"] = self.context["workspace"]
+        return super().create(validated_data)
+
+
+class TagSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    income = serializers.DecimalField(max_digits=16, decimal_places=2)
+    expense = serializers.DecimalField(max_digits=16, decimal_places=2)
+    count = serializers.IntegerField()
+    first_date = serializers.DateField(allow_null=True)
+    last_date = serializers.DateField(allow_null=True)
+
+
+class TagViewSet(WorkspaceScopedViewSet):
+    """Etiquetas libres del workspace. La asignación a transacciones va por
+    `TransactionSerializer.tag_names` (get-or-create), no por acá -- esto es
+    solo para listar, renombrar, borrar y ver el total de cada una."""
+
+    serializer_class = TagSerializer
+    queryset = Tag.objects.all()
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """Ingresos/gastos acumulados y cantidad de transacciones por
+        etiqueta (visibles para `request.user`) -- "cuánto llevo gastado en
+        el viaje X", sin importar en qué categoría cayó cada gasto."""
+        visible = services.visible_transactions(request.workspace, request.user)
+        rows = []
+        for tag in Tag.objects.filter(workspace=request.workspace):
+            agg = visible.filter(tags=tag).aggregate(
+                income=Sum(
+                    Case(When(type=Transaction.TYPE_INCOME, then=F("amount")), default=Decimal("0"), output_field=_MONEY)
+                ),
+                expense=Sum(
+                    Case(When(type=Transaction.TYPE_EXPENSE, then=F("amount")), default=Decimal("0"), output_field=_MONEY)
+                ),
+                count=Count("id"),
+                first_date=Min("date"),
+                last_date=Max("date"),
+            )
+            rows.append(
+                {
+                    "id": tag.id,
+                    "name": tag.name,
+                    "income": agg["income"] or Decimal("0"),
+                    "expense": agg["expense"] or Decimal("0"),
+                    "count": agg["count"] or 0,
+                    "first_date": agg["first_date"],
+                    "last_date": agg["last_date"],
+                }
+            )
+        rows.sort(key=lambda r: (r["expense"], r["income"]), reverse=True)
+        return Response(TagSummarySerializer(rows, many=True).data)
+
+
+# ---------------------------------------------------------------------------
 # Transaction
 # ---------------------------------------------------------------------------
 class TransactionSerializer(serializers.ModelSerializer):
@@ -137,6 +222,13 @@ class TransactionSerializer(serializers.ModelSerializer):
     # ver más abajo) — esto es sólo para que el cliente sepa si mostrar el
     # ícono de "tiene recibo" sin pedir el binario.
     has_receipt = serializers.SerializerMethodField()
+    tags = TagSerializer(many=True, read_only=True)
+    # Nombres de etiqueta tal como los escribe el usuario: si ya existe una
+    # con ese nombre en el workspace (sin distinguir mayúsculas) se reusa, si
+    # no se crea al vuelo -- no hace falta un paso previo de "crear etiqueta".
+    tag_names = serializers.ListField(
+        child=serializers.CharField(max_length=40), write_only=True, required=False
+    )
 
     class Meta:
         model = Transaction
@@ -154,14 +246,42 @@ class TransactionSerializer(serializers.ModelSerializer):
             "counts_toward_budget",
             "source",
             "is_recurring",
+            "split_group",
+            "tags",
+            "tag_names",
             "created_by",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_by", "created_at", "updated_at")
+        # split_group no se manda nunca a mano: sólo lo asigna la acción
+        # `split` (ver más abajo) al partir una transacción en varias.
+        read_only_fields = (
+            "id", "currency", "split_group", "created_by", "created_at", "updated_at",
+        )
 
     def get_has_receipt(self, obj) -> bool:
         return bool(obj.receipt)
+
+    def validate_tag_names(self, value):
+        if len(value) > 8:
+            raise serializers.ValidationError("Máximo 8 etiquetas por transacción.")
+        return value
+
+    def _resolve_tags(self, names):
+        """Get-or-create, sin duplicar por mayúsculas/espacios."""
+        workspace = self.context["workspace"]
+        result = []
+        seen = set()
+        for raw in names:
+            name = raw.strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            tag = Tag.objects.filter(workspace=workspace, name__iexact=name).first()
+            if tag is None:
+                tag = Tag.objects.create(workspace=workspace, name=name)
+            result.append(tag)
+        return result
 
     def _check_wallet(self, wallet, workspace, user, field):
         if wallet is None:
@@ -236,7 +356,42 @@ class TransactionSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user
-        return super().create(validated_data)
+        tag_names = validated_data.pop("tag_names", None)
+        instance = super().create(validated_data)
+        if tag_names is not None:
+            instance.tags.set(self._resolve_tags(tag_names))
+        return instance
+
+    def update(self, instance, validated_data):
+        tag_names = validated_data.pop("tag_names", None)
+        instance = super().update(instance, validated_data)
+        if tag_names is not None:
+            instance.tags.set(self._resolve_tags(tag_names))
+        return instance
+
+
+class TransactionSplitPartSerializer(serializers.Serializer):
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    description = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Tiene que ser mayor que 0.")
+        return value
+
+
+class TransactionSplitSerializer(serializers.Serializer):
+    """Body de la acción `split`: al menos 2 partes, cada una con su propia
+    categoría y monto. La suma exacta contra el monto original se valida
+    en la vista (ahí ya se conoce la transacción a dividir)."""
+
+    parts = TransactionSplitPartSerializer(many=True)
+
+    def validate_parts(self, parts):
+        if len(parts) < 2:
+            raise serializers.ValidationError("Hacen falta al menos 2 partes.")
+        return parts
 
 
 class TransactionFilter(filters.FilterSet):
@@ -247,6 +402,9 @@ class TransactionFilter(filters.FilterSet):
 
     date_after = filters.DateFilter(field_name="date", lookup_expr="gte")
     date_before = filters.DateFilter(field_name="date", lookup_expr="lte")
+    amount_min = filters.NumberFilter(field_name="amount", lookup_expr="gte")
+    amount_max = filters.NumberFilter(field_name="amount", lookup_expr="lte")
+    tag = filters.UUIDFilter(field_name="tags__id")
     search = filters.CharFilter(method="filter_search")
 
     def filter_search(self, queryset, name, value):
@@ -267,6 +425,7 @@ class TransactionFilter(filters.FilterSet):
             "source": ["exact"],
             "is_recurring": ["exact"],
             "counts_toward_budget": ["exact"],
+            "split_group": ["exact"],
         }
 
 
@@ -324,6 +483,70 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             txn.receipt = None
             txn.save(update_fields=["receipt", "updated_at"])
         return Response(status=204)
+
+    @action(detail=True, methods=["post"])
+    def split(self, request, pk=None):
+        """
+        Divide esta transacción (gasto o ingreso, no transferencia) en
+        varias partes, cada una con su propia categoría y monto -- p. ej.
+        una compra de supermercado repartida entre "Comida" e "Higiene".
+        Las partes tienen que sumar exactamente el monto original.
+
+        Reemplaza la transacción original (soft-delete) por N transacciones
+        nuevas, mismas cartera/fecha, unidas por `split_group` -- el saldo
+        de la cartera y los reportes por categoría no necesitan ningún caso
+        especial: cada parte es una Transaction real e independiente.
+        """
+        txn = self.get_object()
+        if txn.type == Transaction.TYPE_TRANSFER:
+            raise ValidationError("No se puede dividir una transferencia.")
+        if txn.split_group:
+            raise ValidationError("Esta transacción ya está dividida.")
+
+        serializer = TransactionSplitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        parts = serializer.validated_data["parts"]
+
+        workspace = self.request.workspace
+        for p in parts:
+            cat = p["category"]
+            if cat.workspace_id != workspace.id:
+                raise ValidationError({"parts": "Una categoría es de otro workspace."})
+            if cat.type != txn.type:
+                raise ValidationError(
+                    {"parts": f"Una categoría no es de tipo «{txn.type}»."}
+                )
+
+        total = sum((p["amount"] for p in parts), Decimal("0"))
+        if total != txn.amount:
+            raise ValidationError(
+                {"parts": f"Las partes suman {total}, pero la transacción es de {txn.amount}."}
+            )
+
+        group_id = uuid.uuid4()
+        original_tags = list(txn.tags.all())
+        with db_transaction.atomic():
+            new_parts = [
+                Transaction.objects.create(
+                    type=txn.type,
+                    wallet=txn.wallet,
+                    category=p["category"],
+                    amount=p["amount"],
+                    description=p.get("description") or txn.description,
+                    date=txn.date,
+                    counts_toward_budget=txn.counts_toward_budget,
+                    created_by=txn.created_by,
+                    source=txn.source,
+                    split_group=group_id,
+                )
+                for p in parts
+            ]
+            if original_tags:
+                for part in new_parts:
+                    part.tags.set(original_tags)
+            txn.soft_delete()
+
+        return Response(self.get_serializer(new_parts, many=True).data, status=201)
 
 
 # ---------------------------------------------------------------------------
@@ -384,11 +607,51 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
         read_only_fields = ("id", "created_at", "updated_at")
 
 
+class RecurringSuggestionSerializer(serializers.Serializer):
+    type = serializers.ChoiceField(choices=Transaction.TYPE_CHOICES)
+    category = serializers.UUIDField()
+    category_name = serializers.CharField()
+    wallet = serializers.UUIDField()
+    wallet_name = serializers.CharField()
+    suggested_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    occurrences = serializers.IntegerField()
+    last_date = serializers.DateField()
+    suggested_next_due_date = serializers.DateField()
+
+
+class RecurringSuggestionDismissSerializer(serializers.Serializer):
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    wallet = serializers.PrimaryKeyRelatedField(queryset=Wallet.objects.all())
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
 class RecurringExpenseViewSet(WorkspaceScopedViewSet):
     serializer_class = RecurringExpenseSerializer
     queryset = RecurringExpense.objects.select_related(
         "workspace", "category", "wallet"
     ).all()
+
+    @action(detail=False, methods=["get"])
+    def suggestions(self, request):
+        """Candidatas a recurrente detectadas en el historial -- ver
+        `services.detect_recurring_candidates`. No crea nada: para eso,
+        `POST /recurring-expenses/` con estos mismos datos."""
+        data = services.detect_recurring_candidates(request.workspace, request.user)
+        return Response(RecurringSuggestionSerializer(data, many=True).data)
+
+    @action(detail=False, methods=["post"], url_path="dismiss-suggestion")
+    def dismiss_suggestion(self, request):
+        """"No, gracias" a una sugerencia -- no se le vuelve a mostrar."""
+        serializer = RecurringSuggestionDismissSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cat = serializer.validated_data["category"]
+        wallet = serializer.validated_data["wallet"]
+        if cat.workspace_id != request.workspace.id or wallet.workspace_id != request.workspace.id:
+            raise ValidationError("La categoría o la cartera son de otro workspace.")
+        services.dismiss_recurring_suggestion(
+            request.workspace, cat, wallet, serializer.validated_data["amount"]
+        )
+        return Response(status=204)
 
 
 # ---------------------------------------------------------------------------

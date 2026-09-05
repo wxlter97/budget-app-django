@@ -74,6 +74,8 @@ LOCAL_APPS = [
     "apps.savings",
     "apps.reports",
     "apps.email_import",
+    "apps.quickadd",
+    "apps.notifications",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -215,6 +217,7 @@ REST_FRAMEWORK = {
         "user": env("THROTTLE_USER", default="1000/hour"),
         "auth": env("THROTTLE_AUTH", default="10/min"),      # login / registro
         "inbound": env("THROTTLE_INBOUND", default="120/min"),  # webhook de correo
+        "quick_add": env("THROTTLE_QUICK_ADD", default="60/min"),  # Atajo de Apple Shortcuts
     },
 }
 if RUNNING_TESTS:
@@ -299,6 +302,10 @@ CELERY_BEAT_SCHEDULE = {
     "close-previous-month": {
         "task": "apps.reports.tasks.close_previous_month",
         "schedule": crontab(hour=0, minute=5, day_of_month=1),
+    },
+    "send-daily-reminders": {
+        "task": "apps.notifications.tasks.send_daily_reminders",
+        "schedule": crontab(hour=7, minute=0),  # a la hora en que la gente ya despertó
     },
 }
 
