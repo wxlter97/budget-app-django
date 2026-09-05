@@ -11,7 +11,7 @@ from apps.common.api import (
     WorkspaceScopedViewSet,
 )
 
-from .models import Membership, Workspace
+from .models import ExchangeRate, Membership, Workspace
 
 User = Membership._meta.get_field("user").related_model
 
@@ -28,6 +28,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         model = Workspace
         fields = (
             "id", "name", "role", "member_count",
+            "base_currency",
             "inbound_token", "inbound_email",
             "created_at", "updated_at",
         )
@@ -258,3 +259,67 @@ class MembershipViewSet(WorkspaceScopedViewSet):
 
             raise ValidationError("No puedes expulsar al último owner del workspace.")
         instance.soft_delete()
+
+
+# ---------------------------------------------------------------------------
+# ExchangeRate
+# ---------------------------------------------------------------------------
+class ExchangeRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExchangeRate
+        fields = ("id", "currency", "rate_to_base", "updated_at")
+        read_only_fields = ("id", "updated_at")
+        # Sin esto, el `unique_together` implícito de la UniqueConstraint del
+        # modelo rechazaría con 400 el caso normal de actualizar la tasa de
+        # una moneda ya cargada -- el upsert de `create()` ya cubre eso.
+        extra_kwargs = {"currency": {"validators": []}}
+
+    def validate_currency(self, value):
+        value = value.upper()
+        if len(value) != 3 or not value.isalpha():
+            raise serializers.ValidationError("Tiene que ser un código ISO 4217 de 3 letras (p. ej. EUR).")
+        return value
+
+    def validate_rate_to_base(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Tiene que ser mayor que 0.")
+        return value
+
+    def validate(self, attrs):
+        workspace = self.context["workspace"]
+        currency = attrs.get("currency", getattr(self.instance, "currency", None))
+        if currency == workspace.base_currency:
+            raise serializers.ValidationError(
+                {"currency": f"Ya es la moneda base del workspace ({workspace.base_currency})."}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        # Upsert por (workspace, currency): cargar una tasa para una moneda
+        # que ya tenía una simplemente la actualiza, en vez de rechazar con
+        # un error de unicidad -- es el flujo normal de "corregir la tasa".
+        rate, _ = ExchangeRate.objects.update_or_create(
+            workspace=self.context["workspace"],
+            currency=validated_data["currency"],
+            defaults={"rate_to_base": validated_data["rate_to_base"]},
+        )
+        return rate
+
+
+class ExchangeRateViewSet(WorkspaceScopedViewSet):
+    """
+    Tasas de cambio manuales del workspace activo, para expresar los totales
+    agregados (patrimonio neto, presupuesto, flujo de caja) en una sola
+    moneda cuando hay carteras en más de una. Cualquier miembro puede
+    cargarlas -- no son destructivas como para restringirlas al owner.
+    """
+
+    serializer_class = ExchangeRateSerializer
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership]
+    queryset = ExchangeRate.objects.all()
+
+    def perform_destroy(self, instance):
+        # Hard delete: si fuera soft-delete, la UniqueConstraint (workspace,
+        # currency) seguiría "ocupada" por la fila borrada y no se podría
+        # volver a cargar una tasa para esa misma moneda.
+        instance.delete()

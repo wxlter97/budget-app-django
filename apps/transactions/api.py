@@ -158,7 +158,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_by", "created_at", "updated_at")
+        read_only_fields = ("id", "currency", "created_by", "created_at", "updated_at")
 
     def get_has_receipt(self, obj) -> bool:
         return bool(obj.receipt)

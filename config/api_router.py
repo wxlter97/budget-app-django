@@ -13,11 +13,12 @@ from apps.transactions.api import (
     RecurringExpenseViewSet,
     TransactionViewSet,
 )
-from apps.workspaces.api import MembershipViewSet, WorkspaceViewSet
+from apps.workspaces.api import ExchangeRateViewSet, MembershipViewSet, WorkspaceViewSet
 
 router = DefaultRouter()
 router.register("workspaces", WorkspaceViewSet, basename="workspace")
 router.register("memberships", MembershipViewSet, basename="membership")
+router.register("exchange-rates", ExchangeRateViewSet, basename="exchangerate")
 
 router.register("wallets", WalletViewSet, basename="wallet")
 

@@ -83,6 +83,10 @@ class Transaction(BaseModel):
         Category, on_delete=models.PROTECT, null=True, blank=True, related_name="transactions"
     )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
+    # Denormalizado de `wallet.currency` en cada save() -- nunca se manda
+    # desde el cliente (ver TransactionSerializer). Guardarlo acá (en vez de
+    # sólo hacer join a Wallet) es lo que permite sumar/reportar sin
+    # confundir monedas cuando el workspace tiene carteras en más de una.
     currency = models.CharField(max_length=3, default="USD")
     description = models.CharField(max_length=255, blank=True)
     date = models.DateField()
@@ -110,6 +114,12 @@ class Transaction(BaseModel):
         ]
 
     def save(self, *args, **kwargs):
+        # Siempre la de `wallet` (de donde sale la plata), nunca la que
+        # mande el cliente -- así nunca queda desincronizada de la cartera
+        # real, ni en transferencias entre carteras de distinta moneda
+        # (conversión automática ahí: fuera de alcance por ahora).
+        if self.wallet_id:
+            self.currency = self.wallet.currency
         if self.type == self.TYPE_TRANSFER:
             # Una transferencia puede llevar categoría opcional (p. ej. mover
             # dinero a "Ahorro"): si la tiene y `counts_toward_budget`, cuenta

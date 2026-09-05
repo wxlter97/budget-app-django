@@ -58,6 +58,7 @@ class NetWorthByPurposeSerializer(serializers.Serializer):
 class NetWorthSerializer(serializers.Serializer):
     net = _Money()
     by_purpose = NetWorthByPurposeSerializer()
+    base_currency = serializers.CharField()
 
 
 class BudgetRowSerializer(serializers.Serializer):
@@ -87,6 +88,7 @@ class BudgetGroupSerializer(serializers.Serializer):
 class BudgetReportSerializer(serializers.Serializer):
     year = serializers.IntegerField()
     month = serializers.IntegerField()
+    base_currency = serializers.CharField()
     rows = BudgetRowSerializer(many=True)
     groups = BudgetGroupSerializer(many=True)
     totals = BudgetTotalsSerializer()
@@ -121,6 +123,7 @@ class SpendRowSerializer(serializers.Serializer):
 class DashboardSummarySerializer(serializers.Serializer):
     month = CashflowPointSerializer()
     net_worth = _Money()
+    base_currency = serializers.CharField()
     pending_email_imports = serializers.IntegerField()
     top_expense_categories = SpendRowSerializer(many=True)
 
