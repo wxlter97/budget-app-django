@@ -11,6 +11,7 @@ from apps.transactions.api import (
     CategoryViewSet,
     InstallmentPurchaseViewSet,
     RecurringExpenseViewSet,
+    TagViewSet,
     TransactionViewSet,
 )
 from apps.workspaces.api import ExchangeRateViewSet, MembershipViewSet, WorkspaceViewSet
@@ -23,6 +24,7 @@ router.register("exchange-rates", ExchangeRateViewSet, basename="exchangerate")
 router.register("wallets", WalletViewSet, basename="wallet")
 
 router.register("categories", CategoryViewSet, basename="category")
+router.register("tags", TagViewSet, basename="tag")
 router.register("transactions", TransactionViewSet, basename="transaction")
 router.register("category-budgets", CategoryBudgetViewSet, basename="categorybudget")
 router.register("recurring-expenses", RecurringExpenseViewSet, basename="recurringexpense")

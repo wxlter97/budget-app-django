@@ -3,7 +3,7 @@ import uuid
 from decimal import Decimal
 
 from django.db import transaction as db_transaction
-from django.db.models import Q
+from django.db.models import Case, Count, DecimalField, F, Max, Min, Q, Sum, When
 from django.http import FileResponse
 from django.utils import timezone
 from django_filters import rest_framework as filters
@@ -22,8 +22,11 @@ from .models import (
     CategoryBudget,
     InstallmentPurchase,
     RecurringExpense,
+    Tag,
     Transaction,
 )
+
+_MONEY = DecimalField(max_digits=14, decimal_places=2)
 
 
 def _visible_wallets(workspace, user):
@@ -129,6 +132,84 @@ class CategoryViewSet(WorkspaceScopedViewSet):
 
 
 # ---------------------------------------------------------------------------
+# Tag
+# ---------------------------------------------------------------------------
+class TagSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Tag
+        fields = ("id", "name", "created_at")
+        read_only_fields = ("id", "created_at")
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Requerido.")
+        workspace = self.context["workspace"]
+        qs = Tag.objects.filter(workspace=workspace, name__iexact=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("Ya existe una etiqueta con ese nombre.")
+        return value
+
+    def create(self, validated_data):
+        validated_data["workspace"] = self.context["workspace"]
+        return super().create(validated_data)
+
+
+class TagSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    income = serializers.DecimalField(max_digits=16, decimal_places=2)
+    expense = serializers.DecimalField(max_digits=16, decimal_places=2)
+    count = serializers.IntegerField()
+    first_date = serializers.DateField(allow_null=True)
+    last_date = serializers.DateField(allow_null=True)
+
+
+class TagViewSet(WorkspaceScopedViewSet):
+    """Etiquetas libres del workspace. La asignación a transacciones va por
+    `TransactionSerializer.tag_names` (get-or-create), no por acá -- esto es
+    solo para listar, renombrar, borrar y ver el total de cada una."""
+
+    serializer_class = TagSerializer
+    queryset = Tag.objects.all()
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """Ingresos/gastos acumulados y cantidad de transacciones por
+        etiqueta (visibles para `request.user`) -- "cuánto llevo gastado en
+        el viaje X", sin importar en qué categoría cayó cada gasto."""
+        visible = services.visible_transactions(request.workspace, request.user)
+        rows = []
+        for tag in Tag.objects.filter(workspace=request.workspace):
+            agg = visible.filter(tags=tag).aggregate(
+                income=Sum(
+                    Case(When(type=Transaction.TYPE_INCOME, then=F("amount")), default=Decimal("0"), output_field=_MONEY)
+                ),
+                expense=Sum(
+                    Case(When(type=Transaction.TYPE_EXPENSE, then=F("amount")), default=Decimal("0"), output_field=_MONEY)
+                ),
+                count=Count("id"),
+                first_date=Min("date"),
+                last_date=Max("date"),
+            )
+            rows.append(
+                {
+                    "id": tag.id,
+                    "name": tag.name,
+                    "income": agg["income"] or Decimal("0"),
+                    "expense": agg["expense"] or Decimal("0"),
+                    "count": agg["count"] or 0,
+                    "first_date": agg["first_date"],
+                    "last_date": agg["last_date"],
+                }
+            )
+        rows.sort(key=lambda r: (r["expense"], r["income"]), reverse=True)
+        return Response(TagSummarySerializer(rows, many=True).data)
+
+
+# ---------------------------------------------------------------------------
 # Transaction
 # ---------------------------------------------------------------------------
 class TransactionSerializer(serializers.ModelSerializer):
@@ -141,6 +222,13 @@ class TransactionSerializer(serializers.ModelSerializer):
     # ver más abajo) — esto es sólo para que el cliente sepa si mostrar el
     # ícono de "tiene recibo" sin pedir el binario.
     has_receipt = serializers.SerializerMethodField()
+    tags = TagSerializer(many=True, read_only=True)
+    # Nombres de etiqueta tal como los escribe el usuario: si ya existe una
+    # con ese nombre en el workspace (sin distinguir mayúsculas) se reusa, si
+    # no se crea al vuelo -- no hace falta un paso previo de "crear etiqueta".
+    tag_names = serializers.ListField(
+        child=serializers.CharField(max_length=40), write_only=True, required=False
+    )
 
     class Meta:
         model = Transaction
@@ -159,6 +247,8 @@ class TransactionSerializer(serializers.ModelSerializer):
             "source",
             "is_recurring",
             "split_group",
+            "tags",
+            "tag_names",
             "created_by",
             "created_at",
             "updated_at",
@@ -171,6 +261,27 @@ class TransactionSerializer(serializers.ModelSerializer):
 
     def get_has_receipt(self, obj) -> bool:
         return bool(obj.receipt)
+
+    def validate_tag_names(self, value):
+        if len(value) > 8:
+            raise serializers.ValidationError("Máximo 8 etiquetas por transacción.")
+        return value
+
+    def _resolve_tags(self, names):
+        """Get-or-create, sin duplicar por mayúsculas/espacios."""
+        workspace = self.context["workspace"]
+        result = []
+        seen = set()
+        for raw in names:
+            name = raw.strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            tag = Tag.objects.filter(workspace=workspace, name__iexact=name).first()
+            if tag is None:
+                tag = Tag.objects.create(workspace=workspace, name=name)
+            result.append(tag)
+        return result
 
     def _check_wallet(self, wallet, workspace, user, field):
         if wallet is None:
@@ -245,7 +356,18 @@ class TransactionSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user
-        return super().create(validated_data)
+        tag_names = validated_data.pop("tag_names", None)
+        instance = super().create(validated_data)
+        if tag_names is not None:
+            instance.tags.set(self._resolve_tags(tag_names))
+        return instance
+
+    def update(self, instance, validated_data):
+        tag_names = validated_data.pop("tag_names", None)
+        instance = super().update(instance, validated_data)
+        if tag_names is not None:
+            instance.tags.set(self._resolve_tags(tag_names))
+        return instance
 
 
 class TransactionSplitPartSerializer(serializers.Serializer):
@@ -282,6 +404,7 @@ class TransactionFilter(filters.FilterSet):
     date_before = filters.DateFilter(field_name="date", lookup_expr="lte")
     amount_min = filters.NumberFilter(field_name="amount", lookup_expr="gte")
     amount_max = filters.NumberFilter(field_name="amount", lookup_expr="lte")
+    tag = filters.UUIDFilter(field_name="tags__id")
     search = filters.CharFilter(method="filter_search")
 
     def filter_search(self, queryset, name, value):
@@ -401,6 +524,7 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             )
 
         group_id = uuid.uuid4()
+        original_tags = list(txn.tags.all())
         with db_transaction.atomic():
             new_parts = [
                 Transaction.objects.create(
@@ -417,6 +541,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
                 )
                 for p in parts
             ]
+            if original_tags:
+                for part in new_parts:
+                    part.tags.set(original_tags)
             txn.soft_delete()
 
         return Response(self.get_serializer(new_parts, many=True).data, status=201)

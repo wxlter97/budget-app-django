@@ -44,6 +44,29 @@ class Category(BaseModel):
         return self.name
 
 
+class Tag(BaseModel):
+    """Etiqueta libre para agrupar transacciones que cruzan categorías (p.
+    ej. "viaje-cancún": comida + transporte + hospedaje en un mismo total),
+    a diferencia de Category que es de un solo nivel jerárquico fijo. El
+    usuario las crea escribiendo el nombre directamente al elegirlas en una
+    transacción (ver `TransactionSerializer.tag_names`) -- no hace falta un
+    paso previo de "crear etiqueta"."""
+
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="tags")
+    name = models.CharField(max_length=40)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "name"], name="unique_tag_name_per_workspace"
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class Transaction(BaseModel):
     TYPE_INCOME = "income"
     TYPE_EXPENSE = "expense"
@@ -110,6 +133,8 @@ class Transaction(BaseModel):
     # que el saldo y los reportes por categoría ya funcionan solos, sin
     # ningún caso especial.
     split_group = models.UUIDField(null=True, blank=True, db_index=True)
+    # Etiquetas libres, transversales a la categoría (ver Tag). Opcional.
+    tags = models.ManyToManyField(Tag, blank=True, related_name="transactions")
 
     class Meta:
         ordering = ["-date", "-created_at"]

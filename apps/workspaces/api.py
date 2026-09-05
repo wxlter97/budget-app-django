@@ -108,22 +108,13 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
         Body: ``{"scope": "movimientos" | "todo", "confirm": true}``.
         - ``movimientos`` (default): borra transacciones, recurrentes, cuotas,
-          presupuestos y snapshots; deja carteras y categorías, y resetea el
-          saldo de cada cartera a su ``opening_balance``.
-        - ``todo``: además borra carteras y categorías.
+          presupuestos y snapshots; deja carteras, categorías y etiquetas, y
+          resetea el saldo de cada cartera a su ``opening_balance``.
+        - ``todo``: además borra carteras, categorías y etiquetas.
         """
         from django.db import transaction as db_transaction
 
-        from apps.accounts.models import Wallet
-        from apps.accounts.services import recompute_wallet_balance
-        from apps.reports.models import MonthlySnapshot
-        from apps.transactions.models import (
-            Category,
-            CategoryBudget,
-            InstallmentPurchase,
-            RecurringExpense,
-            Transaction,
-        )
+        from .services import wipe_workspace_data
 
         workspace = self.get_object()
         self._require_owner(workspace, request.user)
@@ -136,43 +127,45 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
                 {"confirm": "Enviá confirm=true para ejecutar el reinicio."}
             )
 
-        deleted = {}
         with db_transaction.atomic():
-            deleted["transactions"] = Transaction.all_objects.filter(
-                wallet__workspace=workspace
-            ).delete()[0]
-            deleted["recurring_expenses"] = RecurringExpense.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-            deleted["installment_purchases"] = InstallmentPurchase.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-            deleted["category_budgets"] = CategoryBudget.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-            deleted["monthly_snapshots"] = MonthlySnapshot.all_objects.filter(
-                workspace=workspace
-            ).delete()[0]
-
-            if scope == "todo":
-                # Carteras: hijas antes que padres (parent es on_delete=PROTECT).
-                wallets = Wallet.all_objects.filter(workspace=workspace)
-                while wallets.exists():
-                    leaves = wallets.filter(children__isnull=True)
-                    if not leaves.exists():
-                        leaves = wallets  # por si hay ciclos raros
-                    deleted["wallets"] = deleted.get("wallets", 0) + leaves.delete()[0]
-                cats = Category.all_objects.filter(workspace=workspace)
-                while cats.exists():
-                    leaves = cats.filter(subcategories__isnull=True)
-                    if not leaves.exists():
-                        leaves = cats
-                    deleted["categories"] = deleted.get("categories", 0) + leaves.delete()[0]
-            else:
-                for wallet in Wallet.objects.filter(workspace=workspace):
-                    recompute_wallet_balance(wallet)
+            deleted = wipe_workspace_data(workspace, scope=scope)
 
         return Response({"scope": scope, "deleted": deleted})
+
+    @action(detail=True, methods=["get"])
+    def backup(self, request, pk=None):
+        """Respaldo completo del workspace en JSON (carteras, categorías,
+        etiquetas, presupuestos, recurrentes, compras a plazo y
+        transacciones -- sin fotos de recibo) para descargar y, más
+        adelante, restaurar con `restore`. Solo owner."""
+        from .services import export_backup
+
+        workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+        return Response(export_backup(workspace))
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        """Restaura este workspace desde un respaldo de `backup`.
+        IRREVERSIBLE: primero borra TODO lo que hay en el workspace (como
+        `reset` con ``scope=todo``) y después recrea todo desde el archivo.
+        Solo owner. Body: ``{..backup.., "confirm": true}``."""
+        from .services import BackupError, import_backup
+
+        workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+
+        if request.data.get("confirm") is not True:
+            raise serializers.ValidationError(
+                {"confirm": "Enviá confirm=true para ejecutar la restauración."}
+            )
+
+        try:
+            summary = import_backup(workspace, request.data, request.user)
+        except BackupError as exc:
+            raise serializers.ValidationError({"detail": str(exc)})
+
+        return Response({"restored": summary})
 
     def _require_owner(self, workspace, user):
         membership = next(

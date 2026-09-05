@@ -9,6 +9,7 @@ from .models import (
     InstallmentPurchase,
     RecurringExpense,
     RecurringSuggestionDismissal,
+    Tag,
     Transaction,
 )
 
@@ -19,6 +20,13 @@ class CategoryAdmin(BaseModelAdmin):
     list_filter = ("type",)
     search_fields = ("name", "workspace__name")
     raw_id_fields = ("workspace", "parent")
+
+
+@admin.register(Tag)
+class TagAdmin(BaseModelAdmin):
+    list_display = ("name", "workspace")
+    search_fields = ("name", "workspace__name")
+    raw_id_fields = ("workspace",)
 
 
 @admin.register(Transaction)
