@@ -40,14 +40,19 @@ def _visible_wallets(workspace, user):
 # ---------------------------------------------------------------------------
 class CategorySerializer(serializers.ModelSerializer):
     is_group = serializers.BooleanField(read_only=True)
+    # Cantidad de transacciones vivas con esta categoría: la usa el cliente
+    # para mostrar primero las más usadas al elegir categoría en una
+    # transacción (ver `CategoryViewSet.get_queryset`). `default=0` cubre las
+    # acciones que no la anotan (p. ej. `deleted`/`restore`).
+    usage_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Category
         fields = (
             "id", "name", "icon", "color", "type", "parent", "sort_order",
-            "is_group", "created_at", "updated_at",
+            "is_group", "usage_count", "created_at", "updated_at",
         )
-        read_only_fields = ("id", "is_group", "created_at", "updated_at")
+        read_only_fields = ("id", "is_group", "usage_count", "created_at", "updated_at")
 
     def validate_parent(self, parent):
         if parent is None:
@@ -91,6 +96,13 @@ class CategoryViewSet(WorkspaceScopedViewSet):
     serializer_class = CategorySerializer
     queryset = Category.objects.select_related("workspace", "parent").all()
     filterset_fields = {"type": ["exact"], "parent": ["exact", "isnull"]}
+
+    def get_queryset(self):
+        return super().get_queryset().annotate(
+            usage_count=Count(
+                "transactions", filter=Q(transactions__is_deleted=False), distinct=True
+            )
+        )
 
     @action(detail=False, methods=["post"])
     def reorder(self, request):
@@ -601,7 +613,7 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
     class Meta:
         model = RecurringExpense
         fields = (
-            "id", "category", "wallet", "amount", "frequency", "next_due_date",
+            "id", "name", "category", "wallet", "amount", "frequency", "next_due_date",
             "is_active", "created_at", "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")

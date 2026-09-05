@@ -242,13 +242,16 @@ class RecurringExpense(BaseModel):
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="recurring_expenses")
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="recurring_expenses")
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="recurring_expenses")
+    # Nombre libre (opcional): "Netflix", "iCloud+"... si no se define, las
+    # transacciones generadas y las listas usan el nombre de la categoría.
+    name = models.CharField(max_length=100, blank=True, default="")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     frequency = models.CharField(max_length=16, choices=FREQUENCY_CHOICES, default=FREQUENCY_MONTHLY)
     next_due_date = models.DateField()
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
-        return f"{self.category} recurrente {self.amount}/{self.frequency}"
+        return self.name or f"{self.category} recurrente {self.amount}/{self.frequency}"
 
 
 class InstallmentPurchase(BaseModel):
