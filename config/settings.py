@@ -160,6 +160,28 @@ STORAGES = {
     },
 }
 
+# El filesystem de Cloud Run (y de cualquier contenedor) es efímero: un
+# recibo guardado ahí desaparece en el próximo deploy/reinicio. Si se
+# configura GS_BUCKET_NAME, los adjuntos van a Google Cloud Storage en vez
+# de disco local (en dev, sin la variable, sigue usando FileSystemStorage
+# de arriba — no hace falta credencial ninguna para levantar el proyecto).
+# El bucket queda PRIVADO: nunca se sirve la URL de GCS directamente, los
+# archivos se leen a través de `/transactions/{id}/receipt/` (ver
+# apps/transactions/api.py), que ya exige la misma membresía de workspace
+# que el resto del API — así no dependemos de firmar URLs de GCS.
+GS_BUCKET_NAME = env("GS_BUCKET_NAME", default="")
+if GS_BUCKET_NAME:
+    STORAGES["default"] = {"BACKEND": "storages.backends.gcloud.GoogleCloudStorage"}
+    GS_DEFAULT_ACL = None  # el bucket usa uniform bucket-level access, no ACLs por objeto
+    GS_FILE_OVERWRITE = False
+    GS_QUERYSTRING_AUTH = False  # nunca se expone la URL de GCS al cliente
+
+# Default de Django (2.5 MB) se queda corto para una foto de recibo tomada
+# con la cámara del teléfono. El límite real de tamaño lo aplica la vista
+# (ver RECEIPT_MAX_SIZE en apps/transactions/api.py); este sólo evita que
+# Django rechace el request antes de llegar ahí.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+
 # ---------------------------------------------------------------------------
 # Django REST Framework
 # ---------------------------------------------------------------------------

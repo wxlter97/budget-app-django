@@ -29,3 +29,7 @@ redis~=5.2                      # broker/result backend por defecto de Celery
 
 # Configuración
 django-environ~=0.12            # lee settings desde variables de entorno / .env
+
+# Adjuntos (recibos de transacciones)
+Pillow~=11.0                      # valida/procesa las imágenes de ImageField
+django-storages[google]~=1.14     # backend de Google Cloud Storage (solo si GS_BUCKET_NAME está seteada)
