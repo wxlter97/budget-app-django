@@ -333,9 +333,12 @@ def import_backup(workspace, data, requesting_user):
     preservando su UUID original para que las relaciones queden intactas.
 
     El saldo de cada cartera NO se copia del backup: se reconstruye solo,
-    transacción a transacción, vía los mismos signals que mantienen
-    `current_balance` en uso normal -- así el restore de paso corrige
-    cualquier saldo que hubiera quedado desincronizado.
+    de una sola pasada por cartera (agregando sus transacciones ya
+    restauradas) una vez que todas las filas están cargadas -- así el
+    restore de paso corrige cualquier saldo que hubiera quedado
+    desincronizado. Todo se inserta con `bulk_create`/`bulk_update` (no fila
+    por fila) para que un respaldo grande (miles de transacciones) no tarde
+    minutos ni arriesgue el timeout del request.
 
     Un usuario (`owner_username` / `created_by_username`) que ya no es
     miembro del workspace destino (backup restaurado en otra cuenta, por
@@ -343,6 +346,7 @@ def import_backup(workspace, data, requesting_user):
     en vez de fallar.
     """
     from apps.accounts.models import Wallet
+    from apps.accounts.services import recompute_wallet_balance
     from apps.transactions.models import (
         Category,
         CategoryBudget,
@@ -377,10 +381,12 @@ def import_backup(workspace, data, requesting_user):
         wipe_workspace_data(workspace, scope="todo")
 
         # --- carteras: primera pasada sin `parent`/`is_default`, para no
-        # depender de en qué orden vienen padres e hijos en el backup ---
-        pending_wallets = []
-        for row in wallet_rows:
-            w = Wallet(
+        # depender de en qué orden vienen padres e hijos en el backup;
+        # `bulk_create` en vez de `.save()` fila por fila -- salta el save()
+        # de Wallet (que fija current_balance=opening_balance al crear), así
+        # que eso se replica acá a mano. ---
+        wallets = [
+            Wallet(
                 id=row["id"],
                 workspace=workspace,
                 name=row["name"],
@@ -389,6 +395,7 @@ def import_backup(workspace, data, requesting_user):
                 currency=row.get("currency", "USD"),
                 color=row.get("color", ""),
                 opening_balance=row.get("opening_balance") or "0",
+                current_balance=row.get("opening_balance") or "0",
                 counts_toward_net_worth=row.get("counts_toward_net_worth", True),
                 goal_amount=row.get("goal_amount"),
                 goal_date=row.get("goal_date"),
@@ -407,24 +414,31 @@ def import_backup(workspace, data, requesting_user):
                 sort_order=row.get("sort_order", 0),
                 is_default=False,
             )
-            w.save(force_insert=True)
-            pending_wallets.append((w, row.get("parent"), bool(row.get("is_default"))))
+            for row in wallet_rows
+        ]
+        Wallet.objects.bulk_create(wallets)
 
-        for w, parent_id, is_default in pending_wallets:
-            fields = []
-            if parent_id:
-                w.parent_id = parent_id
-                fields.append("parent")
-            if is_default:
+        # Si el backup viniera corrupto con más de una cartera default (no
+        # debería, `export_backup` nunca produce eso), gana la última -- el
+        # mismo criterio que el `save()` normal, que iba desmarcando a las
+        # anteriores a medida que procesaba filas.
+        default_id = next(
+            (row["id"] for row in reversed(wallet_rows) if row.get("is_default")), None
+        )
+        to_update = {}
+        for w, row in zip(wallets, wallet_rows):
+            if row.get("parent"):
+                w.parent_id = row["parent"]
+                to_update[w.id] = w
+            if w.id == default_id:
                 w.is_default = True
-                fields.append("is_default")
-            if fields:
-                w.save(update_fields=fields)
+                to_update[w.id] = w
+        if to_update:
+            Wallet.objects.bulk_update(to_update.values(), ["parent", "is_default"])
 
         # --- categorías: mismo patrón para `parent` ---
-        pending_categories = []
-        for row in cat_rows:
-            c = Category(
+        categories = [
+            Category(
                 id=row["id"],
                 workspace=workspace,
                 name=row["name"],
@@ -433,70 +447,94 @@ def import_backup(workspace, data, requesting_user):
                 type=row["type"],
                 sort_order=row.get("sort_order", 0),
             )
-            c.save(force_insert=True)
-            pending_categories.append((c, row.get("parent")))
+            for row in cat_rows
+        ]
+        Category.objects.bulk_create(categories)
 
-        for c, parent_id in pending_categories:
-            if parent_id:
-                c.parent_id = parent_id
-                c.save(update_fields=["parent"])
+        to_update = []
+        for c, row in zip(categories, cat_rows):
+            if row.get("parent"):
+                c.parent_id = row["parent"]
+                to_update.append(c)
+        if to_update:
+            Category.objects.bulk_update(to_update, ["parent"])
 
         # --- etiquetas ---
-        for row in tag_rows:
-            Tag(id=row["id"], workspace=workspace, name=row["name"]).save(force_insert=True)
+        Tag.objects.bulk_create(
+            [Tag(id=row["id"], workspace=workspace, name=row["name"]) for row in tag_rows]
+        )
 
         # --- presupuestos por categoría ---
-        for row in budget_rows:
-            CategoryBudget(
-                id=row["id"],
-                workspace=workspace,
-                category_id=row["category"],
-                amount=row["amount"],
-                month=row["month"],
-                year=row["year"],
-            ).save(force_insert=True)
+        CategoryBudget.objects.bulk_create(
+            [
+                CategoryBudget(
+                    id=row["id"],
+                    workspace=workspace,
+                    category_id=row["category"],
+                    amount=row["amount"],
+                    month=row["month"],
+                    year=row["year"],
+                )
+                for row in budget_rows
+            ]
+        )
 
         # --- recurrentes ---
-        for row in recurring_rows:
-            RecurringExpense(
-                id=row["id"],
-                workspace=workspace,
-                category_id=row["category"],
-                wallet_id=row["wallet"],
-                amount=row["amount"],
-                frequency=row["frequency"],
-                next_due_date=row["next_due_date"],
-                is_active=row.get("is_active", True),
-            ).save(force_insert=True)
+        RecurringExpense.objects.bulk_create(
+            [
+                RecurringExpense(
+                    id=row["id"],
+                    workspace=workspace,
+                    category_id=row["category"],
+                    wallet_id=row["wallet"],
+                    amount=row["amount"],
+                    frequency=row["frequency"],
+                    next_due_date=row["next_due_date"],
+                    is_active=row.get("is_active", True),
+                )
+                for row in recurring_rows
+            ]
+        )
 
         # --- compras a plazo (fila tal cual, sin re-disparar el cargo
         # inicial: la transacción de esa compra ya viene en `transactions`) ---
-        for row in installment_rows:
-            InstallmentPurchase(
-                id=row["id"],
-                workspace=workspace,
-                wallet_id=row["wallet"],
-                payment_wallet_id=row.get("payment_wallet"),
-                category_id=row["category"],
-                description=row["description"],
-                total_amount=row["total_amount"],
-                installment_amount=row["installment_amount"],
-                installments_total=row["installments_total"],
-                installments_paid=row.get("installments_paid", 0),
-                start_date=row["start_date"],
-            ).save(force_insert=True)
+        InstallmentPurchase.objects.bulk_create(
+            [
+                InstallmentPurchase(
+                    id=row["id"],
+                    workspace=workspace,
+                    wallet_id=row["wallet"],
+                    payment_wallet_id=row.get("payment_wallet"),
+                    category_id=row["category"],
+                    description=row["description"],
+                    total_amount=row["total_amount"],
+                    installment_amount=row["installment_amount"],
+                    installments_total=row["installments_total"],
+                    installments_paid=row.get("installments_paid", 0),
+                    start_date=row["start_date"],
+                )
+                for row in installment_rows
+            ]
+        )
 
-        # --- transacciones: .save() (no bulk_create) a propósito, para que
-        # corran los signals que reconstruyen current_balance de cada
-        # cartera -- el orden de inserción no afecta el total final ---
-        for row in txn_rows:
-            t = Transaction(
+        # --- transacciones: `bulk_create` en vez de `.save()` fila por fila
+        # -- con miles de transacciones, una consulta por fila (más la del
+        # signal que ajusta el saldo) es justo lo que hacía que restaurar un
+        # respaldo grande tardara tanto que el request podía hacer timeout.
+        # `bulk_create` no dispara signals ni el save() de Transaction, así
+        # que `currency` (normalmente heredada de la cartera) se fija acá a
+        # mano; `type` viene tal cual del backup, ya coherente con su
+        # categoría en el momento de exportar. ---
+        wallet_currency = {row["id"]: row.get("currency", "USD") for row in wallet_rows}
+        txns = [
+            Transaction(
                 id=row["id"],
                 type=row["type"],
                 wallet_id=row["wallet"],
                 to_wallet_id=row.get("to_wallet"),
                 category_id=row.get("category"),
                 amount=row["amount"],
+                currency=wallet_currency.get(row["wallet"], "USD"),
                 description=row.get("description", ""),
                 date=row["date"],
                 counts_toward_budget=row.get("counts_toward_budget", True),
@@ -505,10 +543,27 @@ def import_backup(workspace, data, requesting_user):
                 split_group=row.get("split_group"),
                 created_by=resolve_user(row.get("created_by_username")) or requesting_user,
             )
-            t.save(force_insert=True)
-            tag_ids = row.get("tags") or []
-            if tag_ids:
-                t.tags.set(tag_ids)
+            for row in txn_rows
+        ]
+        Transaction.objects.bulk_create(txns)
+
+        # Etiquetas de transacción: se inserta la tabla intermedia del m2m
+        # directo (`.set()` por transacción sería otra consulta por fila).
+        through = Transaction.tags.through
+        tag_links = [
+            through(transaction_id=row["id"], tag_id=tag_id)
+            for row in txn_rows
+            for tag_id in (row.get("tags") or [])
+        ]
+        if tag_links:
+            through.objects.bulk_create(tag_links)
+
+        # El saldo no se copia del backup: se recalcula una vez por cartera
+        # (agrega sus transacciones ya restauradas), en vez de ir sumando
+        # delta a delta transacción por transacción -- mismo resultado, y no
+        # escala con la cantidad de movimientos sino con la de carteras.
+        for wallet in Wallet.objects.filter(workspace=workspace):
+            recompute_wallet_balance(wallet)
 
     return {
         "wallets": len(wallet_rows),
