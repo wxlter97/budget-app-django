@@ -1,9 +1,13 @@
 """GET/POST /api/v1/workspaces/{id}/backup/ y /restore/ -- exportar todo el
 workspace a JSON y poder restaurarlo (mejora sugerida en la hoja de ruta)."""
 import datetime as dt
+import time
+import uuid
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -258,3 +262,113 @@ class BackupRestoreApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class BackupRestoreScaleTests(APITestCase):
+    """Un respaldo grande (miles de movimientos, como el de alguien migrando
+    desde otra app) no debe restaurarse fila por fila: eso fue justo lo que
+    hacía que un restore tardara tanto que el request llegaba a hacer
+    timeout. `import_backup` tiene que usar una cantidad de consultas que
+    no crezca con la cantidad de movimientos."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user("owner", "o@e.com", "pw")
+        self.ws = Workspace.objects.create(name="Casa")
+        Membership.objects.create(workspace=self.ws, user=self.owner, role=Membership.ROLE_OWNER)
+        self.wallet = Wallet.objects.create(workspace=self.ws, name="Banco")
+        self.food = Category.objects.create(workspace=self.ws, name="Comida", type=Category.TYPE_EXPENSE)
+        self.salary = Category.objects.create(workspace=self.ws, name="Sueldo", type=Category.TYPE_INCOME)
+
+    def _big_backup(self, n):
+        txns = []
+        for i in range(n):
+            is_income = i % 10 == 0
+            txns.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "type": "income" if is_income else "expense",
+                    "wallet": str(self.wallet.id),
+                    "to_wallet": None,
+                    "category": str(self.salary.id if is_income else self.food.id),
+                    "amount": "100.00" if is_income else "10.00",
+                    "description": f"mov {i}",
+                    "date": "2026-01-01",
+                    "counts_toward_budget": True,
+                    "source": "manual",
+                    "is_recurring": False,
+                    "split_group": None,
+                    "created_by_username": "owner",
+                    "tags": [],
+                }
+            )
+        return {
+            "format": "budget-app-backup",
+            "version": 1,
+            "exported_at": "2026-09-05T20:58:00Z",
+            "workspace_name": "Casa",
+            "base_currency": "USD",
+            "wallets": [
+                {
+                    "id": str(self.wallet.id),
+                    "name": "Banco",
+                    "purpose": "spending",
+                    "kind": "bank",
+                    "currency": "USD",
+                    "color": "",
+                    "opening_balance": "0",
+                    "counts_toward_net_worth": True,
+                    "goal_amount": None,
+                    "goal_date": None,
+                    "monthly_contribution": None,
+                    "credit_limit": None,
+                    "card_last4": "",
+                    "billing_cycle_day": None,
+                    "payment_due_day": None,
+                    "interest_rate": None,
+                    "due_date": None,
+                    "counterparty": "",
+                    "visibility": "shared",
+                    "owner_username": None,
+                    "is_active": True,
+                    "is_archived": False,
+                    "sort_order": 0,
+                    "is_default": True,
+                    "parent": None,
+                }
+            ],
+            "categories": [
+                {
+                    "id": str(self.food.id), "name": "Comida", "icon": "", "color": "",
+                    "type": "expense", "sort_order": 0, "parent": None,
+                },
+                {
+                    "id": str(self.salary.id), "name": "Sueldo", "icon": "", "color": "",
+                    "type": "income", "sort_order": 0, "parent": None,
+                },
+            ],
+            "tags": [],
+            "category_budgets": [],
+            "recurring_expenses": [],
+            "installment_purchases": [],
+            "transactions": txns,
+        }
+
+    def test_restores_thousands_of_transactions_quickly_and_in_few_queries(self):
+        n = 3000
+        backup = self._big_backup(n)
+
+        start = time.monotonic()
+        with CaptureQueriesContext(connection) as ctx:
+            summary = import_backup(self.ws, backup, self.owner)
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(summary["transactions"], n)
+        # Lo que importa no es el número exacto sino que no escale con `n`:
+        # muy por debajo de una consulta por movimiento.
+        self.assertLess(len(ctx.captured_queries), 100)
+        self.assertLess(elapsed, 10, "restaurar 3000 movimientos no debería tardar tanto")
+
+        self.assertEqual(Transaction.objects.filter(wallet__workspace=self.ws).count(), n)
+        self.wallet.refresh_from_db()
+        # 300 ingresos de 100 + 2700 gastos de 10 = 30000 - 27000
+        self.assertEqual(self.wallet.current_balance, Decimal("3000.00"))
