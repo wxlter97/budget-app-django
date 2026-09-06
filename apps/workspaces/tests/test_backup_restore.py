@@ -218,6 +218,91 @@ class BackupRestoreServiceTests(APITestCase):
         # Y no tocó nada del workspace destino al rechazarlo.
         self.assertEqual(Wallet.objects.filter(workspace=other_ws).count(), 0)
 
+    def test_accepts_explicit_nulls_for_fields_with_a_sensible_default(self):
+        """Un respaldo armado a mano (migrando desde otra app) fácilmente manda
+        `null` donde nuestro propio `export_backup` nunca lo haría -- p. ej.
+        `"description": null` en vez de simplemente omitir la clave. No debe
+        reventar con un IntegrityError crudo: tiene que caer al mismo default
+        que si la clave no viniera (justo lo que pasó con un respaldo real de
+        una migración desde otra app: 500 al restaurar)."""
+        wallet_id = str(uuid.uuid4())
+        cat_id = str(uuid.uuid4())
+        backup = {
+            "format": "budget-app-backup",
+            "version": 1,
+            "workspace_name": "Casa",
+            "base_currency": "USD",
+            "wallets": [
+                {
+                    "id": wallet_id, "name": "Banco", "purpose": None, "kind": None,
+                    "currency": None, "color": None, "opening_balance": None,
+                    "counts_toward_net_worth": None, "counterparty": None, "visibility": None,
+                    "is_active": None, "is_archived": None, "sort_order": None,
+                    "is_default": None, "parent": None, "owner_username": None,
+                }
+            ],
+            "categories": [
+                {
+                    "id": cat_id, "name": "Varios", "icon": None, "color": None,
+                    "type": "expense", "sort_order": None, "parent": None,
+                }
+            ],
+            "tags": [],
+            "category_budgets": [],
+            "recurring_expenses": [],
+            "installment_purchases": [],
+            "transactions": [
+                {
+                    "id": str(uuid.uuid4()), "type": "expense", "wallet": wallet_id, "to_wallet": None,
+                    "category": cat_id, "amount": "10.00", "description": None, "date": "2026-09-01",
+                    "counts_toward_budget": None, "source": None, "is_recurring": None,
+                    "split_group": None, "created_by_username": None, "tags": None,
+                }
+            ],
+        }
+
+        summary = import_backup(self.ws, backup, self.owner)
+        self.assertEqual(summary["transactions"], 1)
+
+        wallet = Wallet.objects.get(id=wallet_id)
+        self.assertEqual(wallet.purpose, Wallet.PURPOSE_SPENDING)
+        self.assertEqual(wallet.currency, "USD")
+        self.assertTrue(wallet.is_active)
+
+        txn = Transaction.objects.get(wallet_id=wallet_id)
+        self.assertEqual(txn.description, "")
+        self.assertTrue(txn.counts_toward_budget)
+        self.assertEqual(txn.source, Transaction.SOURCE_MANUAL)
+
+    def test_rejects_backup_missing_a_required_field(self):
+        """Falta (o viene en `null`) un campo sin default sensato -- acá, el
+        `type` de una transacción -- se rechaza con BackupError y sin tocar
+        nada, no con un IntegrityError crudo a mitad de la restauración."""
+        from apps.workspaces.services import BackupError
+
+        wallet_id = str(uuid.uuid4())
+        cat_id = str(uuid.uuid4())
+        backup = {
+            "format": "budget-app-backup",
+            "version": 1,
+            "workspace_name": "Casa",
+            "base_currency": "USD",
+            "wallets": [{"id": wallet_id, "name": "Banco"}],
+            "categories": [{"id": cat_id, "name": "Varios", "type": "expense"}],
+            "tags": [],
+            "category_budgets": [],
+            "recurring_expenses": [],
+            "installment_purchases": [],
+            "transactions": [
+                {"id": str(uuid.uuid4()), "type": None, "wallet": wallet_id, "amount": "10.00", "date": "2026-09-01"}
+            ],
+        }
+
+        with self.assertRaises(BackupError):
+            import_backup(self.ws, backup, self.owner)
+        # No tocó nada: los datos originales del workspace siguen ahí.
+        self.assertTrue(Wallet.objects.filter(id=self.parent_wallet.id).exists())
+
 
 class BackupRestoreApiTests(APITestCase):
     def setUp(self):

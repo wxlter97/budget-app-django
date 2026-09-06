@@ -287,6 +287,60 @@ def _check_no_id_collisions(workspace, data):
             )
 
 
+def _coalesce(row, key, default):
+    """`row.get(key, default)`, pero tratando un `null` explícito en el JSON
+    igual que si la clave no viniera. Para campos con default sensato (no
+    para relaciones, que si vienen en `null` es porque de verdad no aplican)
+    -- un respaldo armado a mano (migrando desde otra app) manda `null`
+    donde nuestro propio `export_backup` nunca lo haría, y sin esto eso
+    termina en un IntegrityError crudo de la base en vez de un error claro."""
+    value = row.get(key, default)
+    return default if value is None else value
+
+
+def _check_required_fields(data):
+    """Antes de tocar la base: que ninguna fila le falte (o traiga en
+    `null`) un campo sin el cual no tiene sentido -- así un respaldo
+    incompleto (típico de uno armado a mano) se rechaza con un mensaje
+    claro en vez de reventar a mitad de la restauración con un
+    IntegrityError crudo."""
+    problems = []
+
+    def require(rows, label, fields):
+        for i, row in enumerate(rows):
+            missing = [f for f in fields if row.get(f) is None]
+            if missing:
+                problems.append(f"{label}[{i}] (id={row.get('id')!r}): falta {missing}")
+
+    require(data.get("wallets", []), "wallets", ["id", "name"])
+    require(data.get("categories", []), "categories", ["id", "name", "type"])
+    require(data.get("tags", []), "tags", ["id", "name"])
+    require(
+        data.get("category_budgets", []),
+        "category_budgets",
+        ["id", "category", "amount", "month", "year"],
+    )
+    require(
+        data.get("recurring_expenses", []),
+        "recurring_expenses",
+        ["id", "category", "wallet", "amount", "frequency", "next_due_date"],
+    )
+    require(
+        data.get("installment_purchases", []),
+        "installment_purchases",
+        [
+            "id", "wallet", "category", "description", "total_amount",
+            "installment_amount", "installments_total", "start_date",
+        ],
+    )
+    require(data.get("transactions", []), "transactions", ["id", "type", "wallet", "amount", "date"])
+
+    if problems:
+        preview = "; ".join(problems[:10])
+        more = f" (y {len(problems) - 10} más)" if len(problems) > 10 else ""
+        raise BackupError(f"El respaldo tiene filas incompletas: {preview}{more}")
+
+
 def import_backup(workspace, data, requesting_user):
     """Reemplaza TODO el contenido de `workspace` por lo que trae `data` (un
     dump de `export_backup`): primero borra lo que había (como
@@ -320,6 +374,7 @@ def import_backup(workspace, data, requesting_user):
     if not isinstance(data, dict) or data.get("format") != BACKUP_FORMAT:
         raise BackupError("El archivo no es un respaldo válido de Budget.")
 
+    _check_required_fields(data)
     _check_no_id_collisions(workspace, data)
 
     members_by_username = {
@@ -351,13 +406,13 @@ def import_backup(workspace, data, requesting_user):
                 id=row["id"],
                 workspace=workspace,
                 name=row["name"],
-                purpose=row.get("purpose", Wallet.PURPOSE_SPENDING),
-                kind=row.get("kind", Wallet.KIND_BANK),
-                currency=row.get("currency", "USD"),
-                color=row.get("color", ""),
+                purpose=_coalesce(row, "purpose", Wallet.PURPOSE_SPENDING),
+                kind=_coalesce(row, "kind", Wallet.KIND_BANK),
+                currency=_coalesce(row, "currency", "USD"),
+                color=_coalesce(row, "color", ""),
                 opening_balance=row.get("opening_balance") or "0",
                 current_balance=row.get("opening_balance") or "0",
-                counts_toward_net_worth=row.get("counts_toward_net_worth", True),
+                counts_toward_net_worth=_coalesce(row, "counts_toward_net_worth", True),
                 goal_amount=row.get("goal_amount"),
                 goal_date=row.get("goal_date"),
                 monthly_contribution=row.get("monthly_contribution"),
@@ -367,12 +422,12 @@ def import_backup(workspace, data, requesting_user):
                 payment_due_day=row.get("payment_due_day"),
                 interest_rate=row.get("interest_rate"),
                 due_date=row.get("due_date"),
-                counterparty=row.get("counterparty", ""),
-                visibility=row.get("visibility", Wallet.VISIBILITY_SHARED),
+                counterparty=_coalesce(row, "counterparty", ""),
+                visibility=_coalesce(row, "visibility", Wallet.VISIBILITY_SHARED),
                 owner=resolve_user(row.get("owner_username")),
-                is_active=row.get("is_active", True),
-                is_archived=row.get("is_archived", False),
-                sort_order=row.get("sort_order", 0),
+                is_active=_coalesce(row, "is_active", True),
+                is_archived=_coalesce(row, "is_archived", False),
+                sort_order=_coalesce(row, "sort_order", 0),
                 is_default=False,
             )
             for row in wallet_rows
@@ -403,10 +458,10 @@ def import_backup(workspace, data, requesting_user):
                 id=row["id"],
                 workspace=workspace,
                 name=row["name"],
-                icon=row.get("icon", ""),
-                color=row.get("color", ""),
+                icon=_coalesce(row, "icon", ""),
+                color=_coalesce(row, "color", ""),
                 type=row["type"],
-                sort_order=row.get("sort_order", 0),
+                sort_order=_coalesce(row, "sort_order", 0),
             )
             for row in cat_rows
         ]
@@ -451,7 +506,7 @@ def import_backup(workspace, data, requesting_user):
                     amount=row["amount"],
                     frequency=row["frequency"],
                     next_due_date=row["next_due_date"],
-                    is_active=row.get("is_active", True),
+                    is_active=_coalesce(row, "is_active", True),
                 )
                 for row in recurring_rows
             ]
@@ -471,7 +526,7 @@ def import_backup(workspace, data, requesting_user):
                     total_amount=row["total_amount"],
                     installment_amount=row["installment_amount"],
                     installments_total=row["installments_total"],
-                    installments_paid=row.get("installments_paid", 0),
+                    installments_paid=_coalesce(row, "installments_paid", 0),
                     start_date=row["start_date"],
                 )
                 for row in installment_rows
@@ -486,7 +541,7 @@ def import_backup(workspace, data, requesting_user):
         # que `currency` (normalmente heredada de la cartera) se fija acá a
         # mano; `type` viene tal cual del backup, ya coherente con su
         # categoría en el momento de exportar. ---
-        wallet_currency = {row["id"]: row.get("currency", "USD") for row in wallet_rows}
+        wallet_currency = {row["id"]: _coalesce(row, "currency", "USD") for row in wallet_rows}
         txns = [
             Transaction(
                 id=row["id"],
@@ -496,11 +551,11 @@ def import_backup(workspace, data, requesting_user):
                 category_id=row.get("category"),
                 amount=row["amount"],
                 currency=wallet_currency.get(row["wallet"], "USD"),
-                description=row.get("description", ""),
+                description=_coalesce(row, "description", ""),
                 date=row["date"],
-                counts_toward_budget=row.get("counts_toward_budget", True),
-                source=row.get("source", Transaction.SOURCE_MANUAL),
-                is_recurring=row.get("is_recurring", False),
+                counts_toward_budget=_coalesce(row, "counts_toward_budget", True),
+                source=_coalesce(row, "source", Transaction.SOURCE_MANUAL),
+                is_recurring=_coalesce(row, "is_recurring", False),
                 split_group=row.get("split_group"),
                 created_by=resolve_user(row.get("created_by_username")) or requesting_user,
             )
