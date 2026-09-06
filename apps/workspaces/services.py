@@ -393,6 +393,14 @@ def import_backup(workspace, data, requesting_user):
     installment_rows = data.get("installment_purchases", [])
     txn_rows = data.get("transactions", [])
 
+    # Tamaño de lote para `bulk_create`/`bulk_update`: sin esto, Django manda
+    # todas las filas de un modelo en una sola sentencia SQL -- con miles de
+    # transacciones, contra una base remota (no localhost), eso es una sola
+    # sentencia larga y pesada en vez de varias cortas, más propensa a un
+    # timeout de statement en el lado de la base o a agotar memoria. Repartir
+    # en lotes es más lento en total pero muchísimo más resistente.
+    BATCH = 500
+
     with db_transaction.atomic():
         wipe_workspace_data(workspace, scope="todo")
 
@@ -432,7 +440,7 @@ def import_backup(workspace, data, requesting_user):
             )
             for row in wallet_rows
         ]
-        Wallet.objects.bulk_create(wallets)
+        Wallet.objects.bulk_create(wallets, batch_size=BATCH)
 
         # Si el backup viniera corrupto con más de una cartera default (no
         # debería, `export_backup` nunca produce eso), gana la última -- el
@@ -450,7 +458,7 @@ def import_backup(workspace, data, requesting_user):
                 w.is_default = True
                 to_update[w.id] = w
         if to_update:
-            Wallet.objects.bulk_update(to_update.values(), ["parent", "is_default"])
+            Wallet.objects.bulk_update(to_update.values(), ["parent", "is_default"], batch_size=BATCH)
 
         # --- categorías: mismo patrón para `parent` ---
         categories = [
@@ -465,7 +473,7 @@ def import_backup(workspace, data, requesting_user):
             )
             for row in cat_rows
         ]
-        Category.objects.bulk_create(categories)
+        Category.objects.bulk_create(categories, batch_size=BATCH)
 
         to_update = []
         for c, row in zip(categories, cat_rows):
@@ -473,11 +481,12 @@ def import_backup(workspace, data, requesting_user):
                 c.parent_id = row["parent"]
                 to_update.append(c)
         if to_update:
-            Category.objects.bulk_update(to_update, ["parent"])
+            Category.objects.bulk_update(to_update, ["parent"], batch_size=BATCH)
 
         # --- etiquetas ---
         Tag.objects.bulk_create(
-            [Tag(id=row["id"], workspace=workspace, name=row["name"]) for row in tag_rows]
+            [Tag(id=row["id"], workspace=workspace, name=row["name"]) for row in tag_rows],
+            batch_size=BATCH,
         )
 
         # --- presupuestos por categoría ---
@@ -492,7 +501,8 @@ def import_backup(workspace, data, requesting_user):
                     year=row["year"],
                 )
                 for row in budget_rows
-            ]
+            ],
+            batch_size=BATCH,
         )
 
         # --- recurrentes ---
@@ -509,7 +519,8 @@ def import_backup(workspace, data, requesting_user):
                     is_active=_coalesce(row, "is_active", True),
                 )
                 for row in recurring_rows
-            ]
+            ],
+            batch_size=BATCH,
         )
 
         # --- compras a plazo (fila tal cual, sin re-disparar el cargo
@@ -530,7 +541,8 @@ def import_backup(workspace, data, requesting_user):
                     start_date=row["start_date"],
                 )
                 for row in installment_rows
-            ]
+            ],
+            batch_size=BATCH,
         )
 
         # --- transacciones: `bulk_create` en vez de `.save()` fila por fila
@@ -561,7 +573,7 @@ def import_backup(workspace, data, requesting_user):
             )
             for row in txn_rows
         ]
-        Transaction.objects.bulk_create(txns)
+        Transaction.objects.bulk_create(txns, batch_size=BATCH)
 
         # Etiquetas de transacción: se inserta la tabla intermedia del m2m
         # directo (`.set()` por transacción sería otra consulta por fila).
@@ -572,7 +584,7 @@ def import_backup(workspace, data, requesting_user):
             for tag_id in (row.get("tags") or [])
         ]
         if tag_links:
-            through.objects.bulk_create(tag_links)
+            through.objects.bulk_create(tag_links, batch_size=BATCH)
 
         # El saldo no se copia del backup: se recalcula una vez por cartera
         # (agrega sus transacciones ya restauradas), en vez de ir sumando
