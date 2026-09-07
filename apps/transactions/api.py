@@ -848,21 +848,29 @@ class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.
                 raise serializers.ValidationError(
                     {"payment_wallet": "Debe ser distinta de la tarjeta."}
                 )
-            # Compra con tarjeta: el contador arranca en 0 (el total se carga al
-            # crear; las cuotas ya pagadas se registran pulsando "pagar").
-            if self.instance is None:
-                attrs["installments_paid"] = 0
+        if self.instance is None:
+            total = attrs.get("installments_total")
+            paid = attrs.get("installments_paid")
+            if total is not None and paid is not None:
+                attrs["installments_paid"] = max(0, min(paid, total))
         return attrs
 
     def create(self, validated_data):
-        purchase = super().create(validated_data)
-        if purchase.payment_wallet_id:
-            from .services import post_initial_installment_charge
+        # Cuotas ya pagadas antes de dar de alta la compra (tienda o tarjeta):
+        # el contador arranca en 0 y se registran retroactivamente, para que
+        # avancen igual que si se hubieran ido pagando con `pay/` en su
+        # momento -- si no, `installments_paid` queda seteado pero el saldo de
+        # la tarjeta (o el gasto real) no refleja esos pagos.
+        from .services import post_initial_installment_charge, post_prior_installments
 
-            request = self.context.get("request")
-            post_initial_installment_charge(
-                purchase, user=getattr(request, "user", None)
-            )
+        already_paid = validated_data.pop("installments_paid", 0) or 0
+        purchase = super().create({**validated_data, "installments_paid": 0})
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if purchase.payment_wallet_id:
+            post_initial_installment_charge(purchase, user=user)
+        if already_paid:
+            post_prior_installments(purchase, already_paid, user=user)
         return purchase
 
 

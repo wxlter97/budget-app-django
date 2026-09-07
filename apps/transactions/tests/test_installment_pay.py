@@ -59,6 +59,20 @@ class InstallmentPayTests(APITestCase):
         self.purchase.installments_paid = 12
         self.assertIsNone(post_next_installment(self.purchase, user=self.user))
 
+    def test_deleting_a_cuota_transaction_uncounts_it(self):
+        self.client.post(
+            f"/api/v1/installment-purchases/{self.purchase.id}/pay/", **{HEADER: str(self.ws.id)}
+        )
+        self.purchase.refresh_from_db()
+        self.assertEqual(self.purchase.installments_paid, 1)
+        txn = Transaction.objects.get()
+
+        resp = self.client.delete(f"/api/v1/transactions/{txn.id}/", **{HEADER: str(self.ws.id)})
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+
+        self.purchase.refresh_from_db()
+        self.assertEqual(self.purchase.installments_paid, 0)
+
 
 class CreditCardInstallmentTests(APITestCase):
     """Compra a plazo con tarjeta: cargo total al crear + cuotas como transferencia."""
@@ -121,10 +135,66 @@ class CreditCardInstallmentTests(APITestCase):
         self.assertEqual(transfer.wallet_id, self.bank.id)
         self.assertEqual(transfer.to_wallet_id, self.card.id)
 
-    def test_installments_paid_forced_to_zero_on_create(self):
+    def test_installments_paid_on_create_posts_retroactive_transfers(self):
+        # Compra hecha antes de darla de alta en la app: ya se pagaron 4 de
+        # las 12 cuotas. Deben quedar registradas (no perderse) para que el
+        # saldo de la tarjeta refleje esos pagos, no como si no hubieran
+        # pasado.
         res = self._create(installments_paid=4)
-        self.assertEqual(res.data["installments_paid"], 0)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["installments_paid"], 4)
+        self.card.refresh_from_db()
+        self.bank.refresh_from_db()
+        # tarjeta: -1200 (cargo total) + 4*100 (cuotas retroactivas)
+        self.assertEqual(self.card.current_balance, Decimal("-800.00"))
+        self.assertEqual(self.bank.current_balance, Decimal("4600.00"))
+        transfers = Transaction.objects.filter(type=Transaction.TYPE_TRANSFER).order_by("date")
+        self.assertEqual(transfers.count(), 4)
+        self.assertEqual(
+            [t.date for t in transfers],
+            [dt.date(2026, 9, 1), dt.date(2026, 10, 1), dt.date(2026, 11, 1), dt.date(2026, 12, 1)],
+        )
+
+    def test_installments_paid_clamped_to_total_on_create(self):
+        res = self._create(installments_paid=20)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["installments_paid"], 12)
 
     def test_payment_wallet_cannot_equal_card(self):
         res = self._create(payment_wallet=str(self.card.id))
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_deleting_a_cuota_transaction_uncounts_it(self):
+        pid = self._create().data["id"]
+        self.client.post(
+            f"/api/v1/installment-purchases/{pid}/pay/", **{HEADER: str(self.ws.id)}
+        )
+        purchase = InstallmentPurchase.objects.get(id=pid)
+        self.assertEqual(purchase.installments_paid, 1)
+        cuota = Transaction.objects.get(type=Transaction.TYPE_TRANSFER)
+
+        resp = self.client.delete(
+            f"/api/v1/transactions/{cuota.id}/", **{HEADER: str(self.ws.id)}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.installments_paid, 0)
+        self.card.refresh_from_db()
+        self.bank.refresh_from_db()
+        # se deshace el efecto en el saldo de ambas carteras, no solo el contador
+        self.assertEqual(self.card.current_balance, Decimal("-1200.00"))
+        self.assertEqual(self.bank.current_balance, Decimal("5000.00"))
+
+    def test_deleting_the_initial_card_charge_does_not_uncount_cuotas(self):
+        pid = self._create().data["id"]
+        self.client.post(
+            f"/api/v1/installment-purchases/{pid}/pay/", **{HEADER: str(self.ws.id)}
+        )
+        purchase = InstallmentPurchase.objects.get(id=pid)
+        charge = Transaction.objects.get(type=Transaction.TYPE_EXPENSE)
+
+        self.client.delete(f"/api/v1/transactions/{charge.id}/", **{HEADER: str(self.ws.id)})
+
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.installments_paid, 1)

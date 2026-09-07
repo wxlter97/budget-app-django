@@ -85,6 +85,7 @@ def _installment_txn_kwargs(purchase, n, date, *, user=None):
             description=desc,
             date=date,
             source=Transaction.SOURCE_INSTALLMENT,
+            installment_purchase=purchase,
             created_by=user,
         )
     return dict(
@@ -94,6 +95,7 @@ def _installment_txn_kwargs(purchase, n, date, *, user=None):
         description=desc,
         date=date,
         source=Transaction.SOURCE_INSTALLMENT,
+        installment_purchase=purchase,
         created_by=user,
     )
 
@@ -110,8 +112,35 @@ def post_initial_installment_charge(purchase, *, user=None):
         description=f"{purchase.description} (compra a {purchase.installments_total} cuotas)",
         date=purchase.start_date,
         source=Transaction.SOURCE_INSTALLMENT,
+        installment_purchase=purchase,
         created_by=user,
     )
+
+
+def post_prior_installments(purchase, count, *, user=None):
+    """Registra retroactivamente las primeras `count` cuotas de `purchase` --
+    una compra a plazo que ya venía con cuotas pagadas ANTES de darla de alta
+    en la app (el vendedor/banco original ya las cobró). Crea una Transaction
+    por cuota, fechada en su vencimiento calendario real, igual que si se
+    hubiera ido pagando con `pay/` en su momento.
+
+    Sin esto, `installments_paid` avanza pero esos pagos no quedan
+    reflejados en ningún lado: ni bajan el gasto real, ni (para compras con
+    tarjeta) restauran el crédito disponible que ya se pagó -- la tarjeta
+    queda con más deuda de la que hay en realidad.
+    """
+    created = []
+    for n in range(1, count + 1):
+        due_date = purchase.start_date + relativedelta(months=n - 1)
+        with db_transaction.atomic():
+            created.append(
+                Transaction.objects.create(
+                    **_installment_txn_kwargs(purchase, n, due_date, user=user)
+                )
+            )
+            purchase.installments_paid = n
+            purchase.save(update_fields=["installments_paid", "updated_at"])
+    return created
 
 
 def post_due_installments(as_of=None):
