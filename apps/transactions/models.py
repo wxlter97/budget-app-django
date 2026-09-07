@@ -125,6 +125,18 @@ class Transaction(BaseModel):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="transactions"
     )
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    # Solo `source=installment`: la compra a plazo que generó esta
+    # transacción (cargo total o cuota) -- así, si se borra la transacción,
+    # el contador `installments_paid` de la compra se puede corregir en vez
+    # de quedar desincronizado de los movimientos reales (ver signals.py).
+    # `null` en transacciones de compras a plazo creadas antes de este campo.
+    installment_purchase = models.ForeignKey(
+        "InstallmentPurchase",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="transactions",
+    )
     is_recurring = models.BooleanField(default=False)
     # Todas las partes de una misma transacción dividida comparten este UUID
     # (ver TransactionViewSet.split); null en una transacción normal. No es

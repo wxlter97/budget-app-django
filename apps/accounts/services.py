@@ -325,11 +325,18 @@ def credit_card_statement(wallet, as_of=None):
     de un corte anterior sigue apareciendo hasta que se abone (así es como
     funciona una tarjeta real, no se resetea sola cada mes). Se compone de:
 
+    - lo que ya se debía al dar de alta la tarjeta (`opening_balance`,
+      negativo = deuda existente al momento de empezar a llevarla en la app),
     - los gastos normales cargados a la tarjeta (sin contar el cargo total
       inicial de una compra a plazo -- ese cargo baja el disponible, pero lo
       que hay que *pagar* cada mes es solo la cuota, no la compra completa),
     - más las cuotas de compras a plazo que ya vencieron,
     - menos los abonos/pagos reales que ya se hicieron a la tarjeta.
+
+    Sin el `opening_balance`, una tarjeta dada de alta con deuda previa (o con
+    saldo a favor) arrastra ese desfase para siempre y `total_due` deja de
+    corresponder con la realidad -- por eso se resta acá igual que lo suma
+    `recompute_wallet_balance` para `current_balance`.
 
     También incluye la actividad del período abierto (desde el corte hasta
     `as_of`, aún no vencida) como referencia de cuánto se lleva acumulado
@@ -344,7 +351,7 @@ def credit_card_statement(wallet, as_of=None):
     payment_due_date = _payment_due_date(wallet, cutoff_date)
 
     spent, paid, installments_due, lines = _statement_components(wallet, cutoff_date)
-    total_due = spent - paid + installments_due
+    total_due = spent - paid + installments_due - wallet.opening_balance
 
     spent_open, paid_open, installments_open, _ = _statement_components(wallet, as_of)
     current_period_spent = (spent_open - spent) + (installments_open - installments_due)

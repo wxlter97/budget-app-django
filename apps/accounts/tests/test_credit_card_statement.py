@@ -71,6 +71,25 @@ class CreditCardStatementServiceTests(APITestCase):
         data = credit_card_statement(w, as_of=dt.date(2024, 1, 5))
         self.assertEqual(data["payment_due_date"], dt.date(2024, 1, 20))
 
+    def test_opening_balance_debt_carries_into_total_due(self):
+        # Tarjeta dada de alta con deuda previa (ya debía 200 al empezar a
+        # llevarla en la app) -- sin esto, total_due queda desfasado de
+        # current_balance para siempre.
+        w = self._card(billing_cycle_day=3, opening_balance=Decimal("-200.00"))
+        Transaction.objects.create(
+            wallet=w, category=self.expense_cat, amount=Decimal("50.00"), date=dt.date(2024, 1, 1)
+        )
+        data = credit_card_statement(w, as_of=dt.date(2024, 1, 5))
+        self.assertEqual(data["total_due"], Decimal("250.00"))
+
+    def test_opening_balance_credit_reduces_total_due(self):
+        w = self._card(billing_cycle_day=3, opening_balance=Decimal("200.00"))
+        Transaction.objects.create(
+            wallet=w, category=self.expense_cat, amount=Decimal("50.00"), date=dt.date(2024, 1, 1)
+        )
+        data = credit_card_statement(w, as_of=dt.date(2024, 1, 5))
+        self.assertEqual(data["total_due"], Decimal("-150.00"))
+
     def test_expenses_up_to_cutoff_minus_payments(self):
         w = self._card(billing_cycle_day=3)
         Transaction.objects.create(
