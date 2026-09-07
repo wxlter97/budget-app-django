@@ -112,3 +112,21 @@ class TransactionFilterTests(APITestCase):
         )
         ids = self._list(wallet=str(other_wallet.id))
         self.assertEqual(ids, {str(other.id)})
+
+    def test_wallet_filter_also_matches_incoming_transfers(self):
+        """El historial de una cartera tiene que traer también las
+        transferencias donde es el destino -- si no, una cartera que solo
+        recibe traspasos (nunca aparece como `wallet` en esas filas) se ve
+        vacía pese a tener saldo."""
+        other_wallet = Wallet.objects.create(
+            workspace=self.ws, name="Otra", purpose=Wallet.PURPOSE_SPENDING
+        )
+        incoming = Transaction.objects.create(
+            type=Transaction.TYPE_TRANSFER, wallet=self.acc, to_wallet=other_wallet,
+            amount=50, date=dt.date(2026, 9, 3),
+        )
+        ids = self._list(wallet=str(other_wallet.id))
+        self.assertEqual(ids, {str(incoming.id)})
+        # Y desde el lado del origen, la sigue trayendo también (no se rompió
+        # el caso normal).
+        self.assertIn(str(incoming.id), self._list(wallet=str(self.acc.id)))
