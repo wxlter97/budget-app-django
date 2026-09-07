@@ -1,5 +1,7 @@
 from datetime import date as date_cls
+from decimal import Decimal
 
+from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.utils import timezone
 from django_filters import rest_framework as filters
@@ -99,6 +101,28 @@ class WalletSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Eso crearía un ciclo de carteras.")
             seen.add(node.id)
             node = node.parent
+        # Una cartera padre es puramente un contenedor: su saldo mostrado es
+        # la suma de sus hijas, nunca uno propio. Si ya tiene saldo o
+        # movimientos propios, agregarle una hija ahora los dejaría
+        # escondidos en vez de sumados -- hay que "dividirla" primero (acción
+        # `split`, que le pasa toda su actividad a una cuenta nueva).
+        if self.instance is None or self.instance.parent_id != parent.id:
+            from apps.transactions.models import InstallmentPurchase, RecurringExpense, Transaction
+
+            has_own_activity = (
+                bool(parent.opening_balance)
+                or Transaction.objects.filter(Q(wallet=parent) | Q(to_wallet=parent)).exists()
+                or RecurringExpense.objects.filter(wallet=parent).exists()
+                or InstallmentPurchase.objects.filter(
+                    Q(wallet=parent) | Q(payment_wallet=parent)
+                ).exists()
+            )
+            if has_own_activity:
+                raise serializers.ValidationError(
+                    "Esa cartera ya tiene saldo o movimientos propios; antes de "
+                    "agregarle una hija, dividila (acción \"Dividir cartera\") para "
+                    "pasar su actividad a una cuenta nueva."
+                )
         return parent
 
     def validate(self, attrs):
@@ -228,6 +252,87 @@ class WalletViewSet(WorkspaceScopedViewSet):
         wallet.is_archived = False
         wallet.save(update_fields=["is_archived", "updated_at"])
         return Response(self.get_serializer(wallet).data)
+
+    @action(detail=True, methods=["post"])
+    def split(self, request, pk=None):
+        """Convierte esta cartera en un grupo: crea una cuenta nueva (hija)
+        con el nombre pedido y le pasa TODO lo propio de esta cartera --
+        saldo de apertura, transacciones (como origen y como destino),
+        recurrentes y compras a plazo -- dejando a esta en 0, puramente un
+        contenedor cuyo saldo mostrado pasa a ser la suma de sus hijas (ver
+        `_reject_if_group_wallet` en transactions/api.py, que es lo que
+        impide cargarle algo nuevo directamente de acá en adelante).
+
+        Para cuando una cartera que ya tenía actividad propia necesita
+        empezar a agrupar otras (p. ej. separar "Multimoney" en el banco
+        real + un fondo de ahorro aparte, ambos bajo el mismo grupo)."""
+        from apps.transactions.models import InstallmentPurchase, RecurringExpense, Transaction
+
+        wallet = self._owned_wallet(pk)
+        if wallet is None:
+            return Response({"detail": "No encontrada."}, status=404)
+
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            raise serializers.ValidationError({"name": "Requerido."})
+
+        with db_transaction.atomic():
+            child = Wallet.objects.create(
+                workspace=wallet.workspace,
+                parent=wallet,
+                name=name,
+                purpose=wallet.purpose,
+                kind=wallet.kind,
+                color=wallet.color,
+                currency=wallet.currency,
+                opening_balance=wallet.opening_balance,
+                counts_toward_net_worth=wallet.counts_toward_net_worth,
+                credit_limit=wallet.credit_limit,
+                goal_amount=wallet.goal_amount,
+                goal_date=wallet.goal_date,
+                monthly_contribution=wallet.monthly_contribution,
+                card_last4=wallet.card_last4,
+                billing_cycle_day=wallet.billing_cycle_day,
+                payment_due_day=wallet.payment_due_day,
+                interest_rate=wallet.interest_rate,
+                due_date=wallet.due_date,
+                counterparty=wallet.counterparty,
+                visibility=wallet.visibility,
+                owner=wallet.owner,
+                is_active=wallet.is_active,
+                is_archived=wallet.is_archived,
+                sort_order=wallet.sort_order,
+            )
+
+            Transaction.all_objects.filter(wallet=wallet).update(wallet=child)
+            Transaction.all_objects.filter(to_wallet=wallet).update(to_wallet=child)
+            RecurringExpense.objects.filter(wallet=wallet).update(wallet=child)
+            InstallmentPurchase.objects.filter(wallet=wallet).update(wallet=child)
+            InstallmentPurchase.objects.filter(payment_wallet=wallet).update(payment_wallet=child)
+
+            if wallet.is_default:
+                # save() de Wallet desmarca sola a `wallet` acá (una sola
+                # default por workspace) -- sincronizamos el objeto en
+                # memoria para que el guardado de abajo no la vuelva a
+                # marcar (leería is_default=True viejo si no).
+                child.is_default = True
+                child.save(update_fields=["is_default", "updated_at"])
+                wallet.is_default = False
+
+            wallet.opening_balance = Decimal("0")
+            wallet.save(update_fields=["opening_balance", "updated_at"])
+            wallet.refresh_from_db()
+
+            recompute_wallet_balance(wallet)
+            recompute_wallet_balance(child)
+
+        return Response(
+            {
+                "parent": self.get_serializer(wallet).data,
+                "child": self.get_serializer(child).data,
+            },
+            status=201,
+        )
 
     @action(detail=True, methods=["get"])
     def projection(self, request, pk=None):
