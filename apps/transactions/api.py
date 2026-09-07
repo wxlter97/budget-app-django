@@ -406,6 +406,15 @@ class TransactionFilter(filters.FilterSet):
     amount_max = filters.NumberFilter(field_name="amount", lookup_expr="lte")
     tag = filters.UUIDFilter(field_name="tags__id")
     search = filters.CharFilter(method="filter_search")
+    # `wallet` matchea tanto si la cartera es el origen como si es el destino
+    # de una transferencia -- si no, el historial de una cartera que solo
+    # recibe transferencias (nunca aparece como `wallet` en esas filas) se
+    # ve vacío pese a tener saldo. `to_wallet` (abajo, en Meta.fields) queda
+    # disponible aparte para quien de verdad quiera solo "las que entran".
+    wallet = filters.UUIDFilter(method="filter_wallet")
+
+    def filter_wallet(self, queryset, name, value):
+        return queryset.filter(Q(wallet=value) | Q(to_wallet=value))
 
     def filter_search(self, queryset, name, value):
         """Coincidencia parcial sobre descripción, categoría o cartera."""
@@ -419,7 +428,6 @@ class TransactionFilter(filters.FilterSet):
         model = Transaction
         fields = {
             "type": ["exact"],
-            "wallet": ["exact"],
             "to_wallet": ["exact"],
             "category": ["exact"],
             "source": ["exact"],
