@@ -36,6 +36,18 @@ def _visible_wallets(workspace, user):
     )
 
 
+def _reject_if_group_wallet(wallet, field):
+    """Una cartera con hijas es puramente un contenedor -- su saldo mostrado
+    es la suma de sus hijas, nunca uno propio (ver `Wallet.aggregated_balance`).
+    Igual que un grupo de categoría, no se le puede cargar nada directamente:
+    si tuviera transacciones propias además de las de sus hijas, ese saldo
+    "propio" quedaría escondido del usuario en vez de sumado."""
+    if wallet is not None and Wallet.objects.filter(parent_id=wallet.id).exists():
+        raise serializers.ValidationError(
+            {field: "Esta cartera agrupa a otras (tiene hijas); elegí una de sus hijas."}
+        )
+
+
 # ---------------------------------------------------------------------------
 # Category
 # ---------------------------------------------------------------------------
@@ -336,6 +348,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {field: "No puedes usar una cartera privada ajena."}
             )
+        _reject_if_group_wallet(wallet, field)
 
     def validate(self, attrs):
         workspace = self.context["workspace"]
@@ -737,6 +750,8 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        wallet = attrs.get("wallet") or getattr(self.instance, "wallet", None)
+        _reject_if_group_wallet(wallet, "wallet")
         next_due = attrs.get("next_due_date")
         current = getattr(self.instance, "next_due_date", None)
         # Sólo rechaza si de verdad está ELIGIENDO una fecha pasada nueva --
@@ -826,6 +841,8 @@ class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.
             self.instance, "payment_wallet", None
         )
         wallet = attrs.get("wallet") or getattr(self.instance, "wallet", None)
+        _reject_if_group_wallet(wallet, "wallet")
+        _reject_if_group_wallet(payment_wallet, "payment_wallet")
         if payment_wallet is not None:
             if wallet is not None and payment_wallet.id == wallet.id:
                 raise serializers.ValidationError(
