@@ -1,8 +1,9 @@
 from django.db import transaction
-from rest_framework import serializers, viewsets
+from django.utils import timezone
+from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from apps.common.api import (
@@ -11,7 +12,8 @@ from apps.common.api import (
     WorkspaceScopedViewSet,
 )
 
-from .models import ExchangeRate, Membership, Workspace
+from .models import ExchangeRate, Invitation, Membership, Workspace
+from .services import get_or_create_invitation, send_invitation_email
 
 User = Membership._meta.get_field("user").related_model
 
@@ -181,35 +183,16 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 # Membership
 # ---------------------------------------------------------------------------
 class MembershipSerializer(serializers.ModelSerializer):
-    email = serializers.EmailField(write_only=True, required=False)
     username = serializers.CharField(source="user.username", read_only=True)
     user_email = serializers.EmailField(source="user.email", read_only=True)
 
     class Meta:
         model = Membership
-        fields = ("id", "user", "username", "user_email", "email", "role", "joined_at")
+        fields = ("id", "user", "username", "user_email", "role", "joined_at")
         read_only_fields = ("id", "user", "joined_at")
 
     def validate(self, attrs):
         workspace = self.context["workspace"]
-
-        # --- alta: resolver el usuario por email ---
-        if self.instance is None:
-            email = attrs.pop("email", None)
-            if not email:
-                raise serializers.ValidationError({"email": "Requerido para invitar a un miembro."})
-            try:
-                user = User.objects.get(email__iexact=email)
-            except User.DoesNotExist:
-                raise serializers.ValidationError(
-                    {"email": "No hay ningún usuario registrado con ese correo."}
-                )
-            if Membership.objects.filter(workspace=workspace, user=user).exists():
-                raise serializers.ValidationError(
-                    {"email": "Ese usuario ya es miembro del workspace."}
-                )
-            attrs["user"] = user
-
         # --- no dejar al workspace sin owner ---
         if self.instance is not None and self.instance.role == Membership.ROLE_OWNER:
             new_role = attrs.get("role", self.instance.role)
@@ -228,10 +211,10 @@ class MembershipSerializer(serializers.ModelSerializer):
             <= 1
         )
 
-    def create(self, validated_data):
-        validated_data.pop("email", None)
-        validated_data["workspace"] = self.context["workspace"]
-        return super().create(validated_data)
+
+class InviteInputSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(choices=Membership.ROLE_CHOICES, default=Membership.ROLE_MEMBER)
 
 
 class MembershipViewSet(WorkspaceScopedViewSet):
@@ -244,6 +227,35 @@ class MembershipViewSet(WorkspaceScopedViewSet):
     permission_classes = [IsAuthenticated, HasWorkspaceMembership, IsWorkspaceOwner]
     queryset = Membership.objects.select_related("user", "workspace").all()
 
+    def create(self, request, *args, **kwargs):
+        """
+        Si ya existe una cuenta con ese correo, se agrega directo (como
+        antes): 201 con la Membership. Si no existe, en vez de rechazar con
+        400 -- obligando a que la otra persona ya tuviera cuenta creada --
+        se crea (o reutiliza) una Invitation y se le manda un correo con el
+        enlace para sumarse; responde 202 con la Invitation para que el
+        cliente distinga "ya quedó adentro" de "le mandamos un correo".
+        """
+        input_serializer = InviteInputSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        email = input_serializer.validated_data["email"]
+        role = input_serializer.validated_data["role"]
+        workspace = request.workspace
+
+        user = User.objects.filter(email__iexact=email).first()
+        if user is None:
+            invitation = get_or_create_invitation(workspace, email, role, invited_by=request.user)
+            send_invitation_email(invitation)
+            return Response(InvitationSerializer(invitation).data, status=202)
+
+        if Membership.objects.filter(workspace=workspace, user=user).exists():
+            raise serializers.ValidationError(
+                {"email": "Ese usuario ya es miembro del workspace."}
+            )
+
+        membership = Membership.objects.create(workspace=workspace, user=user, role=role)
+        return Response(self.get_serializer(membership).data, status=201)
+
     def perform_destroy(self, instance):
         if instance.role == Membership.ROLE_OWNER and MembershipSerializer._is_last_owner(
             instance.workspace
@@ -252,6 +264,87 @@ class MembershipViewSet(WorkspaceScopedViewSet):
 
             raise ValidationError("No puedes expulsar al último owner del workspace.")
         instance.soft_delete()
+
+
+# ---------------------------------------------------------------------------
+# Invitation  (invitaciones a alguien sin cuenta todavía; no va por header
+# X-Workspace-ID -- el invitado ni siquiera es miembro de nada aún)
+# ---------------------------------------------------------------------------
+class InvitationSerializer(serializers.ModelSerializer):
+    workspace_name = serializers.CharField(source="workspace.name", read_only=True)
+    invited_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invitation
+        fields = (
+            "id", "workspace", "workspace_name", "email", "role", "status",
+            "token", "invited_by_name", "created_at", "responded_at",
+        )
+        read_only_fields = fields
+
+    def get_invited_by_name(self, obj) -> str | None:
+        if not obj.invited_by:
+            return None
+        return obj.invited_by.get_full_name() or obj.invited_by.username
+
+
+class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    Invitaciones DEL USUARIO AUTENTICADO (resueltas por su email, no por el
+    header X-Workspace-ID -- todavía no es miembro de ese workspace).
+    `retrieve` (por `token`) es público: así el enlace del correo se puede
+    abrir sin haber iniciado sesión y mostrar a qué te invitaron.
+    """
+
+    serializer_class = InvitationSerializer
+    lookup_field = "token"
+    queryset = Invitation.objects.select_related("workspace", "invited_by").all()
+
+    def get_permissions(self):
+        if self.action == "retrieve":
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action == "list":
+            return qs.filter(
+                email__iexact=self.request.user.email, status=Invitation.STATUS_PENDING
+            )
+        return qs
+
+    @action(detail=True, methods=["post"])
+    def accept(self, request, token=None):
+        invitation = self.get_object()
+        self._require_own_pending_invitation(invitation, request.user)
+        with transaction.atomic():
+            Membership.objects.get_or_create(
+                workspace=invitation.workspace,
+                user=request.user,
+                defaults={"role": invitation.role},
+            )
+            invitation.status = Invitation.STATUS_ACCEPTED
+            invitation.responded_at = timezone.now()
+            invitation.save(update_fields=["status", "responded_at", "updated_at"])
+        return Response(self.get_serializer(invitation).data)
+
+    @action(detail=True, methods=["post"])
+    def decline(self, request, token=None):
+        invitation = self.get_object()
+        self._require_own_pending_invitation(invitation, request.user)
+        invitation.status = Invitation.STATUS_DECLINED
+        invitation.responded_at = timezone.now()
+        invitation.save(update_fields=["status", "responded_at", "updated_at"])
+        return Response(self.get_serializer(invitation).data)
+
+    @staticmethod
+    def _require_own_pending_invitation(invitation, user):
+        if invitation.status != Invitation.STATUS_PENDING:
+            raise serializers.ValidationError(
+                f"La invitación ya está {invitation.get_status_display().lower()}."
+            )
+        if invitation.email.lower() != (user.email or "").lower():
+            raise PermissionDenied("Esta invitación es para otro correo.")
 
 
 # ---------------------------------------------------------------------------

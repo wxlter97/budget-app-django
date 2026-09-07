@@ -129,6 +129,63 @@ class IngestServiceTests(TestCase):
         self.assertEqual(EmailImportLog.objects.filter(workspace=self.ws).count(), 1)
 
 
+class BankAutoDetectFallbackTests(TestCase):
+    """Capa 4: si el card_last4 del correo no matchea ninguna cartera (o el
+    banco no lo manda), se cae a la cartera marcada con ese `bank_schema` --
+    solo si hay exactamente una candidata, para no adivinar mal."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.ws = Workspace.objects.create(name="A")
+        cls.schema = BankEmailSchema.objects.create(
+            bank_name="Demo Bank", sender_pattern=r"@demobank\.com"
+        )
+
+    def _to(self):
+        return f"import+{self.ws.inbound_token}@inbound.budget.local"
+
+    def test_falls_back_to_the_only_wallet_with_that_bank(self):
+        wallet = Wallet.objects.create(
+            workspace=self.ws, name="Tarjeta Demo", purpose=Wallet.PURPOSE_DEBT,
+            bank_schema=self.schema,  # sin card_last4 -- no matchea por dígitos
+        )
+        log = ingest_inbound_email(
+            to=self._to(), sender="alertas@demobank.com",
+            subject="Alerta", text=DEMO_BODY,
+        )
+        self.assertEqual(log.wallet, wallet)
+
+    def test_no_fallback_when_more_than_one_wallet_shares_the_bank(self):
+        Wallet.objects.create(
+            workspace=self.ws, name="Tarjeta 1", purpose=Wallet.PURPOSE_DEBT,
+            bank_schema=self.schema,
+        )
+        Wallet.objects.create(
+            workspace=self.ws, name="Tarjeta 2", purpose=Wallet.PURPOSE_DEBT,
+            bank_schema=self.schema,
+        )
+        log = ingest_inbound_email(
+            to=self._to(), sender="alertas@demobank.com",
+            subject="Alerta", text=DEMO_BODY,
+        )
+        self.assertIsNone(log.wallet)
+
+    def test_card_last4_match_wins_over_bank_fallback(self):
+        exact = Wallet.objects.create(
+            workspace=self.ws, name="La correcta", purpose=Wallet.PURPOSE_DEBT,
+            card_last4="4321", bank_schema=self.schema,
+        )
+        Wallet.objects.create(
+            workspace=self.ws, name="Otra del mismo banco", purpose=Wallet.PURPOSE_DEBT,
+            bank_schema=self.schema,
+        )
+        log = ingest_inbound_email(
+            to=self._to(), sender="alertas@demobank.com",
+            subject="Alerta", text=DEMO_BODY,
+        )
+        self.assertEqual(log.wallet, exact)
+
+
 @override_settings(INBOUND_WEBHOOK_SECRET=SECRET)
 class InboundWebhookTests(APITestCase):
     URL = "/api/v1/email-import/inbound/"

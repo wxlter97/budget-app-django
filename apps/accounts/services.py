@@ -83,21 +83,49 @@ def recompute_wallet_balance(wallet) -> Decimal:
     return wallet.current_balance
 
 
-def goal_projection(wallet, months=6):
-    """Proyección de una meta de ahorro: "a este ritmo la alcanzás en N
-    meses" (Fase 2 del roadmap). ``None`` si `wallet` no es una meta de
-    ahorro (`purpose=savings` con `goal_amount`).
+def _months_to_payoff(principal: Decimal, monthly_payment: Decimal, annual_rate_pct: Decimal):
+    """Meses para saldar `principal` pagando `monthly_payment` cada mes, con
+    interés compuesto mensual derivado de `annual_rate_pct` (tasa anual, %)
+    -- fórmula estándar de amortización. Sin esto, un `restante / ritmo`
+    simple subestima el plazo de cualquier deuda con interés real.
+    ``None`` si el pago no alcanza siquiera a cubrir el interés del mes (la
+    deuda nunca bajaría con ese ritmo)."""
+    monthly_rate = float(annual_rate_pct) / 100 / 12
+    principal_f = float(principal)
+    payment_f = float(monthly_payment)
+    if monthly_rate <= 0:
+        return math.ceil(principal_f / payment_f)
+    interest_only = principal_f * monthly_rate
+    if payment_f <= interest_only:
+        return None
+    n = -math.log(1 - (monthly_rate * principal_f) / payment_f) / math.log(1 + monthly_rate)
+    return math.ceil(n)
 
-    El "ritmo" es el promedio de aporte neto mensual observado en los
+
+def goal_projection(wallet, months=6):
+    """Proyección de "a este ritmo la alcanzás / la saldás en N meses": para
+    una meta de ahorro (`purpose=savings`) o para una deuda con monto total
+    conocido (`purpose=debt`, `goal_amount` = monto total de la deuda).
+    ``None`` si `wallet` no aplica a ninguno de los dos casos.
+
+    El "ritmo" es el promedio de aporte/pago neto mensual observado en los
     últimos `months` meses de movimientos reales de la cartera (o menos,
     si es más nueva que eso) -- no lo que el usuario dijo que iba a
     aportar (`monthly_contribution`); esa cifra sólo se usa de respaldo
     cuando todavía no hay ningún historial de movimientos.
+
+    En una deuda con `interest_rate` configurada, los meses para saldarla
+    se calculan con amortización (ver `_months_to_payoff`) en vez del simple
+    `restante / ritmo` -- el interés compuesto alarga el plazo real.
     """
-    if wallet.purpose != Wallet.PURPOSE_SAVINGS or not wallet.goal_amount:
+    is_savings = wallet.purpose == Wallet.PURPOSE_SAVINGS
+    is_debt = wallet.purpose == Wallet.PURPOSE_DEBT
+    if not (is_savings or is_debt) or not wallet.goal_amount:
         return None
 
-    remaining = wallet.goal_amount - wallet.current_balance
+    remaining = (
+        wallet.goal_amount - wallet.current_balance if is_savings else abs(wallet.current_balance)
+    )
     if remaining <= 0:
         return {
             "remaining": Decimal("0"),
@@ -160,7 +188,18 @@ def goal_projection(wallet, months=6):
             "on_track": False,
         }
 
-    months_to_goal = math.ceil(remaining / rate)
+    if is_debt and wallet.interest_rate:
+        months_to_goal = _months_to_payoff(remaining, rate, wallet.interest_rate)
+        if months_to_goal is None:
+            return {
+                "remaining": remaining,
+                "monthly_rate": rate,
+                "months_to_goal": None,
+                "projected_date": None,
+                "on_track": False,
+            }
+    else:
+        months_to_goal = math.ceil(remaining / rate)
     projected_date = until + relativedelta(months=months_to_goal)
     on_track = wallet.goal_date is None or projected_date <= wallet.goal_date
 

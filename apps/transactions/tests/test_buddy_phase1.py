@@ -80,6 +80,53 @@ class CategoryGroupTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertTrue(Category.objects.filter(id=c.id).exists())
 
+    def test_purge_deletes_for_real(self):
+        c = Category.objects.create(workspace=self.ws, name="Temp", type="expense")
+        c.soft_delete()
+        res = self.client.delete(f"/api/v1/categories/{c.id}/purge/", **self._h())
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Category.all_objects.filter(id=c.id).exists())
+
+    def test_purge_requires_soft_deleted_first(self):
+        c = Category.objects.create(workspace=self.ws, name="Vivo", type="expense")
+        res = self.client.delete(f"/api/v1/categories/{c.id}/purge/", **self._h())
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(Category.objects.filter(id=c.id).exists())
+
+    def test_purge_blocked_by_live_transactions(self):
+        wallet = Wallet.objects.create(workspace=self.ws, name="Efectivo", currency="USD")
+        c = Category.objects.create(workspace=self.ws, name="Con movimientos", type="expense")
+        Transaction.objects.create(
+            wallet=wallet, category=c, amount=Decimal("10.00"),
+            date=dt.date(2026, 1, 1), type=Transaction.TYPE_EXPENSE,
+        )
+        c.soft_delete()
+        res = self.client.delete(f"/api/v1/categories/{c.id}/purge/", **self._h())
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Category.all_objects.filter(id=c.id).exists())
+
+    def test_purge_blocked_by_live_subcategories(self):
+        self.group.soft_delete()
+        res = self.client.delete(f"/api/v1/categories/{self.group.id}/purge/", **self._h())
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Category.all_objects.filter(id=self.group.id).exists())
+
+    def test_report_ignores_legacy_budget_on_group_with_children(self):
+        # `self.group` (Vivienda) tiene una hija (`self.child`, Internet).
+        # Un presupuesto directo en el grupo -- ya no se puede crear por API,
+        # pero pudo quedar de antes -- no debe sumarse aparte del de la hija.
+        CategoryBudget.objects.create(
+            workspace=self.ws, category=self.group, amount=Decimal("999.00"),
+            month=6, year=2026,
+        )
+        CategoryBudget.objects.create(
+            workspace=self.ws, category=self.child, amount=Decimal("100.00"),
+            month=6, year=2026,
+        )
+        report = budget_vs_actual(self.ws, self.user, 2026, 6)
+        grp = next(g for g in report["groups"] if g["group_name"] == "Vivienda")
+        self.assertEqual(grp["budgeted"], Decimal("100.00"))
+
 
 class TransferWithCategoryBudgetTests(APITestCase):
     @classmethod

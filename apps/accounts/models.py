@@ -108,6 +108,17 @@ class Wallet(BaseModel):
         max_digits=5, decimal_places=2, null=True, blank=True
     )
     due_date = models.DateField(null=True, blank=True)
+    # Banco emisor (opcional). Referencia por string a `email_import` para no
+    # crear un import circular (esa app ya importa `Wallet`). Sirve para
+    # auto-detectar a qué cartera aplica un correo bancario entrante cuando
+    # el `card_last4` no alcanza (p. ej. el banco no lo incluye en el correo).
+    bank_schema = models.ForeignKey(
+        "email_import.BankEmailSchema",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="wallets",
+    )
     counterparty = models.CharField(
         max_length=100, blank=True, help_text="Persona/entidad de la deuda"
     )
@@ -164,9 +175,14 @@ class Wallet(BaseModel):
 
     @property
     def progress_pct(self):
-        """Avance hacia la meta de ahorro (0..1+), o None si no hay meta."""
+        """Avance hacia la meta (ahorro) o hacia saldar la deuda (0..1+),
+        o None si no hay meta/monto total. En una deuda `current_balance` es
+        lo PENDIENTE (con signo), no lo aportado -- el avance real es
+        `1 - |pendiente| / total`."""
         if not self.goal_amount:
             return None
+        if self.purpose == self.PURPOSE_DEBT:
+            return 1 - abs(float(self.current_balance)) / float(self.goal_amount)
         return float(self.current_balance) / float(self.goal_amount)
 
     @property

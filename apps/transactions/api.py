@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.db import transaction as db_transaction
 from django.db.models import Case, Count, DecimalField, F, Max, Min, Q, Sum, When
+from django.db.models.deletion import ProtectedError
 from django.http import FileResponse
 from django.utils import timezone
 from django_filters import rest_framework as filters
@@ -52,14 +53,19 @@ def _reject_if_group_wallet(wallet, field):
 # ---------------------------------------------------------------------------
 class CategorySerializer(serializers.ModelSerializer):
     is_group = serializers.BooleanField(read_only=True)
+    # Cantidad de transacciones vivas con esta categoría: la usa el cliente
+    # para mostrar primero las más usadas al elegir categoría en una
+    # transacción (ver `CategoryViewSet.get_queryset`). `default=0` cubre las
+    # acciones que no la anotan (p. ej. `deleted`/`restore`).
+    usage_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Category
         fields = (
             "id", "name", "icon", "color", "type", "parent", "sort_order",
-            "is_group", "created_at", "updated_at",
+            "is_group", "usage_count", "created_at", "updated_at",
         )
-        read_only_fields = ("id", "is_group", "created_at", "updated_at")
+        read_only_fields = ("id", "is_group", "usage_count", "created_at", "updated_at")
 
     def validate_parent(self, parent):
         if parent is None:
@@ -104,6 +110,13 @@ class CategoryViewSet(WorkspaceScopedViewSet):
     queryset = Category.objects.select_related("workspace", "parent").all()
     filterset_fields = {"type": ["exact"], "parent": ["exact", "isnull"]}
 
+    def get_queryset(self):
+        return super().get_queryset().annotate(
+            usage_count=Count(
+                "transactions", filter=Q(transactions__is_deleted=False), distinct=True
+            )
+        )
+
     @action(detail=False, methods=["post"])
     def reorder(self, request):
         """`{"ids": [...]}` — fija `sort_order` según el orden recibido."""
@@ -141,6 +154,34 @@ class CategoryViewSet(WorkspaceScopedViewSet):
         cat.is_deleted = False
         cat.save(update_fields=["is_deleted", "updated_at"])
         return Response(CategorySerializer(cat, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["delete"], url_path="purge")
+    def purge(self, request, pk=None):
+        """Borra DEFINITIVAMENTE una categoría ya eliminada (soft-delete) --
+        para poder vaciar "Eliminadas", que si no se va acumulando para
+        siempre. Sólo opera sobre lo que ya está soft-deleted, y sólo si no
+        queda nada real colgando de ella (si no, 400 en vez de arrastrar un
+        borrado en cascada silencioso sobre presupuestos/recurrentes)."""
+        cat = Category.all_objects.filter(
+            workspace=request.workspace, id=pk, is_deleted=True
+        ).first()
+        if cat is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        if cat.subcategories.filter(is_deleted=False).exists():
+            raise ValidationError("Tiene subcategorías activas; eliminalas primero.")
+        if (
+            cat.budgets.exists()
+            or cat.recurring_expenses.exists()
+            or cat.installment_purchases.exists()
+        ):
+            raise ValidationError(
+                "Tiene presupuestos o recurrentes asociados; no se puede borrar del todo."
+            )
+        try:
+            cat.delete()
+        except ProtectedError:
+            raise ValidationError("Tiene movimientos asociados; no se puede borrar del todo.")
+        return Response(status=204)
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +623,13 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
     def validate_category(self, category):
         if category.workspace_id != self.context["workspace"].id:
             raise serializers.ValidationError("La categoría es de otro workspace.")
+        # Un grupo SIN subcategorías puede presupuestarse directamente (es su
+        # propia unidad, como cualquier categoría hoja). Uno CON subcategorías
+        # no: su presupuesto es la suma de las suyas, no algo aparte.
+        if category.parent_id is None and category.subcategories.filter(is_deleted=False).exists():
+            raise serializers.ValidationError(
+                "Este grupo tiene subcategorías; presupuéstalas a ellas en vez de al grupo."
+            )
         return category
 
     def validate_month(self, value):
@@ -607,10 +655,83 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class SetForwardBudgetSerializer(serializers.Serializer):
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    month = serializers.IntegerField(min_value=1, max_value=12)
+    year = serializers.IntegerField(min_value=2000, max_value=2100)
+
+
 class CategoryBudgetViewSet(WorkspaceScopedViewSet):
     serializer_class = CategoryBudgetSerializer
     queryset = CategoryBudget.objects.select_related("workspace", "category").all()
     filterset_fields = {"month": ["exact"], "year": ["exact"], "category": ["exact"]}
+
+    # Cuántos meses hacia adelante puede materializar `set_forward` como
+    # máximo en una sola llamada, para no crear filas indefinidamente si el
+    # usuario nunca vuelve a tocar esa categoría (3 años de margen).
+    FORWARD_HORIZON_MONTHS = 36
+
+    @action(detail=False, methods=["post"], url_path="set-forward")
+    def set_forward(self, request):
+        """
+        Fija el presupuesto de una categoría para un mes y lo propaga a los
+        meses siguientes: cada mes futuro que no tenía presupuesto propio, o
+        que coincidía con el monto anterior de este mes, se actualiza al
+        nuevo monto -- hasta el primer mes que el usuario ya haya
+        personalizado con un valor distinto, donde se corta la propagación.
+        Los meses anteriores nunca se tocan, así se conserva el histórico.
+        """
+        serializer = SetForwardBudgetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        category = serializer.validated_data["category"]
+        if category.workspace_id != request.workspace.id:
+            raise ValidationError({"category": "La categoría es de otro workspace."})
+        if category.parent_id is None and category.subcategories.filter(is_deleted=False).exists():
+            raise ValidationError(
+                {"category": "Este grupo tiene subcategorías; presupuéstalas a ellas en vez de al grupo."}
+            )
+        amount = serializer.validated_data["amount"]
+        month = serializer.validated_data["month"]
+        year = serializer.validated_data["year"]
+
+        current = CategoryBudget.objects.filter(
+            category=category, month=month, year=year
+        ).first()
+        old_amount = current.amount if current else None
+        if current:
+            current.amount = amount
+            current.save(update_fields=["amount"])
+        else:
+            current = CategoryBudget.objects.create(
+                workspace=request.workspace, category=category,
+                month=month, year=year, amount=amount,
+            )
+
+        months_touched = 1
+        cm, cy = month, year
+        for _ in range(self.FORWARD_HORIZON_MONTHS):
+            cm += 1
+            if cm > 12:
+                cm = 1
+                cy += 1
+            future = CategoryBudget.objects.filter(category=category, month=cm, year=cy).first()
+            if future is None:
+                CategoryBudget.objects.create(
+                    workspace=request.workspace, category=category,
+                    month=cm, year=cy, amount=amount,
+                )
+                months_touched += 1
+            elif old_amount is not None and future.amount == old_amount:
+                future.amount = amount
+                future.save(update_fields=["amount"])
+                months_touched += 1
+            else:
+                break  # mes ya personalizado por el usuario: no seguimos
+
+        data = CategoryBudgetSerializer(current).data
+        data["months_touched"] = months_touched
+        return Response(data)
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +743,7 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
     class Meta:
         model = RecurringExpense
         fields = (
-            "id", "category", "wallet", "amount", "frequency", "next_due_date",
+            "id", "name", "category", "wallet", "amount", "frequency", "next_due_date",
             "is_active", "created_at", "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")
@@ -631,6 +752,15 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
         attrs = super().validate(attrs)
         wallet = attrs.get("wallet") or getattr(self.instance, "wallet", None)
         _reject_if_group_wallet(wallet, "wallet")
+        next_due = attrs.get("next_due_date")
+        current = getattr(self.instance, "next_due_date", None)
+        # Sólo rechaza si de verdad está ELIGIENDO una fecha pasada nueva --
+        # si no cambió (p. ej. ya estaba vencido y sólo se edita el monto),
+        # no bloquea: eso lo resuelve el job de generación, no este form.
+        if next_due is not None and next_due != current and next_due < timezone.localdate():
+            raise serializers.ValidationError(
+                {"next_due_date": "No puede ser una fecha pasada."}
+            )
         return attrs
 
 

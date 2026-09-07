@@ -20,6 +20,7 @@ from apps.reports.api import (
     ScheduledView,
 )
 from apps.users.api import (
+    GoogleLoginView,
     MeView,
     RegisterView,
     TokenObtainPairThrottledView,
@@ -29,6 +30,7 @@ from config.api_router import urlpatterns as api_v1_router
 
 api_v1_patterns = [
     path("auth/register/", RegisterView.as_view(), name="register"),
+    path("auth/google/", GoogleLoginView.as_view(), name="google_login"),
     path("auth/me/", MeView.as_view(), name="me"),
     path("auth/token/", TokenObtainPairThrottledView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", TokenRefreshThrottledView.as_view(), name="token_refresh"),
