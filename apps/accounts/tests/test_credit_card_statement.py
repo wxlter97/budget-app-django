@@ -118,24 +118,30 @@ class CreditCardStatementServiceTests(APITestCase):
         self.assertEqual(data["current_period_spent"], Decimal("30.00"))
         self.assertEqual(data["current_period_paid"], Decimal("0"))
 
-    def test_installment_full_charge_excluded_but_due_cuotas_added(self):
-        w = self._card(billing_cycle_day=3)
+    def _financed_purchase(self, w, start=dt.date(2024, 1, 10)):
+        """Compra a plazo financiada con la tarjeta + su cargo total inicial,
+        tal como los deja `services.post_initial_installment_charge`."""
         purchase = InstallmentPurchase.objects.create(
             workspace=self.ws, wallet=w, payment_wallet=self.checking, category=self.expense_cat,
             description="Laptop", total_amount=Decimal("1200.00"), installment_amount=Decimal("100.00"),
-            installments_total=12, start_date=dt.date(2024, 1, 10),
+            installments_total=12, start_date=start,
         )
-        # El cargo total se registra de una sola vez el día de la compra (así
-        # funciona `services.post_initial_installment_charge` en transactions).
         Transaction.objects.create(
             wallet=w, category=self.expense_cat, amount=purchase.total_amount,
             description="Laptop (compra a 12 cuotas)", date=purchase.start_date,
-            source=Transaction.SOURCE_INSTALLMENT,
+            source=Transaction.SOURCE_INSTALLMENT, installment_purchase=purchase,
         )
-        # A la fecha del corte de febrero (3), solo venció la cuota 1 (10 ene).
+        return purchase
+
+    def test_financed_installment_only_billed_cuotas_are_due(self):
+        w = self._card(billing_cycle_day=3)
+        self._financed_purchase(w)
+        # A la fecha del corte de febrero (3), solo venció la cuota 1 (10 ene):
+        # el cargo de 1200 entró completo, pero 1100 de capital aún no vence.
         data = credit_card_statement(w, as_of=dt.date(2024, 2, 5))
         self.assertEqual(data["cutoff_date"], dt.date(2024, 2, 3))
-        self.assertEqual(data["spent"], Decimal("0"))  # el cargo de 1200 no cuenta como gasto
+        self.assertEqual(data["spent"], Decimal("1200.00"))
+        self.assertEqual(data["financed_not_due"], Decimal("1100.00"))
         self.assertEqual(data["installments_due"], Decimal("100.00"))
         self.assertEqual(data["total_due"], Decimal("100.00"))
         self.assertEqual(len(data["installment_lines"]), 1)
@@ -143,33 +149,49 @@ class CreditCardStatementServiceTests(APITestCase):
 
     def test_unpaid_installment_cuota_carries_forward_to_next_cutoff(self):
         w = self._card(billing_cycle_day=3)
-        InstallmentPurchase.objects.create(
-            workspace=self.ws, wallet=w, payment_wallet=self.checking, category=self.expense_cat,
-            description="Laptop", total_amount=Decimal("1200.00"), installment_amount=Decimal("100.00"),
-            installments_total=12, start_date=dt.date(2024, 1, 10),
-        )
+        self._financed_purchase(w)
         # Sin abonos: en marzo (corte del 3) ya vencieron las cuotas 1 (10 ene)
         # y 2 (10 feb) -- ambas siguen pendientes.
         data = credit_card_statement(w, as_of=dt.date(2024, 3, 5))
         self.assertEqual(data["installments_due"], Decimal("200.00"))
+        self.assertEqual(data["financed_not_due"], Decimal("1000.00"))
         self.assertEqual(data["total_due"], Decimal("200.00"))
 
     def test_paying_a_cutoff_clears_it_and_only_new_cuota_remains_due(self):
         w = self._card(billing_cycle_day=3)
-        InstallmentPurchase.objects.create(
-            workspace=self.ws, wallet=w, payment_wallet=self.checking, category=self.expense_cat,
-            description="Laptop", total_amount=Decimal("1200.00"), installment_amount=Decimal("100.00"),
-            installments_total=12, start_date=dt.date(2024, 1, 10),
-        )
+        self._financed_purchase(w)
         # Se abona lo que se debía del corte de febrero (100, la cuota 1).
         Transaction.objects.create(
             type=Transaction.TYPE_TRANSFER, wallet=self.checking, to_wallet=w,
             amount=Decimal("100.00"), date=dt.date(2024, 2, 15),
         )
         data = credit_card_statement(w, as_of=dt.date(2024, 3, 5))
-        self.assertEqual(data["installments_due"], Decimal("200.00"))  # cuotas 1 y 2, acumuladas
+        self.assertEqual(data["installments_due"], Decimal("200.00"))  # cuotas 1 y 2, vencidas
         self.assertEqual(data["paid"], Decimal("100.00"))
         self.assertEqual(data["total_due"], Decimal("100.00"))  # solo la cuota 2, nueva
+
+    def test_total_due_matches_current_balance_with_income_and_outgoing(self):
+        # total_due (al corte, sin actividad posterior) tiene que ser
+        # exactamente -current_balance -- incluso con ingresos (reversos) y
+        # transferencias salientes, que la fórmula vieja ignoraba.
+        from apps.accounts.services import recompute_wallet_balance
+
+        w = self._card(billing_cycle_day=3, opening_balance=Decimal("-500.00"))
+        Transaction.objects.create(
+            wallet=w, category=self.expense_cat, amount=Decimal("120.00"), date=dt.date(2024, 1, 1)
+        )
+        Transaction.objects.create(
+            type=Transaction.TYPE_TRANSFER, wallet=self.checking, to_wallet=w,
+            amount=Decimal("300.00"), date=dt.date(2024, 1, 2),
+        )
+        Transaction.objects.create(  # reverso de compra acreditado a la tarjeta
+            wallet=w, type=Transaction.TYPE_INCOME, category=None,
+            amount=Decimal("45.00"), date=dt.date(2024, 1, 2),
+        )
+        recompute_wallet_balance(w)
+        data = credit_card_statement(w, as_of=dt.date(2024, 1, 3))
+        self.assertEqual(data["total_due"], -w.current_balance)
+        self.assertEqual(data["total_due"], Decimal("275.00"))
 
 
 class CreditCardStatementApiTests(APITestCase):

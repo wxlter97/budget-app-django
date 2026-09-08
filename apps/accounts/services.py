@@ -253,66 +253,91 @@ def _payment_due_date(wallet: Wallet, cutoff_date: date_cls):
     return _clamped_date(target.year, target.month, wallet.payment_due_day)
 
 
-def _statement_components(wallet, until_date):
-    """(gastado, abonado, cuotas vencidas) de ``wallet`` acumulado hasta
-    ``until_date`` inclusive. Ver `credit_card_statement` para el criterio."""
+def _installments_due_count(purchase, until_date) -> int:
+    """Cuántas cuotas de ``purchase`` ya vencieron en o antes de ``until_date``
+    (según el calendario: cuota ``n`` vence a los ``n-1`` meses de ``start_date``)."""
+    n_due = 0
+    for n in range(1, purchase.installments_total + 1):
+        if purchase.start_date + relativedelta(months=n - 1) > until_date:
+            break
+        n_due = n
+    return n_due
+
+
+def _card_activity(wallet, until_date):
+    """``(cargos, abonos)`` de ``wallet`` con fecha <= ``until_date``, MISMA
+    convención de signo que `recompute_wallet_balance` -- ambos montos positivos.
+
+    - ``cargos``: todo lo que sube la deuda de la tarjeta -- gastos y
+      transferencias que salen de ella (incluye el cargo total inicial de una
+      compra a plazo financiada con la tarjeta; la parte aún no vencida se
+      descuenta aparte en `credit_card_statement`).
+    - ``abonos``: todo lo que la baja -- transferencias entrantes e ingresos.
+
+    Antes esto ignoraba los ingresos y las transferencias salientes, así que
+    `total_due` podía alejarse de `current_balance` sin que nada lo delatara.
+    """
+    from apps.transactions.models import Transaction
+
+    own = Transaction.objects.filter(wallet=wallet, date__lte=until_date)
+    charges = own.filter(
+        type__in=[Transaction.TYPE_EXPENSE, Transaction.TYPE_TRANSFER]
+    ).aggregate(t=Sum("amount", output_field=_MONEY))["t"] or Decimal("0")
+    income = own.filter(type=Transaction.TYPE_INCOME).aggregate(
+        t=Sum("amount", output_field=_MONEY)
+    )["t"] or Decimal("0")
+    incoming = Transaction.objects.filter(
+        to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__lte=until_date
+    ).aggregate(t=Sum("amount", output_field=_MONEY))["t"] or Decimal("0")
+    return charges, income + incoming
+
+
+def _installment_breakdown(wallet, until_date):
+    """``(installments_billed, financed_not_due, lines)`` para las compras a
+    plazo de ``wallet`` al corte ``until_date``.
+
+    - ``installments_billed``: suma de las cuotas ya vencidas (informativo).
+    - ``financed_not_due``: de las compras financiadas CON la tarjeta
+      (`payment_wallet`), el capital que aún no vence -- el cargo total entró
+      de una vez pero al corte solo se debe lo ya facturado.
+    """
     from apps.transactions.models import InstallmentPurchase, Transaction
 
-    spent = (
-        Transaction.objects.filter(
-            wallet=wallet, type=Transaction.TYPE_EXPENSE, date__lte=until_date
-        )
-        .exclude(source=Transaction.SOURCE_INSTALLMENT)
-        .aggregate(total=Sum("amount"))["total"]
-        or Decimal("0")
-    )
-    # Rarísimo pero posible: esta tarjeta financia una compra a plazo AJENA
-    # (es `payment_wallet` de otra cartera) -- esas cuotas salen de acá como
-    # transferencia, y sí son gasto real de esta tarjeta.
-    spent += (
-        Transaction.objects.filter(
-            wallet=wallet,
-            type=Transaction.TYPE_TRANSFER,
-            source=Transaction.SOURCE_INSTALLMENT,
-            date__lte=until_date,
-        ).aggregate(total=Sum("amount"))["total"]
-        or Decimal("0")
-    )
-
-    paid = (
-        Transaction.objects.filter(
-            to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__lte=until_date
-        )
-        .exclude(source=Transaction.SOURCE_INSTALLMENT)
-        .aggregate(total=Sum("amount"))["total"]
-        or Decimal("0")
-    )
-
-    installments_due = Decimal("0")
+    installments_billed = Decimal("0")
+    financed_not_due = Decimal("0")
     lines = []
     for purchase in InstallmentPurchase.objects.filter(wallet=wallet).select_related(
         "category"
     ):
-        n_due = 0
-        for n in range(1, purchase.installments_total + 1):
-            cuota_date = purchase.start_date + relativedelta(months=n - 1)
-            if cuota_date > until_date:
-                break
-            n_due = n
-        if n_due:
-            amount_due = purchase.installment_amount * n_due
-            installments_due += amount_due
+        n_due = _installments_due_count(purchase, until_date)
+        billed = purchase.installment_amount * n_due
+        installments_billed += billed
+        if purchase.is_credit_card:
+            # Solo se descuenta capital que de verdad se cargó a la tarjeta: si
+            # el cargo inicial nunca se registró (datos viejos), no hay nada que
+            # descontar y las cuotas ya vencidas cuentan por sí solas.
+            charged = (
+                Transaction.objects.filter(
+                    wallet=wallet,
+                    installment_purchase=purchase,
+                    type=Transaction.TYPE_EXPENSE,
+                    source=Transaction.SOURCE_INSTALLMENT,
+                    date__lte=until_date,
+                ).aggregate(t=Sum("amount", output_field=_MONEY))["t"]
+                or Decimal("0")
+            )
+            financed_not_due += max(min(charged, purchase.total_amount) - billed, Decimal("0"))
+        if n_due or not purchase.is_completed:
             lines.append(
                 {
                     "id": purchase.id,
                     "description": purchase.description,
                     "installments_due": n_due,
                     "installments_total": purchase.installments_total,
-                    "amount_due": amount_due,
+                    "amount_due": billed,
                 }
             )
-
-    return spent, paid, installments_due, lines
+    return installments_billed, financed_not_due, lines
 
 
 def credit_card_statement(wallet, as_of=None):
@@ -320,23 +345,25 @@ def credit_card_statement(wallet, as_of=None):
     ``as_of`` (hoy por defecto). ``None`` si `wallet` no es una tarjeta de
     crédito con fecha de corte configurada (`kind=credit` + `billing_cycle_day`).
 
-    El total (`total_due`) es ACUMULADO desde que existe la tarjeta hasta el
-    corte más reciente que ya cerró en o antes de `as_of`: lo que no se pagó
-    de un corte anterior sigue apareciendo hasta que se abone (así es como
-    funciona una tarjeta real, no se resetea sola cada mes). Se compone de:
+    ``total_due`` es el saldo de la tarjeta al corte más reciente que ya cerró
+    en o antes de `as_of`, con exactamente la misma convención de signo que
+    `current_balance` (`recompute_wallet_balance`):
 
-    - lo que ya se debía al dar de alta la tarjeta (`opening_balance`,
-      negativo = deuda existente al momento de empezar a llevarla en la app),
-    - los gastos normales cargados a la tarjeta (sin contar el cargo total
-      inicial de una compra a plazo -- ese cargo baja el disponible, pero lo
-      que hay que *pagar* cada mes es solo la cuota, no la compra completa),
-    - más las cuotas de compras a plazo que ya vencieron,
-    - menos los abonos/pagos reales que ya se hicieron a la tarjeta.
+        total_due = cargos_al_corte
+                  - abonos_al_corte
+                  - opening_balance                 (negativo = deuda previa)
+                  - capital_financiado_aún_no_vencido
 
-    Sin el `opening_balance`, una tarjeta dada de alta con deuda previa (o con
-    saldo a favor) arrastra ese desfase para siempre y `total_due` deja de
-    corresponder con la realidad -- por eso se resta acá igual que lo suma
-    `recompute_wallet_balance` para `current_balance`.
+    Los primeros tres términos son `-(opening_balance + Σ deltas al corte)`, o
+    sea `-current_balance` restringido a las transacciones con fecha <= corte.
+    Por eso, si `current_balance` es correcto, `total_due` también lo es -- no
+    hay una fórmula paralela que se pueda desincronizar. El cuarto término solo
+    aplica a compras a plazo financiadas con la tarjeta, donde el cargo total
+    entra de una vez pero mes a mes solo se debe la cuota.
+
+    Sin `opening_balance`, una tarjeta dada de alta con deuda previa arrastra
+    ese desfase: la historia cargada tiene más abonos que cargos y `total_due`
+    (igual que `current_balance`) queda con un saldo a favor que no existe.
 
     También incluye la actividad del período abierto (desde el corte hasta
     `as_of`, aún no vencida) como referencia de cuánto se lleva acumulado
@@ -350,23 +377,26 @@ def credit_card_statement(wallet, as_of=None):
     next_cutoff_date = _next_cutoff(wallet.billing_cycle_day, cutoff_date)
     payment_due_date = _payment_due_date(wallet, cutoff_date)
 
-    spent, paid, installments_due, lines = _statement_components(wallet, cutoff_date)
-    total_due = spent - paid + installments_due - wallet.opening_balance
+    charges, payments = _card_activity(wallet, cutoff_date)
+    installments_due, financed_not_due, lines = _installment_breakdown(
+        wallet, cutoff_date
+    )
+    total_due = charges - payments - wallet.opening_balance - financed_not_due
 
-    spent_open, paid_open, installments_open, _ = _statement_components(wallet, as_of)
-    current_period_spent = (spent_open - spent) + (installments_open - installments_due)
-    current_period_paid = paid_open - paid
+    charges_open, payments_open = _card_activity(wallet, as_of)
 
     return {
         "cutoff_date": cutoff_date,
         "next_cutoff_date": next_cutoff_date,
         "payment_due_date": payment_due_date,
-        "spent": spent,
-        "paid": paid,
+        "opening_balance": wallet.opening_balance,
+        "spent": charges,
+        "paid": payments,
         "installments_due": installments_due,
+        "financed_not_due": financed_not_due,
         "total_due": total_due,
-        "current_period_spent": current_period_spent,
-        "current_period_paid": current_period_paid,
+        "current_period_spent": charges_open - charges,
+        "current_period_paid": payments_open - payments,
         "installment_lines": lines,
     }
 
