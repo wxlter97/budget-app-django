@@ -3,6 +3,14 @@ from rest_framework.routers import DefaultRouter
 
 from apps.accounts.api import WalletViewSet
 from apps.email_import.api import BankEmailSchemaViewSet, EmailImportLogViewSet
+from apps.loyalty.api import (
+    BankViewSet,
+    CardProductViewSet,
+    CategoryTypeViewSet,
+    LoyaltyCategoryRateViewSet,
+    LoyaltyEarningViewSet,
+    LoyaltyProgramViewSet,
+)
 from apps.notifications.api import PushDeviceViewSet
 from apps.quickadd.api import PersonalAccessTokenViewSet
 from apps.reports.api import MonthlySnapshotViewSet
@@ -40,6 +48,13 @@ router.register("monthly-snapshots", MonthlySnapshotViewSet, basename="monthlysn
 
 router.register("bank-email-schemas", BankEmailSchemaViewSet, basename="bankemailschema")
 router.register("email-import-logs", EmailImportLogViewSet, basename="emailimportlog")
+
+router.register("banks", BankViewSet, basename="bank")
+router.register("category-types", CategoryTypeViewSet, basename="categorytype")
+router.register("card-products", CardProductViewSet, basename="cardproduct")
+router.register("loyalty-programs", LoyaltyProgramViewSet, basename="loyaltyprogram")
+router.register("loyalty-category-rates", LoyaltyCategoryRateViewSet, basename="loyaltycategoryrate")
+router.register("loyalty-earnings", LoyaltyEarningViewSet, basename="loyaltyearning")
 
 router.register("personal-tokens", PersonalAccessTokenViewSet, basename="personaltoken")
 

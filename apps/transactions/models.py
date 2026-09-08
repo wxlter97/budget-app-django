@@ -32,6 +32,16 @@ class Category(BaseModel):
     )
     # Orden manual dentro del grupo (o entre grupos si es grupo).
     sort_order = models.PositiveIntegerField(default=0)
+    # Rubro estándar del catálogo de lealtad (opcional): mapea esta categoría
+    # propia del workspace a un `CategoryType` global para heredar la tasa de
+    # puntos/cashback/descuento que le corresponda (ver `apps.loyalty`).
+    category_type = models.ForeignKey(
+        "loyalty.CategoryType",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="categories",
+    )
 
     class Meta:
         ordering = ["sort_order", "name"]

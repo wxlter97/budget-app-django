@@ -119,6 +119,17 @@ class Wallet(BaseModel):
         on_delete=models.SET_NULL,
         related_name="wallets",
     )
+    # Producto de tarjeta (banco + producto) del catálogo de lealtad
+    # (opcional; sólo aplica a tarjetas de crédito -- ver
+    # `accounts.api.WalletSerializer`). De acá salen los programas de
+    # puntos/cashback/descuento que aplican a esta cartera.
+    card_product = models.ForeignKey(
+        "loyalty.CardProduct",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="wallets",
+    )
     counterparty = models.CharField(
         max_length=100, blank=True, help_text="Persona/entidad de la deuda"
     )
