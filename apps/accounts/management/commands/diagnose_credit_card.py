@@ -23,6 +23,7 @@ from apps.accounts.services import (
     _cutoff_on_or_before,
     balance_deltas,
     credit_card_statement,
+    installment_status,
 )
 
 
@@ -109,22 +110,21 @@ class Command(BaseCommand):
                 mark = "  [¿ajuste manual?]"
             self.stdout.write(f"  {d!s:<11} {typ:<11} {src:<11} {_d(eff):>12}  {desc[:38]}{mark}")
 
-        purchases = list(InstallmentPurchase.objects.filter(wallet=w)) + list(
-            InstallmentPurchase.objects.filter(payment_wallet=w)
-        )
+        purchases = list(InstallmentPurchase.objects.filter(wallet=w))
         if purchases:
             self.stdout.write("\nCOMPRAS A PLAZO")
             for p in purchases:
-                mode = "financiada con la tarjeta" if p.is_credit_card else "cuota = gasto en la tarjeta"
-                n_cal = (
-                    sum(1 for n in range(1, p.installments_total + 1) if _months_ok(p, n, cutoff))
-                    if cutoff
-                    else "?"
+                status = installment_status(p, as_of=cutoff or eff_as_of)
+                next_due = status["next_due_date"]
+                next_line = (
+                    f"próxima cuota: {_d(status['current_installment_amount'])} vence {next_due}"
+                    if next_due
+                    else "completa"
                 )
                 self.stdout.write(
-                    f"  {p.description}: installments_paid={p.installments_paid}/{p.installments_total}, "
-                    f"cuota {_d(p.installment_amount)}, total {_d(p.total_amount)}, inicio {p.start_date}  [{mode}]\n"
-                    f"     cuotas vencidas al corte según el calendario (start_date + N meses): {n_cal}"
+                    f"  {p.description}: {status['installments_paid']}/{p.installments_total} cuotas "
+                    f"vencidas al corte, total {_d(p.total_amount)}, inicio {p.start_date}\n"
+                    f"     {next_line}"
                 )
 
         data = credit_card_statement(w, as_of=as_of)
@@ -140,13 +140,12 @@ class Command(BaseCommand):
             f"  disponible (límite + saldo)           : {_d(avail) if avail is not None else '(n/a)':>12}\n"
             f"  saldo usado (límite - disponible)     : {_d(data['used']):>12}\n"
             f"  - capital a plazo aún no vencido      : {_d(data['installments_not_due']):>12}\n"
-            f"  + cuotas de tienda vencidas sin reg.  : {_d(data['installments_overdue_unbilled']):>12}\n"
             f"  --------------------------------------------------------\n"
             f"  PAGO DE CONTADO (total_due)           : {_d(data['total_due']):>12}"
         )
 
         if data["installment_lines"]:
-            self.stdout.write("\n  Cuotas pendientes de registrar:")
+            self.stdout.write("\n  Cuotas a plazo aún no vencidas:")
             for ln in data["installment_lines"]:
                 self.stdout.write(
                     f"    {ln['description'][:34]:<34} "
@@ -165,9 +164,3 @@ class Command(BaseCommand):
             "(límite - disponible real).\n  Si no cuadra, faltan/sobran movimientos en la tarjeta "
             "(revisá la lista de arriba)."
         )
-
-
-def _months_ok(purchase, n, cutoff):
-    from dateutil.relativedelta import relativedelta
-
-    return purchase.start_date + relativedelta(months=n - 1) <= cutoff

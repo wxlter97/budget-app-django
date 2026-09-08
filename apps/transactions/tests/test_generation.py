@@ -4,16 +4,8 @@ from decimal import Decimal
 from django.test import TestCase
 
 from apps.accounts.models import Wallet
-from apps.transactions.models import (
-    Category,
-    InstallmentPurchase,
-    RecurringExpense,
-    Transaction,
-)
-from apps.transactions.services import (
-    generate_recurring_transactions,
-    post_due_installments,
-)
+from apps.transactions.models import Category, RecurringExpense, Transaction
+from apps.transactions.services import generate_recurring_transactions, installment_amounts
 from apps.workspaces.models import Workspace
 
 
@@ -62,44 +54,23 @@ class RecurringExpenseGenerationTests(TestCase):
         self.assertEqual(rec.next_due_date, dt.date(2026, 6, 1))
 
 
-class InstallmentGenerationTests(TestCase):
-    @classmethod
-    def setUpTestData(cls):
-        cls.ws = Workspace.objects.create(name="W")
-        cls.account = Wallet.objects.create(
-            workspace=cls.ws, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT
-        )
-        cls.category = Category.objects.create(
-            workspace=cls.ws, name="Electro", type=Category.TYPE_EXPENSE
-        )
+class InstallmentAmountsTests(TestCase):
+    """`installment_amounts`: reparto de una compra a plazo para el estado de
+    cuenta -- ceiling por cuota, la última es lo que sobra (ver
+    apps.accounts.tests.test_credit_card_statement para el cálculo completo
+    anclado a los cortes de la tarjeta)."""
 
-    def _purchase(self, **kw):
-        defaults = dict(
-            workspace=self.ws, wallet=self.account, category=self.category,
-            description="Lavadora", total_amount=Decimal("1200.00"),
-            installment_amount=Decimal("100.00"), installments_total=12,
-            start_date=dt.date(2026, 1, 5),
-        )
-        defaults.update(kw)
-        return InstallmentPurchase.objects.create(**defaults)
+    def test_exact_division_is_equal_across_all_installments(self):
+        amounts = installment_amounts(Decimal("1200.00"), 12)
+        self.assertEqual(amounts, [Decimal("100.00")] * 12)
+        self.assertEqual(sum(amounts, Decimal("0")), Decimal("1200.00"))
 
-    def test_posts_due_installments_and_increments(self):
-        p = self._purchase()
-        created = post_due_installments(as_of=dt.date(2026, 3, 10))
-        self.assertEqual(len(created), 3)
-        self.assertTrue(all(t.source == Transaction.SOURCE_INSTALLMENT for t in created))
-        p.refresh_from_db()
-        self.assertEqual(p.installments_paid, 3)
+    def test_rounds_up_except_the_last_installment(self):
+        # 36.73 / 3 = 12.243(3): las dos primeras suben a 12.25, la última
+        # absorbe el resto para que la suma cierre exacto.
+        amounts = installment_amounts(Decimal("36.73"), 3)
+        self.assertEqual(amounts, [Decimal("12.25"), Decimal("12.25"), Decimal("12.23")])
+        self.assertEqual(sum(amounts, Decimal("0")), Decimal("36.73"))
 
-    def test_running_twice_does_not_duplicate(self):
-        self._purchase()
-        post_due_installments(as_of=dt.date(2026, 2, 10))
-        post_due_installments(as_of=dt.date(2026, 2, 10))
-        self.assertEqual(Transaction.objects.count(), 2)
-
-    def test_stops_at_total_installments(self):
-        p = self._purchase(installments_total=2)
-        post_due_installments(as_of=dt.date(2030, 1, 1))
-        p.refresh_from_db()
-        self.assertEqual(p.installments_paid, 2)
-        self.assertTrue(p.is_completed)
+    def test_single_installment_is_the_full_total(self):
+        self.assertEqual(installment_amounts(Decimal("99.99"), 1), [Decimal("99.99")])

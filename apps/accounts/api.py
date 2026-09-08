@@ -116,9 +116,7 @@ class WalletSerializer(serializers.ModelSerializer):
                 bool(parent.opening_balance)
                 or Transaction.objects.filter(Q(wallet=parent) | Q(to_wallet=parent)).exists()
                 or RecurringExpense.objects.filter(wallet=parent).exists()
-                or InstallmentPurchase.objects.filter(
-                    Q(wallet=parent) | Q(payment_wallet=parent)
-                ).exists()
+                or InstallmentPurchase.objects.filter(wallet=parent).exists()
             )
             if has_own_activity:
                 raise serializers.ValidationError(
@@ -196,7 +194,6 @@ class CreditCardStatementSerializer(serializers.Serializer):
     available = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
     used = serializers.DecimalField(max_digits=16, decimal_places=2)
     installments_not_due = serializers.DecimalField(max_digits=16, decimal_places=2)
-    installments_overdue_unbilled = serializers.DecimalField(max_digits=16, decimal_places=2)
     total_due = serializers.DecimalField(max_digits=16, decimal_places=2)
     installment_lines = StatementInstallmentLineSerializer(many=True)
 
@@ -311,7 +308,6 @@ class WalletViewSet(WorkspaceScopedViewSet):
             Transaction.all_objects.filter(to_wallet=wallet).update(to_wallet=child)
             RecurringExpense.objects.filter(wallet=wallet).update(wallet=child)
             InstallmentPurchase.objects.filter(wallet=wallet).update(wallet=child)
-            InstallmentPurchase.objects.filter(payment_wallet=wallet).update(payment_wallet=child)
 
             if wallet.is_default:
                 # save() de Wallet desmarca sola a `wallet` acá (una sola

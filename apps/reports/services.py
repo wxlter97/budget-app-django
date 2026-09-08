@@ -10,6 +10,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.accounts.models import Wallet
+from apps.accounts.services import installment_status
 from apps.transactions.models import (
     Category,
     CategoryBudget,
@@ -377,8 +378,12 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
     for pur in installments:
         if not _wallet_ok(pur.wallet):
             continue
-        for n in range(pur.installments_paid + 1, pur.installments_total + 1):
-            due = pur.start_date + relativedelta(months=n - 1)
+        # Las cuotas ya no llevan contador propio -- se calculan sobre los
+        # cortes de la tarjeta (ver `installment_status`); acá solo se listan
+        # las que todavía no vencieron, como recordatorio de lo que se viene.
+        status = installment_status(pur)
+        for line in status["schedule"][status["installments_paid"] :]:
+            due = line["cutoff_date"]
             if due < since or due > until:
                 continue
             items.append(
@@ -386,8 +391,8 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
                     "date": due,
                     "kind": "installment",
                     "source_id": pur.id,
-                    "description": f"{pur.description} (cuota {n}/{pur.installments_total})",
-                    "amount": pur.installment_amount,
+                    "description": f"{pur.description} (cuota {line['n']}/{pur.installments_total})",
+                    "amount": line["amount"],
                     "category": pur.category_id,
                     "category_name": pur.category.name,
                     "wallet": pur.wallet_id,

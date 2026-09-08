@@ -289,15 +289,11 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
-# Orden en el día 1: recurrentes -> cuotas -> cierre de mes.
+# Orden en el día 1: recurrentes -> cierre de mes.
 CELERY_BEAT_SCHEDULE = {
     "generate-recurring-transactions": {
         "task": "apps.transactions.tasks.generate_recurring_transactions",
         "schedule": crontab(hour=0, minute=30),  # diaria
-    },
-    "post-due-installments": {
-        "task": "apps.transactions.tasks.post_due_installments",
-        "schedule": crontab(hour=0, minute=35),
     },
     "close-previous-month": {
         "task": "apps.reports.tasks.close_previous_month",

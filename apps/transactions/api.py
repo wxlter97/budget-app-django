@@ -1,3 +1,4 @@
+import datetime as dt
 import mimetypes
 import uuid
 from decimal import Decimal
@@ -814,87 +815,122 @@ class RecurringExpenseViewSet(WorkspaceScopedViewSet):
 # ---------------------------------------------------------------------------
 # InstallmentPurchase
 # ---------------------------------------------------------------------------
+def _installment_txn_description(purchase) -> str:
+    return f"{purchase.description} (compra a {purchase.installments_total} cuotas)"
+
+
 class InstallmentPurchaseSerializer(WorkspaceScopedSerializerMixin, serializers.ModelSerializer):
-    workspace_child_fields = ("category", "wallet", "payment_wallet")
-    is_completed = serializers.BooleanField(read_only=True)
-    is_credit_card = serializers.BooleanField(read_only=True)
-    remaining_amount = serializers.DecimalField(
-        max_digits=14, decimal_places=2, read_only=True
-    )
+    """Una compra a plazo genera UNA sola Transaction (el total, contra su
+    `wallet`, el día `start_date`) al crearla -- ver `create`/`update` acá
+    abajo. Los campos de cuotas (`installments_paid`, `remaining_amount`,
+    etc.) son puro cálculo de solo lectura, anclado a los cortes de `wallet`
+    (ver `apps.accounts.services.installment_status`); no hay ningún
+    contador que el cliente pueda mover a mano.
+    """
+    workspace_child_fields = ("category", "wallet")
+    installments_paid = serializers.SerializerMethodField()
+    is_completed = serializers.SerializerMethodField()
+    remaining_amount = serializers.SerializerMethodField()
+    current_installment_amount = serializers.SerializerMethodField()
+    next_due_date = serializers.SerializerMethodField()
 
     class Meta:
         model = InstallmentPurchase
         fields = (
-            "id", "wallet", "payment_wallet", "category", "description",
-            "total_amount", "installment_amount", "installments_total",
-            "installments_paid", "start_date", "is_completed", "is_credit_card",
-            "remaining_amount", "created_at", "updated_at",
+            "id", "wallet", "category", "description", "total_amount",
+            "installments_total", "start_date", "installments_paid",
+            "is_completed", "remaining_amount", "current_installment_amount",
+            "next_due_date", "created_at", "updated_at",
         )
         read_only_fields = (
-            "id", "is_completed", "is_credit_card", "remaining_amount",
+            "id", "installments_paid", "is_completed", "remaining_amount",
+            "current_installment_amount", "next_due_date",
             "created_at", "updated_at",
         )
 
+    def _status(self, obj):
+        from apps.accounts.services import installment_status
+
+        cached = getattr(obj, "_installment_status_cache", None)
+        if cached is None:
+            cached = installment_status(obj)
+            obj._installment_status_cache = cached
+        return cached
+
+    def get_installments_paid(self, obj) -> int:
+        return self._status(obj)["installments_paid"]
+
+    def get_is_completed(self, obj) -> bool:
+        return self._status(obj)["is_completed"]
+
+    def get_remaining_amount(self, obj) -> Decimal:
+        return self._status(obj)["remaining_amount"]
+
+    def get_current_installment_amount(self, obj) -> Decimal:
+        return self._status(obj)["current_installment_amount"]
+
+    def get_next_due_date(self, obj) -> dt.date | None:
+        return self._status(obj)["next_due_date"]
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        payment_wallet = attrs.get("payment_wallet") or getattr(
-            self.instance, "payment_wallet", None
-        )
         wallet = attrs.get("wallet") or getattr(self.instance, "wallet", None)
         _reject_if_group_wallet(wallet, "wallet")
-        _reject_if_group_wallet(payment_wallet, "payment_wallet")
-        if payment_wallet is not None:
-            if wallet is not None and payment_wallet.id == wallet.id:
-                raise serializers.ValidationError(
-                    {"payment_wallet": "Debe ser distinta de la tarjeta."}
-                )
-        if self.instance is None:
-            total = attrs.get("installments_total")
-            paid = attrs.get("installments_paid")
-            if total is not None and paid is not None:
-                attrs["installments_paid"] = max(0, min(paid, total))
+        if wallet is not None and (
+            wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day
+        ):
+            raise serializers.ValidationError(
+                {"wallet": "Elegí una tarjeta de crédito con fecha de corte configurada."}
+            )
         return attrs
 
     def create(self, validated_data):
-        # Cuotas ya pagadas antes de dar de alta la compra (tienda o tarjeta):
-        # el contador arranca en 0 y se registran retroactivamente, para que
-        # avancen igual que si se hubieran ido pagando con `pay/` en su
-        # momento -- si no, `installments_paid` queda seteado pero el saldo de
-        # la tarjeta (o el gasto real) no refleja esos pagos.
-        from .services import post_initial_installment_charge, post_prior_installments
-
-        already_paid = validated_data.pop("installments_paid", 0) or 0
-        purchase = super().create({**validated_data, "installments_paid": 0})
+        purchase = super().create(validated_data)
         request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if purchase.payment_wallet_id:
-            post_initial_installment_charge(purchase, user=user)
-        if already_paid:
-            post_prior_installments(purchase, already_paid, user=user)
+        Transaction.objects.create(
+            wallet=purchase.wallet,
+            category=purchase.category,
+            amount=purchase.total_amount,
+            description=_installment_txn_description(purchase),
+            date=purchase.start_date,
+            source=Transaction.SOURCE_INSTALLMENT,
+            installment_purchase=purchase,
+            created_by=getattr(request, "user", None),
+        )
+        return purchase
+
+    def update(self, instance, validated_data):
+        purchase = super().update(instance, validated_data)
+        # Mantiene la única Transaction de la compra en sincro con los
+        # cambios del formulario (monto, cartera, categoría, fecha…) -- si
+        # no, editar la compra dejaría el saldo/reporte reflejando los datos
+        # viejos.
+        txn = purchase.transactions.filter(is_deleted=False).first()
+        if txn is not None:
+            txn.wallet = purchase.wallet
+            txn.category = purchase.category
+            txn.amount = purchase.total_amount
+            txn.date = purchase.start_date
+            txn.description = _installment_txn_description(purchase)
+            txn.save(
+                update_fields=[
+                    "wallet", "category", "amount", "date", "description",
+                    "currency", "updated_at",
+                ]
+            )
         return purchase
 
 
 class InstallmentPurchaseViewSet(WorkspaceScopedViewSet):
     serializer_class = InstallmentPurchaseSerializer
     queryset = InstallmentPurchase.objects.select_related(
-        "workspace", "category", "wallet", "payment_wallet"
+        "workspace", "category", "wallet"
     ).all()
 
-    @action(detail=True, methods=["post"])
-    def pay(self, request, pk=None):
-        """Registra la siguiente cuota: crea la transacción y avanza el contador."""
-        from .services import post_next_installment
-
-        purchase = self.get_object()
-        # El pago manual se registra con fecha de hoy (cuándo lo pagaste de
-        # verdad), no con la fecha teórica del calendario de cuotas — eso lo
-        # usa el job automático `post_due_installments`.
-        txn = post_next_installment(
-            purchase, user=request.user, on_date=timezone.localdate()
-        )
-        if txn is None:
-            return Response(
-                {"detail": "La compra ya está completa."}, status=400
-            )
-        purchase.refresh_from_db()
-        return Response(self.get_serializer(purchase).data)
+    def perform_destroy(self, instance):
+        # La compra y su única Transaction son, en la práctica, un mismo
+        # registro -- borrar la compra borra (soft-delete) esa transacción
+        # también, para que el saldo de la tarjeta refleje el cambio.
+        for txn in instance.transactions.filter(is_deleted=False):
+            txn.soft_delete()
+        super().perform_destroy(instance)

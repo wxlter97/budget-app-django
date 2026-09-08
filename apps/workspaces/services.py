@@ -242,13 +242,10 @@ def export_backup(workspace):
             {
                 "id": str(p.id),
                 "wallet": str(p.wallet_id),
-                "payment_wallet": str(p.payment_wallet_id) if p.payment_wallet_id else None,
                 "category": str(p.category_id),
                 "description": p.description,
                 "total_amount": _dec(p.total_amount),
-                "installment_amount": _dec(p.installment_amount),
                 "installments_total": p.installments_total,
-                "installments_paid": p.installments_paid,
                 "start_date": _iso(p.start_date),
             }
             for p in installments
@@ -369,7 +366,7 @@ def _check_required_fields(data):
         "installment_purchases",
         [
             "id", "wallet", "category", "description", "total_amount",
-            "installment_amount", "installments_total", "start_date",
+            "installments_total", "start_date",
         ],
     )
     require(data.get("transactions", []), "transactions", ["id", "type", "wallet", "amount", "date"])
@@ -562,7 +559,7 @@ def import_backup(workspace, data, requesting_user):
             batch_size=BATCH,
         )
 
-        # --- compras a plazo (fila tal cual, sin re-disparar el cargo
+        # --- compras a plazo (fila tal cual, sin re-disparar la transacción
         # inicial: la transacción de esa compra ya viene en `transactions`) ---
         InstallmentPurchase.objects.bulk_create(
             [
@@ -570,13 +567,10 @@ def import_backup(workspace, data, requesting_user):
                     id=row["id"],
                     workspace=workspace,
                     wallet_id=row["wallet"],
-                    payment_wallet_id=row.get("payment_wallet"),
                     category_id=row["category"],
                     description=row["description"],
                     total_amount=row["total_amount"],
-                    installment_amount=row["installment_amount"],
                     installments_total=row["installments_total"],
-                    installments_paid=_coalesce(row, "installments_paid", 0),
                     start_date=row["start_date"],
                 )
                 for row in installment_rows

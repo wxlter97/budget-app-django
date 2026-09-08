@@ -1,17 +1,20 @@
-"""Generación automática de transacciones (gastos recurrentes y cuotas).
+"""Generación automática de transacciones (gastos recurrentes) y aritmética
+de compras a plazo.
 
-Las funciones son idempotentes respecto al estado que llevan los propios
-modelos (`RecurringExpense.next_due_date`, `InstallmentPurchase.installments_paid`):
-correrlas dos veces el mismo día no duplica nada.
+`generate_recurring_transactions` es idempotente respecto a
+`RecurringExpense.next_due_date`: correrla dos veces el mismo día no duplica
+nada. Las compras a plazo (`InstallmentPurchase`) ya no generan
+transacciones por cuota -- `installment_amounts` solo calcula montos para el
+estado de cuenta (ver `apps.accounts.services.installment_status`).
 """
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 
-from .models import InstallmentPurchase, RecurringExpense, Transaction
+from .models import RecurringExpense, Transaction
 
 
 def visible_transactions(workspace, user):
@@ -68,130 +71,18 @@ def generate_recurring_transactions(as_of=None):
     return created
 
 
-def _installment_txn_kwargs(purchase, n, date, *, user=None):
-    """Campos de la Transaction para la cuota ``n`` de ``purchase``.
-
-    Tarjeta de crédito (`payment_wallet`): la cuota es una TRANSFERENCIA de la
-    cartera de pago hacia la tarjeta. Resto: un GASTO contra `wallet`.
-    """
-    desc = f"{purchase.description} (cuota {n}/{purchase.installments_total})"
-    if purchase.payment_wallet_id:
-        return dict(
-            type=Transaction.TYPE_TRANSFER,
-            wallet=purchase.payment_wallet,
-            to_wallet=purchase.wallet,
-            category=None,
-            amount=purchase.installment_amount,
-            description=desc,
-            date=date,
-            source=Transaction.SOURCE_INSTALLMENT,
-            installment_purchase=purchase,
-            created_by=user,
-        )
-    return dict(
-        wallet=purchase.wallet,
-        category=purchase.category,
-        amount=purchase.installment_amount,
-        description=desc,
-        date=date,
-        source=Transaction.SOURCE_INSTALLMENT,
-        installment_purchase=purchase,
-        created_by=user,
-    )
-
-
-def post_initial_installment_charge(purchase, *, user=None):
-    """Solo compras con tarjeta: registra el cargo del total contra la tarjeta
-    el día de la compra (ya debes todo y baja tu crédito disponible)."""
-    if not purchase.payment_wallet_id:
-        return None
-    return Transaction.objects.create(
-        wallet=purchase.wallet,
-        category=purchase.category,
-        amount=purchase.total_amount,
-        description=f"{purchase.description} (compra a {purchase.installments_total} cuotas)",
-        date=purchase.start_date,
-        source=Transaction.SOURCE_INSTALLMENT,
-        installment_purchase=purchase,
-        created_by=user,
-    )
-
-
-def post_prior_installments(purchase, count, *, user=None):
-    """Registra retroactivamente las primeras `count` cuotas de `purchase` --
-    una compra a plazo que ya venía con cuotas pagadas ANTES de darla de alta
-    en la app (el vendedor/banco original ya las cobró). Crea una Transaction
-    por cuota, fechada en su vencimiento calendario real, igual que si se
-    hubiera ido pagando con `pay/` en su momento.
-
-    Sin esto, `installments_paid` avanza pero esos pagos no quedan
-    reflejados en ningún lado: ni bajan el gasto real, ni (para compras con
-    tarjeta) restauran el crédito disponible que ya se pagó -- la tarjeta
-    queda con más deuda de la que hay en realidad.
-    """
-    created = []
-    for n in range(1, count + 1):
-        due_date = purchase.start_date + relativedelta(months=n - 1)
-        with db_transaction.atomic():
-            created.append(
-                Transaction.objects.create(
-                    **_installment_txn_kwargs(purchase, n, due_date, user=user)
-                )
-            )
-            purchase.installments_paid = n
-            purchase.save(update_fields=["installments_paid", "updated_at"])
-    return created
-
-
-def post_due_installments(as_of=None):
-    """Registra las cuotas vencidas de cada compra a plazo no terminada."""
-    as_of = as_of or timezone.localdate()
-    created = []
-
-    for purchase in InstallmentPurchase.objects.select_related(
-        "category", "wallet", "payment_wallet"
-    ):
-        if purchase.installments_paid >= purchase.installments_total:
-            continue
-
-        months_elapsed = (
-            (as_of.year - purchase.start_date.year) * 12
-            + (as_of.month - purchase.start_date.month)
-        )
-        due_count = months_elapsed + (1 if as_of.day >= purchase.start_date.day else 0)
-        due_count = min(max(due_count, 0), purchase.installments_total)
-
-        while purchase.installments_paid < due_count:
-            n = purchase.installments_paid + 1
-            due_date = purchase.start_date + relativedelta(months=n - 1)
-            with db_transaction.atomic():
-                created.append(
-                    Transaction.objects.create(
-                        **_installment_txn_kwargs(purchase, n, due_date)
-                    )
-                )
-                purchase.installments_paid = n
-                purchase.save(update_fields=["installments_paid", "updated_at"])
-
-    return created
-
-
-def post_next_installment(purchase, *, user=None, on_date=None):
-    """Registra UNA cuota de `purchase`: crea la Transaction y avanza el contador.
-
-    Devuelve la Transaction creada, o None si la compra ya está completa.
-    """
-    if purchase.installments_paid >= purchase.installments_total:
-        return None
-    n = purchase.installments_paid + 1
-    date = on_date or purchase.start_date + relativedelta(months=n - 1)
-    with db_transaction.atomic():
-        txn = Transaction.objects.create(
-            **_installment_txn_kwargs(purchase, n, date, user=user)
-        )
-        purchase.installments_paid = n
-        purchase.save(update_fields=["installments_paid", "updated_at"])
-    return txn
+def installment_amounts(total_amount: Decimal, installments_total: int) -> list[Decimal]:
+    """Reparte `total_amount` en `installments_total` cuotas para el cálculo
+    del estado de cuenta: cada cuota, menos la última, se redondea hacia
+    arriba al centavo (p. ej. USD 12.244 -> USD 12.25); la última es lo que
+    sobra, para que la suma cierre exacto con `total_amount` sin importar el
+    redondeo de las anteriores."""
+    total_cents = int((total_amount * 100).to_integral_value(rounding=ROUND_CEILING))
+    per_cents = -(-total_cents // installments_total)  # división entera hacia arriba
+    amounts = [Decimal(per_cents) / 100] * (installments_total - 1)
+    last = total_amount - sum(amounts, Decimal("0"))
+    amounts.append(last)
+    return amounts
 
 
 # ---------------------------------------------------------------------------

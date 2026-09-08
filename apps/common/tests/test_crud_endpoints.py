@@ -45,7 +45,7 @@ class SecondaryEndpointsTests(APITestCase):
             )
             InstallmentPurchase.objects.create(
                 workspace=ws, wallet=acc, category=cat, description="TV",
-                total_amount=12, installment_amount=1, installments_total=12,
+                total_amount=12, installments_total=12,
                 start_date=dt.date(2026, 1, 1),
             )
             MonthlySnapshot.objects.create(

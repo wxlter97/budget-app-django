@@ -55,38 +55,6 @@ def _clear_split_group_on_soft_delete(sender, instance, **kwargs):
         _clear_split_group_if_alone(instance.split_group)
 
 
-def _is_installment_cuota(txn) -> bool:
-    """True si `txn` es la transacción de UNA cuota de compra a plazo (no el
-    cargo total inicial de una compra con tarjeta, que también lleva
-    `source=installment` pero no cuenta como cuota pagada)."""
-    if txn.source != Transaction.SOURCE_INSTALLMENT or not txn.installment_purchase_id:
-        return False
-    purchase = txn.installment_purchase
-    if purchase.payment_wallet_id:
-        return txn.type == Transaction.TYPE_TRANSFER
-    return True
-
-
-@receiver(post_save, sender=Transaction)
-def _uncount_installment_on_soft_delete(sender, instance, **kwargs):
-    """Si se borra (soft-delete) la transacción de una cuota, la compra a
-    plazo deja de contarla como pagada -- si no, `installments_paid` queda
-    desincronizado para siempre de lo que en verdad hay en los movimientos
-    (la cuota "vuelve a deberse" pero el contador sigue como si ya estuviera)."""
-    if not instance.is_deleted:
-        return
-    prev = getattr(instance, "_balance_prev", None)
-    was_alive = prev is not None and not prev.is_deleted
-    if not was_alive:
-        return
-    if not _is_installment_cuota(instance):
-        return
-    purchase = instance.installment_purchase
-    if purchase.installments_paid > 0:
-        purchase.installments_paid -= 1
-        purchase.save(update_fields=["installments_paid", "updated_at"])
-
-
 @receiver(post_delete, sender=Transaction)
 def _sync_balance_on_delete(sender, instance, **kwargs):
     _apply_diff(balance_deltas(instance), {})

@@ -31,7 +31,7 @@ class WalletSplitTests(APITestCase):
         self.food = Category.objects.create(workspace=self.ws, name="Comida", type=Category.TYPE_EXPENSE)
 
         # Actividad propia de Multimoney: como origen, como destino, un
-        # recurrente y una compra a plazo (pagada con esa misma cartera).
+        # recurrente y una compra a plazo generada en esa misma cartera.
         self.out_txn = Transaction.objects.create(
             wallet=self.multimoney, category=self.food, amount=Decimal("50.00"),
             date=dt.date(2026, 1, 5),
@@ -45,10 +45,9 @@ class WalletSplitTests(APITestCase):
             amount=Decimal("10.00"), next_due_date=dt.date(2026, 2, 1),
         )
         self.installment = InstallmentPurchase.objects.create(
-            workspace=self.ws, wallet=self.other, payment_wallet=self.multimoney,
+            workspace=self.ws, wallet=self.multimoney,
             category=self.food, description="Compra", total_amount=Decimal("300.00"),
-            installment_amount=Decimal("100.00"), installments_total=3,
-            start_date=dt.date(2026, 1, 1),
+            installments_total=3, start_date=dt.date(2026, 1, 1),
         )
         self.multimoney.refresh_from_db()
 
@@ -92,7 +91,7 @@ class WalletSplitTests(APITestCase):
         self.recurring.refresh_from_db()
         self.assertEqual(self.recurring.wallet_id, child.id)
         self.installment.refresh_from_db()
-        self.assertEqual(self.installment.payment_wallet_id, child.id)
+        self.assertEqual(self.installment.wallet_id, child.id)
 
         # Ahora sí se le puede agregar otra hija (ya no tiene nada propio).
         resp2 = self.client.patch(
