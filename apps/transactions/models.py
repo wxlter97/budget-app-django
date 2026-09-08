@@ -126,10 +126,10 @@ class Transaction(BaseModel):
     )
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
     # Solo `source=installment`: la compra a plazo que generó esta
-    # transacción (cargo total o cuota) -- así, si se borra la transacción,
-    # el contador `installments_paid` de la compra se puede corregir en vez
-    # de quedar desincronizado de los movimientos reales (ver signals.py).
-    # `null` en transacciones de compras a plazo creadas antes de este campo.
+    # transacción -- cada InstallmentPurchase genera exactamente una (el
+    # total, al crearla); editar o borrar la compra sincroniza o borra esta
+    # misma transacción (ver InstallmentPurchaseSerializer/ViewSet). `null`
+    # en transacciones de compras a plazo creadas antes de este campo.
     installment_purchase = models.ForeignKey(
         "InstallmentPurchase",
         on_delete=models.SET_NULL,
@@ -267,50 +267,29 @@ class RecurringExpense(BaseModel):
 
 
 class InstallmentPurchase(BaseModel):
-    """Compra a plazo: genera una Transaction por cuota mensual.
-
-    Dos modelos según `payment_wallet`:
-
-    - **Sin `payment_wallet`** (plan de tienda / débito): no se registra nada al
-      crear; cada cuota es un GASTO de `installment_amount` contra `wallet`.
-    - **Con `payment_wallet`** (tarjeta de crédito): al crear se carga el
-      `total_amount` completo como gasto contra `wallet` (la tarjeta) — ya debes
-      todo y baja tu disponible; cada cuota es una TRANSFERENCIA de
-      `installment_amount` desde `payment_wallet` hacia `wallet`.
+    """Compra a plazo: solo sirve para el CÁLCULO del estado de cuenta de la
+    tarjeta -- no genera una Transaction por cuota. Al crearla se registra
+    una única Transaction (el `total_amount`, como gasto contra `wallet`, el
+    día `start_date`) y ya: eso es lo único que afecta el saldo. Las
+    "cuotas" son puramente aritmética sobre `total_amount`/`installments_total`
+    anclada a los cortes de facturación de `wallet` -- ver
+    `apps.accounts.services.installment_status`. Por eso solo se puede crear
+    sobre una tarjeta con `billing_cycle_day` configurado (lo valida el
+    serializer); no existe ya el modo "plan de tienda" sin tarjeta.
     """
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="installment_purchases")
+    # Tarjeta donde se generó la compra (nunca se guarda "desde dónde se
+    # paga" -- eso ya no aplica: la única Transaction que genera esta compra
+    # es siempre un gasto contra esta misma cartera).
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="installment_purchases")
-    # Tarjeta de crédito: cartera desde la que se pagan las cuotas. Si se define,
-    # el total se carga a `wallet` al crear y cada cuota es una transferencia.
-    payment_wallet = models.ForeignKey(
-        Wallet,
-        on_delete=models.PROTECT,
-        null=True,
-        blank=True,
-        related_name="installment_payments",
-    )
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="installment_purchases")
     description = models.CharField(max_length=255)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2)
-    installment_amount = models.DecimalField(max_digits=14, decimal_places=2)
     installments_total = models.PositiveSmallIntegerField()
-    installments_paid = models.PositiveSmallIntegerField(default=0)
     start_date = models.DateField()
 
-    @property
-    def is_credit_card(self) -> bool:
-        return self.payment_wallet_id is not None
-
-    @property
-    def is_completed(self):
-        return self.installments_paid >= self.installments_total
-
-    @property
-    def remaining_amount(self):
-        return self.installment_amount * (self.installments_total - self.installments_paid)
-
     def __str__(self):
-        return f"{self.description} ({self.installments_paid}/{self.installments_total})"
+        return f"{self.description} ({self.installments_total} cuotas)"
 
 
 class RecurringSuggestionDismissal(BaseModel):

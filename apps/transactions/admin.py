@@ -74,9 +74,8 @@ class InstallmentPurchaseAdmin(BaseModelAdmin):
     list_display = (
         "description",
         "workspace",
+        "wallet",
         "total_amount",
-        "installment_amount",
-        "installments_paid",
         "installments_total",
         "start_date",
     )

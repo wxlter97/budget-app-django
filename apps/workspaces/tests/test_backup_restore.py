@@ -64,7 +64,7 @@ class BackupExportTests(APITestCase):
         )
         InstallmentPurchase.objects.create(
             workspace=self.ws, wallet=self.checking, category=self.food,
-            description="Sofá", total_amount=Decimal("300.00"), installment_amount=Decimal("100.00"),
+            description="Sofá", total_amount=Decimal("300.00"),
             installments_total=3, start_date=dt.date(2026, 8, 1),
         )
 

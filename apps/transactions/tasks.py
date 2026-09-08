@@ -7,8 +7,3 @@ from . import services
 def generate_recurring_transactions():
     """Diaria: materializa los gastos recurrentes vencidos."""
     return [str(t.id) for t in services.generate_recurring_transactions()]
-
-
-@shared_task
-def post_due_installments():
-    return [str(t.id) for t in services.post_due_installments()]

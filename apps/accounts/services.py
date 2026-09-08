@@ -253,15 +253,56 @@ def _payment_due_date(wallet: Wallet, cutoff_date: date_cls):
     return _clamped_date(target.year, target.month, wallet.payment_due_day)
 
 
-def _installments_due_count(purchase, until_date) -> int:
-    """Cuántas cuotas de ``purchase`` ya vencieron en o antes de ``until_date``
-    (según el calendario: cuota ``n`` vence a los ``n-1`` meses de ``start_date``)."""
-    n_due = 0
-    for n in range(1, purchase.installments_total + 1):
-        if purchase.start_date + relativedelta(months=n - 1) > until_date:
-            break
-        n_due = n
-    return n_due
+def _cutoff_on_or_after(billing_cycle_day: int, on: date_cls) -> date_cls:
+    """Primera fecha de corte (día ``billing_cycle_day``) en o después de
+    ``on`` -- el corte al que "cae" una compra hecha ese día."""
+    cutoff = _clamped_date(on.year, on.month, billing_cycle_day)
+    if cutoff < on:
+        cutoff = _next_cutoff(billing_cycle_day, cutoff)
+    return cutoff
+
+
+def installment_schedule(purchase) -> list[dict]:
+    """Calendario de cuotas de ``purchase``, anclado a los cortes de
+    facturación de su tarjeta (``purchase.wallet``) -- no al día calendario
+    de la compra. La cuota 1 cae en el primer corte en o después de
+    `start_date` (igual que en un estado de cuenta real); cada cuota
+    siguiente, un corte más adelante. Los montos vienen de
+    `installment_amounts` (ceiling por cuota, la última es el resto).
+
+    Devuelve ``[]`` si `purchase.wallet` no tiene `billing_cycle_day`
+    (no debería pasar -- el serializer lo exige al crear)."""
+    from apps.transactions.services import installment_amounts
+
+    wallet = purchase.wallet
+    if not wallet.billing_cycle_day:
+        return []
+
+    amounts = installment_amounts(purchase.total_amount, purchase.installments_total)
+    cutoff = _cutoff_on_or_after(wallet.billing_cycle_day, purchase.start_date)
+    schedule = []
+    for n, amount in enumerate(amounts, start=1):
+        schedule.append({"n": n, "cutoff_date": cutoff, "amount": amount})
+        cutoff = _next_cutoff(wallet.billing_cycle_day, cutoff)
+    return schedule
+
+
+def installment_status(purchase, as_of=None) -> dict:
+    """Estado de ``purchase`` a la fecha ``as_of`` (hoy por defecto): cuántas
+    cuotas ya "vencieron" (su corte ya pasó) y cuánto queda -- puramente
+    calculado, sin ningún contador que haya que ir avanzando a mano."""
+    as_of = as_of or timezone.localdate()
+    schedule = installment_schedule(purchase)
+    pending = [s for s in schedule if s["cutoff_date"] > as_of]
+    paid = len(schedule) - len(pending)
+    return {
+        "schedule": schedule,
+        "installments_paid": paid,
+        "is_completed": not pending,
+        "remaining_amount": sum((s["amount"] for s in pending), Decimal("0")),
+        "current_installment_amount": pending[0]["amount"] if pending else Decimal("0"),
+        "next_due_date": pending[0]["cutoff_date"] if pending else None,
+    }
 
 
 def _card_balance_at(wallet, until_date) -> Decimal:
@@ -287,48 +328,33 @@ def _card_balance_at(wallet, until_date) -> Decimal:
 
 
 def _installment_pending(wallet, cutoff_date):
-    """Cómo afectan las compras a plazo al pago de contado, a ``cutoff_date``.
-
-    Devuelve ``(financed_not_due, overdue_unbilled, lines)``:
-
-    - ``financed_not_due``: de las compras financiadas CON la tarjeta
-      (`payment_wallet`), el capital cuyas cuotas todavía NO vencieron. El
-      cargo total ya bajó el disponible, pero al corte solo se debe lo vencido,
-      así que este monto se RESTA del pago de contado.
-    - ``overdue_unbilled``: de los planes de tienda (sin `payment_wallet`, la
-      cuota es un gasto), las cuotas que ya vencieron pero cuyo movimiento no
-      se registró (con el cron o el botón). No bajaron el disponible todavía,
-      así que se SUMAN.
-    - ``lines``: una fila por compra con cuotas pendientes de registrar
-      (``cuotas_vencidas - installments_paid > 0``).
-    """
+    """Capital a plazo que aún NO vence, a ``cutoff_date``: el total de cada
+    compra a plazo de ``wallet`` ya bajó el disponible al registrarse (es una
+    Transaction normal), pero al corte solo se debe lo que ya venció -- este
+    monto se RESTA del pago de contado. ``lines`` es una fila por compra con
+    cuotas pendientes, para mostrar el detalle."""
     from apps.transactions.models import InstallmentPurchase
 
     financed_not_due = Decimal("0")
-    overdue_unbilled = Decimal("0")
     lines = []
     for purchase in InstallmentPurchase.objects.filter(wallet=wallet).select_related(
         "category"
     ):
-        n_due = _installments_due_count(purchase, cutoff_date)
-        pending = max(n_due - purchase.installments_paid, 0)
-        if purchase.is_credit_card:
-            financed_not_due += purchase.installment_amount * (
-                purchase.installments_total - n_due
-            )
-        else:
-            overdue_unbilled += purchase.installment_amount * pending
-        if pending:
-            lines.append(
-                {
-                    "id": purchase.id,
-                    "description": purchase.description,
-                    "installments_pending": pending,
-                    "installments_total": purchase.installments_total,
-                    "amount_pending": purchase.installment_amount * pending,
-                }
-            )
-    return financed_not_due, overdue_unbilled, lines
+        status = installment_status(purchase, as_of=cutoff_date)
+        pending = status["schedule"][status["installments_paid"] :]
+        if not pending:
+            continue
+        financed_not_due += status["remaining_amount"]
+        lines.append(
+            {
+                "id": purchase.id,
+                "description": purchase.description,
+                "installments_pending": len(pending),
+                "installments_total": purchase.installments_total,
+                "amount_pending": status["remaining_amount"],
+            }
+        )
+    return financed_not_due, lines
 
 
 def credit_card_statement(wallet, as_of=None):
@@ -338,18 +364,18 @@ def credit_card_statement(wallet, as_of=None):
     tarjeta de crédito con fecha de corte (`kind=credit` + `billing_cycle_day`).
 
         pago_de_contado = saldo_usado                       (= límite - disponible)
-                        - capital_a_plazo_aún_no_vencido     (planes financiados)
-                        + cuotas_vencidas_sin_registrar      (planes de tienda)
+                        - capital_a_plazo_aún_no_vencido
 
     ``saldo_usado`` es ``-_card_balance_at(wallet, as_of)`` -- exactamente lo
     que la app tiene como saldo de la tarjeta (``current_balance`` cuando
     ``as_of`` es hoy). El disponible sale de ahí: ``límite + saldo``. Cuando el
     saldo cacheado es correcto, el pago de contado también.
 
-    Las cuotas se cuentan "vencidas" por el CORTE: cuota ``n`` cuenta si su
-    fecha de calendario (``start_date`` + ``n-1`` meses) cae en o antes del
-    corte más reciente. El botón "registrar pago" y el cron `post_due_installments`
-    solo entran vía su efecto en el saldo.
+    Las cuotas se cuentan "vencidas" por el CORTE de la tarjeta, no por el
+    calendario de la compra: cuota ``n`` vence en su ``n``-ésimo corte desde
+    la compra (ver `installment_schedule`). No hay ningún registro manual de
+    por medio -- es puro cálculo sobre `InstallmentPurchase` + los cortes de
+    `wallet`.
     """
     if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day:
         return None
@@ -365,8 +391,8 @@ def credit_card_statement(wallet, as_of=None):
         wallet.credit_limit + balance if wallet.credit_limit is not None else None
     )
 
-    financed_not_due, overdue_unbilled, lines = _installment_pending(wallet, cutoff_date)
-    total_due = used - financed_not_due + overdue_unbilled
+    financed_not_due, lines = _installment_pending(wallet, cutoff_date)
+    total_due = used - financed_not_due
 
     return {
         "cutoff_date": cutoff_date,
@@ -376,7 +402,6 @@ def credit_card_statement(wallet, as_of=None):
         "available": available,
         "used": used,
         "installments_not_due": financed_not_due,
-        "installments_overdue_unbilled": overdue_unbilled,
         "total_due": total_due,
         "installment_lines": lines,
     }

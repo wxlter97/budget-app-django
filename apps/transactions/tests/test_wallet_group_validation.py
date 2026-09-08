@@ -64,15 +64,7 @@ class WalletGroupValidationTests(APITestCase):
     def test_rejects_installment_purchase_on_a_group_wallet(self):
         resp = self._post("/api/v1/installment-purchases/", {
             "wallet": str(self.parent.id), "category": str(self.food.id),
-            "description": "Compra", "total_amount": "300.00", "installment_amount": "100.00",
+            "description": "Compra", "total_amount": "300.00",
             "installments_total": 3, "start_date": "2026-01-01",
-        })
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_rejects_installment_purchase_with_group_wallet_as_payment_wallet(self):
-        resp = self._post("/api/v1/installment-purchases/", {
-            "wallet": str(self.leaf.id), "payment_wallet": str(self.parent.id),
-            "category": str(self.food.id), "description": "Compra", "total_amount": "300.00",
-            "installment_amount": "100.00", "installments_total": 3, "start_date": "2026-01-01",
         })
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
