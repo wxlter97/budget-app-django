@@ -196,7 +196,6 @@ class CreditCardStatementSerializer(serializers.Serializer):
     spent = serializers.DecimalField(max_digits=16, decimal_places=2)
     paid = serializers.DecimalField(max_digits=16, decimal_places=2)
     installments_due = serializers.DecimalField(max_digits=16, decimal_places=2)
-    financed_not_due = serializers.DecimalField(max_digits=16, decimal_places=2)
     total_due = serializers.DecimalField(max_digits=16, decimal_places=2)
     current_period_spent = serializers.DecimalField(max_digits=16, decimal_places=2)
     current_period_paid = serializers.DecimalField(max_digits=16, decimal_places=2)

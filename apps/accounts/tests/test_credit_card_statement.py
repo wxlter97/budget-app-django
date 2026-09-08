@@ -137,11 +137,11 @@ class CreditCardStatementServiceTests(APITestCase):
         w = self._card(billing_cycle_day=3)
         self._financed_purchase(w)
         # A la fecha del corte de febrero (3), solo venció la cuota 1 (10 ene):
-        # el cargo de 1200 entró completo, pero 1100 de capital aún no vence.
+        # ni el cargo total de 1200 ni la mecánica de cuotas cuentan, solo la
+        # cuota vencida según el calendario.
         data = credit_card_statement(w, as_of=dt.date(2024, 2, 5))
         self.assertEqual(data["cutoff_date"], dt.date(2024, 2, 3))
-        self.assertEqual(data["spent"], Decimal("1200.00"))
-        self.assertEqual(data["financed_not_due"], Decimal("1100.00"))
+        self.assertEqual(data["spent"], Decimal("0"))
         self.assertEqual(data["installments_due"], Decimal("100.00"))
         self.assertEqual(data["total_due"], Decimal("100.00"))
         self.assertEqual(len(data["installment_lines"]), 1)
@@ -154,7 +154,6 @@ class CreditCardStatementServiceTests(APITestCase):
         # y 2 (10 feb) -- ambas siguen pendientes.
         data = credit_card_statement(w, as_of=dt.date(2024, 3, 5))
         self.assertEqual(data["installments_due"], Decimal("200.00"))
-        self.assertEqual(data["financed_not_due"], Decimal("1000.00"))
         self.assertEqual(data["total_due"], Decimal("200.00"))
 
     def test_paying_a_cutoff_clears_it_and_only_new_cuota_remains_due(self):
@@ -169,6 +168,32 @@ class CreditCardStatementServiceTests(APITestCase):
         self.assertEqual(data["installments_due"], Decimal("200.00"))  # cuotas 1 y 2, vencidas
         self.assertEqual(data["paid"], Decimal("100.00"))
         self.assertEqual(data["total_due"], Decimal("100.00"))  # solo la cuota 2, nueva
+
+    def test_installment_source_movements_never_leak_into_spent_or_paid(self):
+        # Compra financiada con la tarjeta: cargo total + cuotas registradas
+        # como transferencia (source=installment). Nada de eso puede aparecer
+        # en `spent` / `paid` -- solo la cuota vencida del calendario.
+        w = self._card(billing_cycle_day=3)
+        purchase = self._financed_purchase(w)  # cargo -1200 el 10 ene
+        for n, day in ((1, dt.date(2024, 1, 10)), (2, dt.date(2024, 2, 10))):
+            Transaction.objects.create(
+                type=Transaction.TYPE_TRANSFER, wallet=self.checking, to_wallet=w,
+                amount=Decimal("100.00"), date=day,
+                source=Transaction.SOURCE_INSTALLMENT, installment_purchase=purchase,
+            )
+        # Un gasto normal de 25 y un abono normal de 40 en el mismo período.
+        Transaction.objects.create(
+            wallet=w, category=self.expense_cat, amount=Decimal("25.00"), date=dt.date(2024, 2, 1)
+        )
+        Transaction.objects.create(
+            type=Transaction.TYPE_TRANSFER, wallet=self.checking, to_wallet=w,
+            amount=Decimal("40.00"), date=dt.date(2024, 2, 2),
+        )
+        data = credit_card_statement(w, as_of=dt.date(2024, 3, 5))
+        self.assertEqual(data["spent"], Decimal("25.00"))
+        self.assertEqual(data["paid"], Decimal("40.00"))
+        self.assertEqual(data["installments_due"], Decimal("200.00"))  # cuotas 1 y 2
+        self.assertEqual(data["total_due"], Decimal("185.00"))  # 25 - 40 + 200
 
     def test_total_due_matches_current_balance_with_income_and_outgoing(self):
         # total_due (al corte, sin actividad posterior) tiene que ser

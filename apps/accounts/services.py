@@ -265,46 +265,56 @@ def _installments_due_count(purchase, until_date) -> int:
 
 
 def _card_activity(wallet, until_date):
-    """``(cargos, abonos)`` de ``wallet`` con fecha <= ``until_date``, MISMA
-    convención de signo que `recompute_wallet_balance` -- ambos montos positivos.
+    """``(cargos, abonos)`` normales de ``wallet`` con fecha <= ``until_date``
+    -- ambos montos positivos, misma convención de signo que
+    `recompute_wallet_balance`.
 
-    - ``cargos``: todo lo que sube la deuda de la tarjeta -- gastos y
-      transferencias que salen de ella (incluye el cargo total inicial de una
-      compra a plazo financiada con la tarjeta; la parte aún no vencida se
-      descuenta aparte en `credit_card_statement`).
-    - ``abonos``: todo lo que la baja -- transferencias entrantes e ingresos.
+    - ``cargos``: lo que sube la deuda -- gastos y transferencias que salen.
+    - ``abonos``: lo que la baja -- transferencias entrantes e ingresos.
 
-    Antes esto ignoraba los ingresos y las transferencias salientes, así que
-    `total_due` podía alejarse de `current_balance` sin que nada lo delatara.
+    Se EXCLUYE todo lo de `source=installment`: el cargo total inicial de una
+    compra a plazo y las cuotas se manejan aparte en `_installment_breakdown`
+    (a plazo, mes a mes solo se debe la cuota, no la compra completa, sin
+    importar si el plan es de tienda o financiado con la tarjeta). Antes esto
+    ignoraba los ingresos y las transferencias salientes, así que `total_due`
+    podía alejarse de `current_balance` sin que nada lo delatara.
     """
     from apps.transactions.models import Transaction
 
-    own = Transaction.objects.filter(wallet=wallet, date__lte=until_date)
+    own = Transaction.objects.filter(wallet=wallet, date__lte=until_date).exclude(
+        source=Transaction.SOURCE_INSTALLMENT
+    )
     charges = own.filter(
         type__in=[Transaction.TYPE_EXPENSE, Transaction.TYPE_TRANSFER]
     ).aggregate(t=Sum("amount", output_field=_MONEY))["t"] or Decimal("0")
     income = own.filter(type=Transaction.TYPE_INCOME).aggregate(
         t=Sum("amount", output_field=_MONEY)
     )["t"] or Decimal("0")
-    incoming = Transaction.objects.filter(
-        to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__lte=until_date
-    ).aggregate(t=Sum("amount", output_field=_MONEY))["t"] or Decimal("0")
+    incoming = (
+        Transaction.objects.filter(
+            to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__lte=until_date
+        )
+        .exclude(source=Transaction.SOURCE_INSTALLMENT)
+        .aggregate(t=Sum("amount", output_field=_MONEY))["t"]
+        or Decimal("0")
+    )
     return charges, income + incoming
 
 
 def _installment_breakdown(wallet, until_date):
-    """``(installments_billed, financed_not_due, lines)`` para las compras a
-    plazo de ``wallet`` al corte ``until_date``.
+    """``(installments_billed, lines)`` para las compras a plazo de ``wallet``
+    al corte ``until_date``.
 
-    - ``installments_billed``: suma de las cuotas ya vencidas (informativo).
-    - ``financed_not_due``: de las compras financiadas CON la tarjeta
-      (`payment_wallet`), el capital que aún no vence -- el cargo total entró
-      de una vez pero al corte solo se debe lo ya facturado.
+    ``installments_billed`` es la suma de las cuotas ya vencidas según el
+    calendario (cuota ``n`` a los ``n-1`` meses de ``start_date``). Es lo único
+    que una compra a plazo suma al saldo del corte: ni el cargo total inicial
+    ni las cuotas registradas como movimiento entran (los filtra
+    `_card_activity`), así el resultado no depende de que el cron
+    `post_due_installments` ya haya corrido ni de FKs viejos.
     """
-    from apps.transactions.models import InstallmentPurchase, Transaction
+    from apps.transactions.models import InstallmentPurchase
 
     installments_billed = Decimal("0")
-    financed_not_due = Decimal("0")
     lines = []
     for purchase in InstallmentPurchase.objects.filter(wallet=wallet).select_related(
         "category"
@@ -312,21 +322,6 @@ def _installment_breakdown(wallet, until_date):
         n_due = _installments_due_count(purchase, until_date)
         billed = purchase.installment_amount * n_due
         installments_billed += billed
-        if purchase.is_credit_card:
-            # Solo se descuenta capital que de verdad se cargó a la tarjeta: si
-            # el cargo inicial nunca se registró (datos viejos), no hay nada que
-            # descontar y las cuotas ya vencidas cuentan por sí solas.
-            charged = (
-                Transaction.objects.filter(
-                    wallet=wallet,
-                    installment_purchase=purchase,
-                    type=Transaction.TYPE_EXPENSE,
-                    source=Transaction.SOURCE_INSTALLMENT,
-                    date__lte=until_date,
-                ).aggregate(t=Sum("amount", output_field=_MONEY))["t"]
-                or Decimal("0")
-            )
-            financed_not_due += max(min(charged, purchase.total_amount) - billed, Decimal("0"))
         if n_due or not purchase.is_completed:
             lines.append(
                 {
@@ -337,7 +332,7 @@ def _installment_breakdown(wallet, until_date):
                     "amount_due": billed,
                 }
             )
-    return installments_billed, financed_not_due, lines
+    return installments_billed, lines
 
 
 def credit_card_statement(wallet, as_of=None):
@@ -346,24 +341,23 @@ def credit_card_statement(wallet, as_of=None):
     crédito con fecha de corte configurada (`kind=credit` + `billing_cycle_day`).
 
     ``total_due`` es el saldo de la tarjeta al corte más reciente que ya cerró
-    en o antes de `as_of`, con exactamente la misma convención de signo que
-    `current_balance` (`recompute_wallet_balance`):
+    en o antes de `as_of`:
 
-        total_due = cargos_al_corte
-                  - abonos_al_corte
+        total_due = gastos_normales_al_corte
+                  - abonos_normales_al_corte
+                  + cuotas_a_plazo_ya_vencidas
                   - opening_balance                 (negativo = deuda previa)
-                  - capital_financiado_aún_no_vencido
 
-    Los primeros tres términos son `-(opening_balance + Σ deltas al corte)`, o
-    sea `-current_balance` restringido a las transacciones con fecha <= corte.
-    Por eso, si `current_balance` es correcto, `total_due` también lo es -- no
-    hay una fórmula paralela que se pueda desincronizar. El cuarto término solo
-    aplica a compras a plazo financiadas con la tarjeta, donde el cargo total
-    entra de una vez pero mes a mes solo se debe la cuota.
+    Los gastos/abonos normales excluyen TODO lo de `source=installment` (el
+    cargo total inicial de una compra a plazo y las cuotas registradas como
+    movimiento) -- de una compra a plazo, al corte solo se debe la cuota
+    vencida, que se suma aparte desde el calendario. Así el número no depende
+    de si el plan es de tienda o financiado con la tarjeta, ni de que el cron
+    `post_due_installments` haya corrido.
 
     Sin `opening_balance`, una tarjeta dada de alta con deuda previa arrastra
-    ese desfase: la historia cargada tiene más abonos que cargos y `total_due`
-    (igual que `current_balance`) queda con un saldo a favor que no existe.
+    ese desfase: la historia cargada tiene más abonos que gastos y `total_due`
+    queda con un saldo a favor que no existe.
 
     También incluye la actividad del período abierto (desde el corte hasta
     `as_of`, aún no vencida) como referencia de cuánto se lleva acumulado
@@ -378,12 +372,11 @@ def credit_card_statement(wallet, as_of=None):
     payment_due_date = _payment_due_date(wallet, cutoff_date)
 
     charges, payments = _card_activity(wallet, cutoff_date)
-    installments_due, financed_not_due, lines = _installment_breakdown(
-        wallet, cutoff_date
-    )
-    total_due = charges - payments - wallet.opening_balance - financed_not_due
+    installments_due, lines = _installment_breakdown(wallet, cutoff_date)
+    total_due = charges - payments + installments_due - wallet.opening_balance
 
     charges_open, payments_open = _card_activity(wallet, as_of)
+    installments_open, _ = _installment_breakdown(wallet, as_of)
 
     return {
         "cutoff_date": cutoff_date,
@@ -393,9 +386,9 @@ def credit_card_statement(wallet, as_of=None):
         "spent": charges,
         "paid": payments,
         "installments_due": installments_due,
-        "financed_not_due": financed_not_due,
         "total_due": total_due,
-        "current_period_spent": charges_open - charges,
+        "current_period_spent": (charges_open - charges)
+        + (installments_open - installments_due),
         "current_period_paid": payments_open - payments,
         "installment_lines": lines,
     }
