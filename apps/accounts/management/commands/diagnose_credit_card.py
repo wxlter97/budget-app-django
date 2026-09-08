@@ -132,34 +132,39 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("\nSin billing_cycle_day: no hay estado de cuenta."))
             return
 
-        self.stdout.write(f"\nESTADO DE CUENTA  (consulta al {eff_as_of}, corte {data['cutoff_date']})")
+        self.stdout.write(f"\nPAGO DE CONTADO  (consulta al {eff_as_of}, corte {data['cutoff_date']})")
+        lim = data["credit_limit"]
+        avail = data["available"]
         self.stdout.write(
-            f"  gastos normales al corte (spent)      : {_d(data['spent']):>12}\n"
-            f"  abonos normales al corte (paid)       : {_d(data['paid']):>12}\n"
-            f"  cuotas a plazo ya vencidas            : {_d(data['installments_due']):>12}\n"
-            f"  opening_balance                       : {_d(data['opening_balance']):>12}\n"
+            f"  límite de la tarjeta                  : {_d(lim) if lim is not None else '(sin configurar)':>12}\n"
+            f"  disponible (límite + saldo)           : {_d(avail) if avail is not None else '(n/a)':>12}\n"
+            f"  saldo usado (límite - disponible)     : {_d(data['used']):>12}\n"
+            f"  - capital a plazo aún no vencido      : {_d(data['installments_not_due']):>12}\n"
+            f"  + cuotas de tienda vencidas sin reg.  : {_d(data['installments_overdue_unbilled']):>12}\n"
             f"  --------------------------------------------------------\n"
-            f"  total_due = {_d(data['spent'])} - {_d(data['paid'])} + "
-            f"{_d(data['installments_due'])} - ({_d(data['opening_balance'])})\n"
-            f"  TOTAL A PAGAR (total_due)             : {_d(data['total_due']):>12}\n\n"
-            f"  período abierto: gastado {_d(data['current_period_spent'])}, "
-            f"abonado {_d(data['current_period_paid'])}"
+            f"  PAGO DE CONTADO (total_due)           : {_d(data['total_due']):>12}"
         )
 
-        after = [r for r in rows if r[0] > data["cutoff_date"]]
+        if data["installment_lines"]:
+            self.stdout.write("\n  Cuotas pendientes de registrar:")
+            for ln in data["installment_lines"]:
+                self.stdout.write(
+                    f"    {ln['description'][:34]:<34} "
+                    f"{ln['installments_pending']} cuota(s) = {_d(ln['amount_pending'])}"
+                )
+
+        after = [r for r in rows if cutoff and r[0] > cutoff]
         if after:
-            self.stdout.write("\n  MOVIMIENTOS DESPUÉS DEL CORTE (arman el 'período abierto'):")
+            self.stdout.write("\n  MOVIMIENTOS DESPUÉS DEL CORTE (bajan/suben el saldo usado de hoy):")
             for d, typ, src, eff, desc, _t in after:
                 self.stdout.write(f"    {d!s:<11} {typ:<11} {_d(eff):>12}  {desc[:44]}")
 
-        if _d(w.opening_balance) == 0 and _d(recomputed) > 0:
-            self.stdout.write(
-                self.style.WARNING(
-                    "\n  AVISO: opening_balance=0 y el saldo recalculado es POSITIVO "
-                    "(saldo a favor).\n  Si la tarjeta ya tenía deuda cuando empezaste a "
-                    "registrarla, poné opening_balance = -(esa deuda)."
-                )
-            )
+        # Chequeo: el saldo usado debería cuadrar con (límite - disponible real del banco).
+        self.stdout.write(
+            "\n  Comprobá contra tu banca en línea: 'saldo usado' de arriba debe ser "
+            "(límite - disponible real).\n  Si no cuadra, faltan/sobran movimientos en la tarjeta "
+            "(revisá la lista de arriba)."
+        )
 
 
 def _months_ok(purchase, n, cutoff):
