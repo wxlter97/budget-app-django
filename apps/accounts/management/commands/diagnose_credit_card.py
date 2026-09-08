@@ -1,5 +1,5 @@
 """Reconciliación de una tarjeta de crédito: por qué `total_due` del estado
-de cuenta no cuadra con la realidad (o con `current_balance`).
+de cuenta no cuadra con lo esperado.
 
     python manage.py diagnose_credit_card --wallet <uuid> [--as-of YYYY-MM-DD]
     python manage.py diagnose_credit_card --workspace <uuid>   # todas las tarjetas
@@ -7,9 +7,11 @@ de cuenta no cuadra con la realidad (o con `current_balance`).
 Imprime, para cada tarjeta:
 - opening_balance / current_balance (cacheado) vs. recalculado desde movimientos
 - cada Transacción viva con su efecto (con signo) sobre el saldo
-- el desglose del estado de cuenta a la fecha (`credit_card_statement`)
-- la reconciliación: de dónde sale `total_due` y si la historia cargada
-  parece incompleta (p. ej. abonos >> cargos con opening_balance 0).
+- el desglose del estado de cuenta a la fecha, con la reconciliación
+  `total_due = gastos - abonos + cuotas_vencidas - opening_balance`
+- los movimientos del período abierto (después del corte), que alimentan
+  `current_period_spent` / `current_period_paid`
+- avisos: `source=installment` sueltos, transferencias "ajuste", etc.
 """
 from decimal import Decimal
 
@@ -21,7 +23,6 @@ from apps.accounts.services import (
     _cutoff_on_or_before,
     balance_deltas,
     credit_card_statement,
-    recompute_wallet_balance,
 )
 
 
@@ -34,7 +35,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--wallet", help="UUID de la tarjeta a diagnosticar.")
-        parser.add_argument("--workspace", help="UUID: diagnostica todas sus tarjetas de crédito.")
+        parser.add_argument("--workspace", help="UUID: todas sus tarjetas de crédito.")
         parser.add_argument("--as-of", help="Fecha de consulta (YYYY-MM-DD). Hoy por defecto.")
 
     def handle(self, *args, **opts):
@@ -54,7 +55,7 @@ class Command(BaseCommand):
 
         wallets = list(qs)
         if not wallets:
-            raise CommandError("No se encontró ninguna tarjeta de crédito con ese criterio.")
+            raise CommandError("No se encontró ninguna tarjeta con ese criterio.")
 
         for w in wallets:
             self._diagnose(w, as_of, Transaction, InstallmentPurchase)
@@ -62,105 +63,111 @@ class Command(BaseCommand):
     def _diagnose(self, w, as_of, Transaction, InstallmentPurchase):
         line = "=" * 72
         self.stdout.write(f"\n{line}\n{w.name}  ({w.currency})  id={w.id}\n{line}")
+
+        eff_as_of = as_of or timezone.localdate()
+        cutoff = (
+            _cutoff_on_or_before(w.billing_cycle_day, eff_as_of)
+            if w.billing_cycle_day
+            else None
+        )
+
         self.stdout.write(
             f"opening_balance     : {_d(w.opening_balance):>14}\n"
-            f"current_balance (BD): {_d(w.current_balance):>14}   <- valor cacheado que ves en la app\n"
-            f"billing_cycle_day   : {w.billing_cycle_day}\n"
+            f"current_balance (BD): {_d(w.current_balance):>14}   <- lo que ves como saldo en la app\n"
+            f"billing_cycle_day   : {w.billing_cycle_day}     corte usado: {cutoff}\n"
             f"payment_due_day     : {w.payment_due_day}"
         )
 
-        txns = list(
-            Transaction.objects.filter(wallet=w).order_by("date", "created_at")
-        )
+        txns = list(Transaction.objects.filter(wallet=w).order_by("date", "created_at"))
         incoming = list(
-            Transaction.objects.filter(to_wallet=w, type=Transaction.TYPE_TRANSFER).order_by(
-                "date", "created_at"
-            )
+            Transaction.objects.filter(
+                to_wallet=w, type=Transaction.TYPE_TRANSFER
+            ).order_by("date", "created_at")
         )
-
-        # --- recálculo desde cero (igual que recompute_wallet_balance) ---
-        recomputed = w.opening_balance
-        for t in txns:
-            recomputed += balance_deltas(t).get(w.id, Decimal("0"))
-        for t in incoming:
-            recomputed += balance_deltas(t).get(w.id, Decimal("0"))
-        flag = "" if _d(recomputed) == _d(w.current_balance) else "   <<< NO COINCIDE con current_balance"
-        self.stdout.write(f"current_balance recalculado: {_d(recomputed):>14}{flag}")
-        if flag:
-            self.stdout.write(
-                self.style.WARNING(
-                    "  -> El saldo cacheado está desincronizado. Corré: "
-                    "python manage.py recompute_balances"
-                )
-            )
-
-        # --- movimientos ---
-        self.stdout.write(f"\nMOVIMIENTOS ({len(txns) + len(incoming)} vivos)")
-        self.stdout.write(f"  {'fecha':<11} {'tipo':<9} {'origen':<11} {'efecto':>12}  detalle")
         rows = []
         for t in txns:
-            rows.append((t.date, t.type, t.source, balance_deltas(t).get(w.id, Decimal("0")), t.description or ""))
+            rows.append([t.date, t.type, t.source, balance_deltas(t).get(w.id, Decimal("0")),
+                         t.description or "", t])
         for t in incoming:
-            rows.append(
-                (t.date, "transfer→", t.source, balance_deltas(t).get(w.id, Decimal("0")),
-                 f"(entra de otra cartera) {t.description or ''}")
-            )
-        rows.sort(key=lambda r: (r[0], r[1]))
-        pos = neg = Decimal("0")
-        for d, typ, src, eff, desc in rows:
-            if eff >= 0:
-                pos += eff
-            else:
-                neg += eff
-            self.stdout.write(f"  {d!s:<11} {typ:<9} {src:<11} {_d(eff):>12}  {desc[:40]}")
-        self.stdout.write(
-            f"\n  suma de cargos (efecto negativo) : {_d(neg):>14}\n"
-            f"  suma de abonos (efecto positivo) : {_d(pos):>14}\n"
-            f"  neto movimientos                 : {_d(pos + neg):>14}"
-        )
+            rows.append([t.date, "transfer<-", t.source, balance_deltas(t).get(w.id, Decimal("0")),
+                         f"(entra de otra cartera) {t.description or ''}", t])
+        rows.sort(key=lambda r: (r[0], str(r[1])))
 
-        # --- compras a plazo ---
-        purchases = list(InstallmentPurchase.objects.filter(wallet=w))
-        purchases += list(InstallmentPurchase.objects.filter(payment_wallet=w))
+        recomputed = w.opening_balance + sum((r[3] for r in rows), Decimal("0"))
+        flag = "" if _d(recomputed) == _d(w.current_balance) else "   <<< NO COINCIDE"
+        self.stdout.write(f"current_balance recalculado: {_d(recomputed):>14}{flag}")
+        if flag:
+            self.stdout.write(self.style.WARNING("  -> corré: python manage.py recompute_balances"))
+
+        self.stdout.write(f"\nMOVIMIENTOS ({len(rows)} vivos)")
+        self.stdout.write(f"  {'fecha':<11} {'tipo':<11} {'origen':<11} {'efecto':>12}  detalle")
+        for d, typ, src, eff, desc, _t in rows:
+            mark = ""
+            if src == Transaction.SOURCE_INSTALLMENT:
+                mark = "  [cuota/plazo: NO entra en gastos/abonos]"
+            elif "ajuste" in desc.lower():
+                mark = "  [¿ajuste manual?]"
+            self.stdout.write(f"  {d!s:<11} {typ:<11} {src:<11} {_d(eff):>12}  {desc[:38]}{mark}")
+
+        purchases = list(InstallmentPurchase.objects.filter(wallet=w)) + list(
+            InstallmentPurchase.objects.filter(payment_wallet=w)
+        )
         if purchases:
             self.stdout.write("\nCOMPRAS A PLAZO")
             for p in purchases:
-                mode = "tarjeta (cargo total al inicio)" if p.is_credit_card else "cuota mensual = gasto"
+                mode = "financiada con la tarjeta" if p.is_credit_card else "cuota = gasto en la tarjeta"
+                n_cal = (
+                    sum(1 for n in range(1, p.installments_total + 1) if _months_ok(p, n, cutoff))
+                    if cutoff
+                    else "?"
+                )
                 self.stdout.write(
-                    f"  {p.description}: {p.installments_paid}/{p.installments_total} pagadas, "
-                    f"cuota {_d(p.installment_amount)}, total {_d(p.total_amount)}, "
-                    f"inicio {p.start_date}  [{mode}]"
+                    f"  {p.description}: installments_paid={p.installments_paid}/{p.installments_total}, "
+                    f"cuota {_d(p.installment_amount)}, total {_d(p.total_amount)}, inicio {p.start_date}  [{mode}]\n"
+                    f"     cuotas vencidas al corte según el calendario (start_date + N meses): {n_cal}"
                 )
 
-        # --- estado de cuenta ---
         data = credit_card_statement(w, as_of=as_of)
         if data is None:
-            self.stdout.write(
-                self.style.WARNING("\nSin billing_cycle_day: la app no genera estado de cuenta para esta tarjeta.")
-            )
+            self.stdout.write(self.style.WARNING("\nSin billing_cycle_day: no hay estado de cuenta."))
             return
 
-        eff_as_of = as_of or timezone.localdate()
-        cutoff = _cutoff_on_or_before(w.billing_cycle_day, eff_as_of)
-        self.stdout.write(f"\nESTADO DE CUENTA  (consulta al {eff_as_of}, corte {cutoff})")
-        for k in (
-            "spent", "paid", "installments_due", "total_due",
-            "current_period_spent", "current_period_paid",
-        ):
-            self.stdout.write(f"  {k:<22}: {_d(data[k]):>14}")
-
-        due = _d(data["total_due"])
+        self.stdout.write(f"\nPAGO DE CONTADO  (consulta al {eff_as_of}, corte {data['cutoff_date']})")
+        lim = data["credit_limit"]
+        avail = data["available"]
         self.stdout.write(
-            "\n  total_due > 0  = tenés que pagar esa cantidad\n"
-            "  total_due < 0  = la app cree que pagaste de más (saldo a favor)"
+            f"  límite de la tarjeta                  : {_d(lim) if lim is not None else '(sin configurar)':>12}\n"
+            f"  disponible (límite + saldo)           : {_d(avail) if avail is not None else '(n/a)':>12}\n"
+            f"  saldo usado (límite - disponible)     : {_d(data['used']):>12}\n"
+            f"  - capital a plazo aún no vencido      : {_d(data['installments_not_due']):>12}\n"
+            f"  + cuotas de tienda vencidas sin reg.  : {_d(data['installments_overdue_unbilled']):>12}\n"
+            f"  --------------------------------------------------------\n"
+            f"  PAGO DE CONTADO (total_due)           : {_d(data['total_due']):>12}"
         )
-        if due < 0:
-            self.stdout.write(
-                self.style.WARNING(
-                    "\n  DIAGNÓSTICO: total_due es negativo. Casi siempre significa que la\n"
-                    "  historia cargada tiene más abonos que cargos porque la tarjeta ya\n"
-                    "  tenía deuda cuando empezaste a registrarla y opening_balance quedó\n"
-                    f"  en {_d(w.opening_balance)}. Poné opening_balance = -(deuda real el día del primer\n"
-                    "  movimiento que cargaste) y volvé a consultar."
+
+        if data["installment_lines"]:
+            self.stdout.write("\n  Cuotas pendientes de registrar:")
+            for ln in data["installment_lines"]:
+                self.stdout.write(
+                    f"    {ln['description'][:34]:<34} "
+                    f"{ln['installments_pending']} cuota(s) = {_d(ln['amount_pending'])}"
                 )
-            )
+
+        after = [r for r in rows if cutoff and r[0] > cutoff]
+        if after:
+            self.stdout.write("\n  MOVIMIENTOS DESPUÉS DEL CORTE (bajan/suben el saldo usado de hoy):")
+            for d, typ, src, eff, desc, _t in after:
+                self.stdout.write(f"    {d!s:<11} {typ:<11} {_d(eff):>12}  {desc[:44]}")
+
+        # Chequeo: el saldo usado debería cuadrar con (límite - disponible real del banco).
+        self.stdout.write(
+            "\n  Comprobá contra tu banca en línea: 'saldo usado' de arriba debe ser "
+            "(límite - disponible real).\n  Si no cuadra, faltan/sobran movimientos en la tarjeta "
+            "(revisá la lista de arriba)."
+        )
+
+
+def _months_ok(purchase, n, cutoff):
+    from dateutil.relativedelta import relativedelta
+
+    return purchase.start_date + relativedelta(months=n - 1) <= cutoff

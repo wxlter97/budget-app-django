@@ -183,23 +183,21 @@ class GoalProjectionSerializer(serializers.Serializer):
 class StatementInstallmentLineSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     description = serializers.CharField()
-    installments_due = serializers.IntegerField()
+    installments_pending = serializers.IntegerField()
     installments_total = serializers.IntegerField()
-    amount_due = serializers.DecimalField(max_digits=16, decimal_places=2)
+    amount_pending = serializers.DecimalField(max_digits=16, decimal_places=2)
 
 
 class CreditCardStatementSerializer(serializers.Serializer):
     cutoff_date = serializers.DateField()
     next_cutoff_date = serializers.DateField()
     payment_due_date = serializers.DateField(allow_null=True)
-    opening_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
-    spent = serializers.DecimalField(max_digits=16, decimal_places=2)
-    paid = serializers.DecimalField(max_digits=16, decimal_places=2)
-    installments_due = serializers.DecimalField(max_digits=16, decimal_places=2)
-    financed_not_due = serializers.DecimalField(max_digits=16, decimal_places=2)
+    credit_limit = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    available = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    used = serializers.DecimalField(max_digits=16, decimal_places=2)
+    installments_not_due = serializers.DecimalField(max_digits=16, decimal_places=2)
+    installments_overdue_unbilled = serializers.DecimalField(max_digits=16, decimal_places=2)
     total_due = serializers.DecimalField(max_digits=16, decimal_places=2)
-    current_period_spent = serializers.DecimalField(max_digits=16, decimal_places=2)
-    current_period_paid = serializers.DecimalField(max_digits=16, decimal_places=2)
     installment_lines = StatementInstallmentLineSerializer(many=True)
 
 
