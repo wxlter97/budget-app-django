@@ -41,6 +41,8 @@ class WalletSerializer(serializers.ModelSerializer):
         max_digits=16, decimal_places=2, read_only=True, allow_null=True
     )
     bank_name = serializers.CharField(source="bank_schema.bank_name", read_only=True, default=None)
+    card_product_name = serializers.CharField(source="card_product.name", read_only=True, default=None)
+    card_bank_name = serializers.CharField(source="card_product.bank.name", read_only=True, default=None)
 
     class Meta:
         model = Wallet
@@ -70,6 +72,9 @@ class WalletSerializer(serializers.ModelSerializer):
             "counterparty",
             "bank_schema",
             "bank_name",
+            "card_product",
+            "card_product_name",
+            "card_bank_name",
             "visibility",
             "owner",
             "is_active",
@@ -136,6 +141,13 @@ class WalletSerializer(serializers.ModelSerializer):
             attrs["owner"] = self.context["request"].user
         if visibility == Wallet.VISIBILITY_SHARED:
             attrs["owner"] = None
+
+        kind = attrs.get("kind", getattr(self.instance, "kind", None))
+        card_product = attrs.get("card_product", getattr(self.instance, "card_product", None))
+        if card_product is not None and kind != Wallet.KIND_CREDIT:
+            raise serializers.ValidationError(
+                {"card_product": "Sólo aplica a tarjetas de crédito."}
+            )
         return attrs
 
     def create(self, validated_data):

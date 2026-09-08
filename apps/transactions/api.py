@@ -17,6 +17,7 @@ from rest_framework.response import Response
 
 from apps.accounts.models import Wallet
 from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewSet
+from apps.loyalty.models import LoyaltyEarning, LoyaltyProgram
 
 from . import services
 from .models import (
@@ -64,7 +65,7 @@ class CategorySerializer(serializers.ModelSerializer):
         model = Category
         fields = (
             "id", "name", "icon", "color", "type", "parent", "sort_order",
-            "is_group", "usage_count", "created_at", "updated_at",
+            "category_type", "is_group", "usage_count", "created_at", "updated_at",
         )
         read_only_fields = ("id", "is_group", "usage_count", "created_at", "updated_at")
 
@@ -283,6 +284,17 @@ class TransactionSerializer(serializers.ModelSerializer):
     tag_names = serializers.ListField(
         child=serializers.CharField(max_length=40), write_only=True, required=False
     )
+    # Descuento sugerido aplicado a mano por el cliente (ver
+    # `IMPORTANT`/docstring de la clase): sólo se manda si el usuario tocó el
+    # botón "aplicar descuento" del formulario. Van los dos juntos o ninguno.
+    discount_program = serializers.PrimaryKeyRelatedField(
+        queryset=LoyaltyProgram.objects.filter(kind=LoyaltyProgram.KIND_DISCOUNT, is_active=True),
+        write_only=True, required=False, allow_null=True,
+    )
+    pre_discount_amount = serializers.DecimalField(
+        max_digits=14, decimal_places=2, write_only=True, required=False, allow_null=True,
+    )
+    loyalty_earnings = serializers.SerializerMethodField()
 
     class Meta:
         model = Transaction
@@ -303,6 +315,9 @@ class TransactionSerializer(serializers.ModelSerializer):
             "split_group",
             "tags",
             "tag_names",
+            "discount_program",
+            "pre_discount_amount",
+            "loyalty_earnings",
             "created_by",
             "created_at",
             "updated_at",
@@ -315,6 +330,22 @@ class TransactionSerializer(serializers.ModelSerializer):
 
     def get_has_receipt(self, obj) -> bool:
         return bool(obj.receipt)
+
+    def get_loyalty_earnings(self, obj) -> list[dict]:
+        """Puntos/cashback/descuento que generó esta transacción -- de sólo
+        lectura, ver `apps.loyalty`."""
+        return [
+            {
+                "kind": e.kind,
+                "program": str(e.program_id),
+                "program_name": e.program.name,
+                "points": e.points,
+                "amount": e.amount,
+                "original_amount": e.original_amount,
+                "saved_amount": e.discount_saved_amount,
+            }
+            for e in obj.loyalty_earnings.select_related("program").all()
+        ]
 
     def validate_tag_names(self, value):
         if len(value) > 8:
@@ -407,21 +438,57 @@ class TransactionSerializer(serializers.ModelSerializer):
                 )
             attrs["to_wallet"] = None
 
+        discount_program = attrs.get("discount_program")
+        pre_discount_amount = attrs.get("pre_discount_amount")
+        if discount_program is not None or pre_discount_amount is not None:
+            if discount_program is None or pre_discount_amount is None:
+                raise serializers.ValidationError(
+                    {"discount_program": "Mandá el programa y el monto original juntos, o ninguno."}
+                )
+            if wallet is not None and discount_program.card_product_id != wallet.card_product_id:
+                raise serializers.ValidationError(
+                    {"discount_program": "No corresponde a la tarjeta de esta transacción."}
+                )
+            amount = attrs.get("amount", getattr(inst, "amount", None))
+            if amount is not None and pre_discount_amount < amount:
+                raise serializers.ValidationError(
+                    {"pre_discount_amount": "Tiene que ser mayor o igual al monto final."}
+                )
+
         return attrs
+
+    def _sync_discount(self, instance, discount_program, pre_discount_amount):
+        if discount_program is None and pre_discount_amount is None:
+            return
+        LoyaltyEarning.objects.update_or_create(
+            transaction=instance,
+            program=discount_program,
+            defaults={
+                "workspace": self.context["workspace"],
+                "kind": LoyaltyProgram.KIND_DISCOUNT,
+                "original_amount": pre_discount_amount,
+            },
+        )
 
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user
         tag_names = validated_data.pop("tag_names", None)
+        discount_program = validated_data.pop("discount_program", None)
+        pre_discount_amount = validated_data.pop("pre_discount_amount", None)
         instance = super().create(validated_data)
         if tag_names is not None:
             instance.tags.set(self._resolve_tags(tag_names))
+        self._sync_discount(instance, discount_program, pre_discount_amount)
         return instance
 
     def update(self, instance, validated_data):
         tag_names = validated_data.pop("tag_names", None)
+        discount_program = validated_data.pop("discount_program", None)
+        pre_discount_amount = validated_data.pop("pre_discount_amount", None)
         instance = super().update(instance, validated_data)
         if tag_names is not None:
             instance.tags.set(self._resolve_tags(tag_names))
+        self._sync_discount(instance, discount_program, pre_discount_amount)
         return instance
 
 
@@ -500,7 +567,7 @@ class TransactionViewSet(WorkspaceScopedViewSet):
     filterset_class = TransactionFilter
     queryset = Transaction.objects.select_related(
         "wallet", "to_wallet", "category", "created_by"
-    ).all()
+    ).prefetch_related("loyalty_earnings__program").all()
 
     def get_queryset(self):
         user = self.request.user

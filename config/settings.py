@@ -73,6 +73,7 @@ LOCAL_APPS = [
     "apps.transactions",
     "apps.savings",
     "apps.reports",
+    "apps.loyalty",
     "apps.email_import",
     "apps.quickadd",
     "apps.notifications",
@@ -247,6 +248,13 @@ SPECTACULAR_SETTINGS = {
         "drf_spectacular.hooks.postprocess_schema_enums",
         "apps.common.openapi.add_workspace_id_header",
     ],
+    # `LoyaltyProgram.kind` y `LoyaltyEarning.kind` comparten choices (mismo
+    # concepto: puntos/cashback/descuento) pero el nombre "kind" ya lo usa
+    # `Wallet.kind` (bank/credit/cash/custom, otro enum) -- sin esto,
+    # drf-spectacular resuelve la colisión con un sufijo autogenerado feo.
+    "ENUM_NAME_OVERRIDES": {
+        "LoyaltyKindEnum": "apps.loyalty.models.LoyaltyProgram.KIND_CHOICES",
+    },
 }
 
 # ---------------------------------------------------------------------------
