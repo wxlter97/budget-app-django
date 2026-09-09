@@ -65,11 +65,24 @@ class PushDeviceViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 class NotificationPreferenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = NotificationPreference
-        fields = ("remind_recurring", "remind_installments", "warn_budget", "budget_threshold_pct")
+        fields = (
+            "remind_recurring",
+            "remind_installments",
+            "warn_budget",
+            "budget_threshold_pct",
+            "remind_low_balance",
+            "warn_statement_due",
+            "statement_due_days_before",
+        )
 
     def validate_budget_threshold_pct(self, value):
         if not (50 <= value <= 100):
             raise serializers.ValidationError("Tiene que estar entre 50 y 100.")
+        return value
+
+    def validate_statement_due_days_before(self, value):
+        if not (1 <= value <= 14):
+            raise serializers.ValidationError("Tiene que estar entre 1 y 14 días.")
         return value
 
 

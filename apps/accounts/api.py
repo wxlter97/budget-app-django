@@ -58,6 +58,7 @@ class WalletSerializer(serializers.ModelSerializer):
             "current_balance",
             "aggregated_balance",
             "counts_toward_net_worth",
+            "low_balance_threshold",
             "credit_limit",
             "available_credit",
             "goal_amount",

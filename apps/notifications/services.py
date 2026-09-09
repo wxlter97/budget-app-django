@@ -13,6 +13,7 @@ import logging
 from decimal import Decimal
 from urllib import request as urllib_request
 
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.reports.services import budget_vs_actual, upcoming_scheduled
@@ -155,5 +156,99 @@ def notify_budget_thresholds():
                     "type": NotificationLog.KIND_BUDGET_THRESHOLD,
                     "workspace": str(workspace.id),
                     "category": row["category"],
+                },
+            )
+
+
+def notify_low_balance():
+    """Carteras visibles con `low_balance_threshold` fijado cuyo
+    `current_balance` ya cayó por debajo. Se avisa como mucho una vez por
+    mes por cartera mientras siga baja (no todos los días) -- si sube y
+    vuelve a bajar, se vuelve a avisar."""
+    from apps.accounts.models import Wallet
+
+    today = timezone.localdate()
+
+    for membership in _active_memberships():
+        user, workspace = membership.user, membership.workspace
+        pref = _get_preference(user)
+        if not pref.remind_low_balance:
+            continue
+        devices = _devices_for(user)
+        if not devices:
+            continue
+
+        wallets = Wallet.objects.filter(
+            workspace=workspace, is_archived=False, low_balance_threshold__isnull=False
+        ).filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
+        for wallet in wallets:
+            if wallet.current_balance >= wallet.low_balance_threshold:
+                continue
+
+            dedupe_key = f"{wallet.id}:{today.year}-{today.month:02d}"
+            if _mark_sent(user, workspace, NotificationLog.KIND_LOW_BALANCE, dedupe_key):
+                continue
+
+            send_push(
+                devices,
+                title="Saldo bajo",
+                body=f"{wallet.name}: {_fmt_amount(wallet.current_balance)} {wallet.currency} — {workspace.name}",
+                data={
+                    "type": NotificationLog.KIND_LOW_BALANCE,
+                    "workspace": str(workspace.id),
+                    "wallet": str(wallet.id),
+                },
+            )
+
+
+def notify_statement_due():
+    """Tarjetas cuyo estado de cuenta vence dentro de
+    `statement_due_days_before` días -- distinto de `notify_due_items`, que
+    avisa cuota por cuota: esto es el PAGO DE CONTADO completo."""
+    from apps.accounts.models import Wallet
+    from apps.accounts.services import credit_card_statement
+
+    today = timezone.localdate()
+
+    for membership in _active_memberships():
+        user, workspace = membership.user, membership.workspace
+        pref = _get_preference(user)
+        if not pref.warn_statement_due:
+            continue
+        devices = _devices_for(user)
+        if not devices:
+            continue
+
+        wallets = (
+            Wallet.objects.filter(
+                workspace=workspace, kind=Wallet.KIND_CREDIT, is_archived=False
+            )
+            .exclude(billing_cycle_day__isnull=True)
+            .filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
+        )
+        for wallet in wallets:
+            statement = credit_card_statement(wallet)
+            due_date = statement["payment_due_date"] if statement else None
+            if due_date is None or statement["total_due"] <= 0:
+                continue
+            days_left = (due_date - today).days
+            if not (0 <= days_left <= pref.statement_due_days_before):
+                continue
+
+            dedupe_key = f"{wallet.id}:{due_date.isoformat()}"
+            if _mark_sent(user, workspace, NotificationLog.KIND_STATEMENT_DUE, dedupe_key):
+                continue
+
+            send_push(
+                devices,
+                title="Estado de cuenta por vencer",
+                body=(
+                    f"{wallet.name}: {_fmt_amount(statement['total_due'])} {wallet.currency} "
+                    f"vence el {due_date.strftime('%d/%m')} — {workspace.name}"
+                ),
+                data={
+                    "type": NotificationLog.KIND_STATEMENT_DUE,
+                    "workspace": str(workspace.id),
+                    "wallet": str(wallet.id),
                 },
             )

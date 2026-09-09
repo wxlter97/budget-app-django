@@ -254,6 +254,11 @@ SPECTACULAR_SETTINGS = {
     # drf-spectacular resuelve la colisión con un sufijo autogenerado feo.
     "ENUM_NAME_OVERRIDES": {
         "LoyaltyKindEnum": "apps.loyalty.models.LoyaltyProgram.KIND_CHOICES",
+        # `RecurringExpense.type` tiene las mismas choices que
+        # `Transaction.type` (income/expense/transfer) -- sin esto,
+        # drf-spectacular no las funde en un solo enum y resuelve la
+        # colisión de nombre con un sufijo autogenerado feo.
+        "RecurringExpenseTypeEnum": "apps.transactions.models.RecurringExpense.TYPE_CHOICES",
     },
 }
 

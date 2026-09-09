@@ -1,3 +1,4 @@
+import datetime as dt
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -212,6 +213,130 @@ class NotifyBudgetThresholdsTests(NotificationServicesTestCase):
         self._spend("95.00")
         services.notify_budget_thresholds()
         services.notify_budget_thresholds()
+        self.assertEqual(mock_send.call_count, 1)
+
+
+class NotifyLowBalanceTests(NotificationServicesTestCase):
+    def setUp(self):
+        super().setUp()
+        self.wallet.low_balance_threshold = Decimal("50.00")
+        self.wallet.opening_balance = Decimal("20.00")
+        self.wallet.current_balance = Decimal("20.00")
+        self.wallet.save(update_fields=["low_balance_threshold", "opening_balance", "current_balance"])
+
+    @patch("apps.notifications.services.send_push")
+    def test_warns_when_balance_below_threshold(self, mock_send):
+        services.notify_low_balance()
+        mock_send.assert_called_once()
+        self.assertTrue(
+            NotificationLog.objects.filter(
+                user=self.user, kind=NotificationLog.KIND_LOW_BALANCE
+            ).exists()
+        )
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_warning_above_threshold(self, mock_send):
+        self.wallet.current_balance = Decimal("100.00")
+        self.wallet.save(update_fields=["current_balance"])
+        services.notify_low_balance()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_warning_without_threshold_set(self, mock_send):
+        self.wallet.low_balance_threshold = None
+        self.wallet.save(update_fields=["low_balance_threshold"])
+        services.notify_low_balance()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_respects_preference_off(self, mock_send):
+        NotificationPreference.objects.create(user=self.user, remind_low_balance=False)
+        services.notify_low_balance()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_does_not_rewarn_same_month(self, mock_send):
+        services.notify_low_balance()
+        services.notify_low_balance()
+        self.assertEqual(mock_send.call_count, 1)
+
+    @patch("apps.notifications.services.send_push")
+    def test_archived_wallet_is_skipped(self, mock_send):
+        self.wallet.is_archived = True
+        self.wallet.save(update_fields=["is_archived"])
+        services.notify_low_balance()
+        mock_send.assert_not_called()
+
+
+class NotifyStatementDueTests(NotificationServicesTestCase):
+    """Fechas todas fijas (nunca `timezone.localdate()` real): con
+    `billing_cycle_day=1` y `payment_due_day=10`, el corte de marzo cae el
+    2026-03-01 y su pago de contado vence el 2026-03-10 -- ese vencimiento es
+    el que cada test ubica "hoy" antes o después."""
+
+    DUE_DATE = dt.date(2026, 3, 10)
+
+    def setUp(self):
+        super().setUp()
+        self.card = Wallet.objects.create(
+            workspace=self.workspace, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT,
+            kind=Wallet.KIND_CREDIT, billing_cycle_day=1, payment_due_day=10,
+            credit_limit=Decimal("1000.00"),
+        )
+        Transaction.objects.create(
+            wallet=self.card, category=self.category, amount=Decimal("300.00"),
+            date=dt.date(2026, 3, 1),
+        )
+
+    @patch("apps.notifications.services.send_push")
+    def test_warns_when_due_within_window(self, mock_send):
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE):
+            services.notify_statement_due()
+        mock_send.assert_called_once()
+        self.assertTrue(
+            NotificationLog.objects.filter(
+                user=self.user, kind=NotificationLog.KIND_STATEMENT_DUE
+            ).exists()
+        )
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_warning_far_from_due_date(self, mock_send):
+        # Todavía a 9 días del vencimiento -- más lejos que el default (3).
+        with patch(
+            "django.utils.timezone.localdate", return_value=self.DUE_DATE - timedelta(days=9)
+        ):
+            services.notify_statement_due()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_warning_after_due_date_passed(self, mock_send):
+        with patch(
+            "django.utils.timezone.localdate", return_value=self.DUE_DATE + timedelta(days=1)
+        ):
+            services.notify_statement_due()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_warning_without_balance_due(self, mock_send):
+        # Sin transacciones, el pago de contado es 0 -- nada que avisar.
+        self.card.transactions.all().delete()
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE):
+            services.notify_statement_due()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_respects_preference_off(self, mock_send):
+        NotificationPreference.objects.create(user=self.user, warn_statement_due=False)
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE):
+            services.notify_statement_due()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_does_not_rewarn_within_the_same_window(self, mock_send):
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE - timedelta(days=2)):
+            services.notify_statement_due()
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE):
+            services.notify_statement_due()
         self.assertEqual(mock_send.call_count, 1)
 
 

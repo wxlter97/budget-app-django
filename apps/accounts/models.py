@@ -82,6 +82,16 @@ class Wallet(BaseModel):
     # totales por tipo).
     counts_toward_net_worth = models.BooleanField(default=True)
 
+    # Aviso de "saldo bajo": si `current_balance` cae por debajo de esto (en
+    # la MONEDA de esta cartera -- sin conversión, para no depender de que
+    # haya tasa configurada), se manda el push (ver
+    # `apps.notifications.services.notify_low_balance`). `None` = sin aviso
+    # para esta cartera. Puede ser negativo (p. ej. avisar antes de que una
+    # cuenta que ya arranca en negativo se ponga peor).
+    low_balance_threshold = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+
     # --- Ahorro ---
     goal_amount = models.DecimalField(
         max_digits=14, decimal_places=2, null=True, blank=True
