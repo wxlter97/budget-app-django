@@ -26,6 +26,12 @@ from apps.users.api import (
     RegisterView,
     TokenObtainPairThrottledView,
     TokenRefreshThrottledView,
+    TwoFactorDisableView,
+    TwoFactorEnableView,
+    TwoFactorRegenerateBackupCodesView,
+    TwoFactorSetupView,
+    TwoFactorStatusView,
+    TwoFactorVerifyView,
 )
 from config.api_router import urlpatterns as api_v1_router
 
@@ -37,6 +43,16 @@ api_v1_patterns = [
     path("auth/token/", TokenObtainPairThrottledView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", TokenRefreshThrottledView.as_view(), name="token_refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token_verify"),
+    path("auth/2fa/", TwoFactorStatusView.as_view(), name="2fa-status"),
+    path("auth/2fa/setup/", TwoFactorSetupView.as_view(), name="2fa-setup"),
+    path("auth/2fa/enable/", TwoFactorEnableView.as_view(), name="2fa-enable"),
+    path("auth/2fa/disable/", TwoFactorDisableView.as_view(), name="2fa-disable"),
+    path(
+        "auth/2fa/backup-codes/",
+        TwoFactorRegenerateBackupCodesView.as_view(),
+        name="2fa-backup-codes",
+    ),
+    path("auth/2fa/verify/", TwoFactorVerifyView.as_view(), name="2fa-verify"),
     path("reports/budget/", BudgetReportView.as_view(), name="report-budget"),
     path("reports/net-worth/", NetWorthView.as_view(), name="report-net-worth"),
     path("reports/cashflow/", CashflowView.as_view(), name="report-cashflow"),

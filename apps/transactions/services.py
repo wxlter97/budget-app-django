@@ -36,29 +36,42 @@ def _advance(date, frequency):
     return date + relativedelta(**delta)
 
 
+def _recurring_description(rec) -> str:
+    if rec.name:
+        return f"{rec.name} (recurrente)"
+    if rec.category:
+        return f"{rec.category.name} (recurrente)"
+    return f"Transferencia a {rec.to_wallet.name} (recurrente)"
+
+
 def generate_recurring_transactions(as_of=None):
     """Crea una Transaction por cada período vencido de cada gasto recurrente activo.
 
     Idempotente: avanza ``next_due_date`` a medida que genera, así una segunda
-    corrida el mismo día no duplica nada.
+    corrida el mismo día no duplica nada. Puede generar income/expense
+    (contra `category`) o transfer (contra `to_wallet`, p. ej. un aporte
+    automático a una cartera de ahorro con meta) según `rec.type`.
     """
     as_of = as_of or timezone.localdate()
     created = []
 
     recurring = (
         RecurringExpense.objects.filter(is_active=True, next_due_date__lte=as_of)
-        .select_related("category", "wallet")
+        .select_related("category", "wallet", "to_wallet")
     )
     for rec in recurring:
+        is_transfer = rec.type == RecurringExpense.TYPE_TRANSFER
         with db_transaction.atomic():
             due = rec.next_due_date
             while due <= as_of:
                 created.append(
                     Transaction.objects.create(
+                        type=rec.type,
                         wallet=rec.wallet,
-                        category=rec.category,
+                        to_wallet=rec.to_wallet if is_transfer else None,
+                        category=None if is_transfer else rec.category,
                         amount=rec.amount,
-                        description=f"{rec.name or rec.category.name} (recurrente)",
+                        description=_recurring_description(rec),
                         date=due,
                         source=Transaction.SOURCE_RECURRING,
                         is_recurring=True,

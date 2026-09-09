@@ -13,6 +13,8 @@ import logging
 from decimal import Decimal
 from urllib import request as urllib_request
 
+from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.reports.services import budget_vs_actual, upcoming_scheduled
@@ -28,6 +30,20 @@ _BATCH_SIZE = 100
 
 
 def send_push(devices, *, title, body, data=None):
+    """Reparte por el canal que le toca a cada dispositivo: Expo Push API
+    para nativo (ios/android), Web Push (RFC 8291, cifrado contra VAPID)
+    para navegador -- son protocolos completamente distintos, Expo no sabe
+    nada de suscripciones web. Un dispositivo caído/vencido/con error no
+    tumba el resto de los avisos del día en ninguno de los dos casos."""
+    native = [d for d in devices if d.platform != PushDevice.PLATFORM_WEB]
+    web = [d for d in devices if d.platform == PushDevice.PLATFORM_WEB]
+    if native:
+        _send_expo_push(native, title=title, body=body, data=data)
+    if web:
+        _send_web_push(web, title=title, body=body, data=data)
+
+
+def _send_expo_push(devices, *, title, body, data):
     """POST a la Expo Push API (sin dependencias nuevas: `urllib` alcanza para
     un POST de JSON). Un token vencido o Expo caído no debe tumbar el resto
     de los avisos del día -- se loggea y se sigue."""
@@ -54,6 +70,52 @@ def send_push(devices, *, title, body, data=None):
             # errores de socket (timeout, DNS...) -- Expo caído no debe
             # tumbar el resto de los avisos del día.
             logger.warning("Fallo enviando push a Expo (%d tokens): %s", len(batch), exc)
+
+
+def _send_web_push(devices, *, title, body, data):
+    """Un `PushDevice` web guarda `token` = endpoint de la suscripción +
+    `p256dh`/`auth` (las claves para cifrar el payload, ver
+    `PushDeviceSerializer`). Sin VAPID configurado (`.env`, ver
+    `.env.example`) no hay forma de firmar nada -- se omite con un aviso en
+    vez de reventar, para no tumbar el resto de la corrida (nativo incluido)
+    en un deploy que todavía no lo configuró."""
+    if not (settings.VAPID_PRIVATE_KEY and settings.VAPID_PUBLIC_KEY):
+        logger.warning(
+            "Push web sin VAPID configurado (%d dispositivos) -- ver VAPID_PUBLIC_KEY/"
+            "VAPID_PRIVATE_KEY en .env. Se omite.",
+            len(devices),
+        )
+        return
+
+    # Import diferido: sólo hace falta si de verdad hay algo que mandar por
+    # este canal, y evita que el resto del proyecto dependa de que
+    # `cryptography`/`pywebpush` estén perfectamente instalados para arrancar.
+    from pywebpush import WebPushException, webpush
+
+    payload = json.dumps({"title": title, "body": body, "data": data or {}})
+    for device in devices:
+        subscription_info = {
+            "endpoint": device.token,
+            "keys": {"p256dh": device.p256dh, "auth": device.auth},
+        }
+        try:
+            webpush(
+                subscription_info=subscription_info,
+                data=payload,
+                vapid_private_key=settings.VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": settings.VAPID_SUBJECT},
+                timeout=10,
+            )
+        except WebPushException as exc:
+            if exc.status_code in (404, 410):
+                # La suscripción ya no existe (permiso revocado, otro
+                # navegador, se limpiaron los datos del sitio...) -- no
+                # vale la pena reintentar nunca más.
+                device.delete()
+            else:
+                logger.warning("Fallo enviando push web a %s: %s", device.id, exc)
+        except OSError as exc:
+            logger.warning("Fallo de red enviando push web a %s: %s", device.id, exc)
 
 
 def _get_preference(user) -> NotificationPreference:
@@ -155,5 +217,99 @@ def notify_budget_thresholds():
                     "type": NotificationLog.KIND_BUDGET_THRESHOLD,
                     "workspace": str(workspace.id),
                     "category": row["category"],
+                },
+            )
+
+
+def notify_low_balance():
+    """Carteras visibles con `low_balance_threshold` fijado cuyo
+    `current_balance` ya cayó por debajo. Se avisa como mucho una vez por
+    mes por cartera mientras siga baja (no todos los días) -- si sube y
+    vuelve a bajar, se vuelve a avisar."""
+    from apps.accounts.models import Wallet
+
+    today = timezone.localdate()
+
+    for membership in _active_memberships():
+        user, workspace = membership.user, membership.workspace
+        pref = _get_preference(user)
+        if not pref.remind_low_balance:
+            continue
+        devices = _devices_for(user)
+        if not devices:
+            continue
+
+        wallets = Wallet.objects.filter(
+            workspace=workspace, is_archived=False, low_balance_threshold__isnull=False
+        ).filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
+        for wallet in wallets:
+            if wallet.current_balance >= wallet.low_balance_threshold:
+                continue
+
+            dedupe_key = f"{wallet.id}:{today.year}-{today.month:02d}"
+            if _mark_sent(user, workspace, NotificationLog.KIND_LOW_BALANCE, dedupe_key):
+                continue
+
+            send_push(
+                devices,
+                title="Saldo bajo",
+                body=f"{wallet.name}: {_fmt_amount(wallet.current_balance)} {wallet.currency} — {workspace.name}",
+                data={
+                    "type": NotificationLog.KIND_LOW_BALANCE,
+                    "workspace": str(workspace.id),
+                    "wallet": str(wallet.id),
+                },
+            )
+
+
+def notify_statement_due():
+    """Tarjetas cuyo estado de cuenta vence dentro de
+    `statement_due_days_before` días -- distinto de `notify_due_items`, que
+    avisa cuota por cuota: esto es el PAGO DE CONTADO completo."""
+    from apps.accounts.models import Wallet
+    from apps.accounts.services import credit_card_statement
+
+    today = timezone.localdate()
+
+    for membership in _active_memberships():
+        user, workspace = membership.user, membership.workspace
+        pref = _get_preference(user)
+        if not pref.warn_statement_due:
+            continue
+        devices = _devices_for(user)
+        if not devices:
+            continue
+
+        wallets = (
+            Wallet.objects.filter(
+                workspace=workspace, kind=Wallet.KIND_CREDIT, is_archived=False
+            )
+            .exclude(billing_cycle_day__isnull=True)
+            .filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
+        )
+        for wallet in wallets:
+            statement = credit_card_statement(wallet)
+            due_date = statement["payment_due_date"] if statement else None
+            if due_date is None or statement["total_due"] <= 0:
+                continue
+            days_left = (due_date - today).days
+            if not (0 <= days_left <= pref.statement_due_days_before):
+                continue
+
+            dedupe_key = f"{wallet.id}:{due_date.isoformat()}"
+            if _mark_sent(user, workspace, NotificationLog.KIND_STATEMENT_DUE, dedupe_key):
+                continue
+
+            send_push(
+                devices,
+                title="Estado de cuenta por vencer",
+                body=(
+                    f"{wallet.name}: {_fmt_amount(statement['total_due'])} {wallet.currency} "
+                    f"vence el {due_date.strftime('%d/%m')} — {workspace.name}"
+                ),
+                data={
+                    "type": NotificationLog.KIND_STATEMENT_DUE,
+                    "workspace": str(workspace.id),
+                    "wallet": str(wallet.id),
                 },
             )

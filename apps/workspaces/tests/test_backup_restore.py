@@ -274,6 +274,60 @@ class BackupRestoreServiceTests(APITestCase):
         self.assertTrue(txn.counts_toward_budget)
         self.assertEqual(txn.source, Transaction.SOURCE_MANUAL)
 
+    def test_round_trip_preserves_a_transfer_recurring(self):
+        savings = Wallet.objects.create(workspace=self.ws, name="Ahorro")
+        transfer_rec = RecurringExpense.objects.create(
+            workspace=self.ws, wallet=self.parent_wallet, to_wallet=savings,
+            type=RecurringExpense.TYPE_TRANSFER, name="Aporte mensual",
+            amount=Decimal("50.00"), next_due_date=dt.date(2026, 10, 1),
+        )
+        backup = export_backup(self.ws)
+        rec_row = next(r for r in backup["recurring_expenses"] if r["id"] == str(transfer_rec.id))
+        self.assertEqual(rec_row["type"], "transfer")
+        self.assertEqual(rec_row["to_wallet"], str(savings.id))
+        self.assertIsNone(rec_row["category"])
+
+        RecurringExpense.all_objects.filter(workspace=self.ws).delete()
+        import_backup(self.ws, backup, self.owner)
+
+        restored = RecurringExpense.objects.get(id=transfer_rec.id)
+        self.assertEqual(restored.type, RecurringExpense.TYPE_TRANSFER)
+        self.assertEqual(restored.to_wallet_id, savings.id)
+        self.assertIsNone(restored.category_id)
+        self.assertEqual(restored.name, "Aporte mensual")
+
+    def test_old_backup_without_type_field_deduces_it_from_category(self):
+        """Un respaldo hecho ANTES de que `RecurringExpense` tuviera `type`/
+        `to_wallet` sólo trae category+wallet -- restaurarlo no debe caer al
+        default 'expense' a ciegas (rompería las que eran de ingreso)."""
+        wallet_id = str(uuid.uuid4())
+        income_cat_id = str(uuid.uuid4())
+        rec_id = str(uuid.uuid4())
+        backup = {
+            "format": "budget-app-backup",
+            "version": 1,
+            "workspace_name": "Casa",
+            "base_currency": "USD",
+            "wallets": [{"id": wallet_id, "name": "Banco"}],
+            "categories": [{"id": income_cat_id, "name": "Sueldo", "type": "income"}],
+            "tags": [],
+            "category_budgets": [],
+            "recurring_expenses": [
+                {
+                    "id": rec_id, "category": income_cat_id, "wallet": wallet_id,
+                    "amount": "1200.00", "frequency": "monthly", "next_due_date": "2026-10-01",
+                }
+            ],
+            "installment_purchases": [],
+            "transactions": [],
+        }
+
+        import_backup(self.ws, backup, self.owner)
+
+        restored = RecurringExpense.objects.get(id=rec_id)
+        self.assertEqual(restored.type, RecurringExpense.TYPE_INCOME)
+        self.assertEqual(restored.name, "")
+
     def test_rejects_backup_missing_a_required_field(self):
         """Falta (o viene en `null`) un campo sin default sensato -- acá, el
         `type` de una transacción -- se rechaza con BackupError y sin tocar

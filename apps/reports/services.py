@@ -348,10 +348,11 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
 
     recurring = RecurringExpense.objects.filter(
         workspace=workspace, is_active=True, next_due_date__lte=until
-    ).select_related("category", "wallet")
+    ).select_related("category", "wallet", "to_wallet")
     for rec in recurring:
         if not _wallet_ok(rec.wallet):
             continue
+        is_transfer = rec.type == RecurringExpense.TYPE_TRANSFER
         due = rec.next_due_date
         guard = 0
         while due <= until and guard < 400:
@@ -362,12 +363,17 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
                         "date": due,
                         "kind": "recurring",
                         "source_id": rec.id,
-                        "description": rec.category.name,
+                        "description": (
+                            f"Transferencia a {rec.to_wallet.name}" if is_transfer
+                            else rec.category.name
+                        ),
                         "amount": rec.amount,
-                        "category": rec.category_id,
-                        "category_name": rec.category.name,
+                        "category": None if is_transfer else rec.category_id,
+                        "category_name": None if is_transfer else rec.category.name,
                         "wallet": rec.wallet_id,
                         "wallet_name": rec.wallet.name,
+                        "to_wallet": rec.to_wallet_id if is_transfer else None,
+                        "to_wallet_name": rec.to_wallet.name if is_transfer else None,
                     }
                 )
             due = _advance(due, rec.frequency)
@@ -397,6 +403,8 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
                     "category_name": pur.category.name,
                     "wallet": pur.wallet_id,
                     "wallet_name": pur.wallet.name,
+                    "to_wallet": None,
+                    "to_wallet_name": None,
                 }
             )
 

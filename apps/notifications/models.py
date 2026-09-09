@@ -29,11 +29,21 @@ class PushDevice(BaseModel):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="push_devices"
     )
-    # "ExponentPushToken[...]". Único: un dispositivo que se re-registra
-    # (reinstalar la app, cambiar de cuenta) simplemente reasigna el dueño
-    # en vez de acumular filas muertas -- ver PushDeviceSerializer.create.
-    token = models.CharField(max_length=255, unique=True)
+    # Nativo (ios/android): "ExponentPushToken[...]" -- va por la Expo Push
+    # API. Web: la URL `endpoint` de la suscripción (PushSubscription) --
+    # ya es única por sí sola (identifica el canal push del navegador), así
+    # que también sirve como `token` acá; `p256dh`/`auth` (abajo) son lo
+    # que le falta para poder cifrar el payload (ver
+    # `apps.notifications.services.send_push`). Único en los dos casos: un
+    # dispositivo/navegador que se re-registra (reinstalar la app, otra
+    # cuenta, se renovó la suscripción) simplemente reasigna el dueño en
+    # vez de acumular filas muertas -- ver PushDeviceSerializer.create.
+    token = models.CharField(max_length=512, unique=True)
     platform = models.CharField(max_length=10, choices=PLATFORM_CHOICES, blank=True)
+    # Solo platform=web (Web Push / RFC 8291): claves públicas de la
+    # PushSubscription del navegador, para cifrar el payload contra VAPID.
+    p256dh = models.CharField(max_length=255, blank=True, default="")
+    auth = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         ordering = ["-updated_at"]
@@ -51,6 +61,14 @@ class NotificationPreference(BaseModel):
     warn_budget = models.BooleanField(default=True)
     # % del presupuesto de una categoría a partir del cual avisar.
     budget_threshold_pct = models.PositiveSmallIntegerField(default=90)
+    # Cartera por debajo de su `Wallet.low_balance_threshold` propio -- el
+    # umbral vive en la cartera (cada una en su moneda), esto sólo prende o
+    # apaga el aviso.
+    remind_low_balance = models.BooleanField(default=True)
+    # Vencimiento del ESTADO DE CUENTA completo de una tarjeta (distinto del
+    # aviso de cuota por cuota, que ya cubre `remind_installments`).
+    warn_statement_due = models.BooleanField(default=True)
+    statement_due_days_before = models.PositiveSmallIntegerField(default=3)
 
     def __str__(self):
         return f"Preferencias de {self.user}"
@@ -60,10 +78,14 @@ class NotificationLog(BaseModel):
     KIND_RECURRING_DUE = "recurring_due"
     KIND_INSTALLMENT_DUE = "installment_due"
     KIND_BUDGET_THRESHOLD = "budget_threshold"
+    KIND_LOW_BALANCE = "low_balance"
+    KIND_STATEMENT_DUE = "statement_due"
     KIND_CHOICES = [
         (KIND_RECURRING_DUE, "Recurrente por vencer"),
         (KIND_INSTALLMENT_DUE, "Cuota por vencer"),
         (KIND_BUDGET_THRESHOLD, "Presupuesto por agotarse"),
+        (KIND_LOW_BALANCE, "Saldo bajo"),
+        (KIND_STATEMENT_DUE, "Estado de cuenta por vencer"),
     ]
 
     user = models.ForeignKey(

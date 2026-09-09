@@ -183,6 +183,7 @@ def export_backup(workspace):
                 "color": w.color,
                 "opening_balance": _dec(w.opening_balance),
                 "counts_toward_net_worth": w.counts_toward_net_worth,
+                "low_balance_threshold": _dec(w.low_balance_threshold),
                 "goal_amount": _dec(w.goal_amount),
                 "goal_date": _iso(w.goal_date),
                 "monthly_contribution": _dec(w.monthly_contribution),
@@ -229,8 +230,11 @@ def export_backup(workspace):
         "recurring_expenses": [
             {
                 "id": str(r.id),
-                "category": str(r.category_id),
+                "type": r.type,
+                "name": r.name,
+                "category": str(r.category_id) if r.category_id else None,
                 "wallet": str(r.wallet_id),
+                "to_wallet": str(r.to_wallet_id) if r.to_wallet_id else None,
                 "amount": _dec(r.amount),
                 "frequency": r.frequency,
                 "next_due_date": _iso(r.next_due_date),
@@ -356,10 +360,13 @@ def _check_required_fields(data):
         "category_budgets",
         ["id", "category", "amount", "month", "year"],
     )
+    # `category` NO es requerido acá (a diferencia de antes): una fila de
+    # tipo transfer legítimamente no la tiene, igual que ya pasaba con
+    # `transactions` más abajo.
     require(
         data.get("recurring_expenses", []),
         "recurring_expenses",
-        ["id", "category", "wallet", "amount", "frequency", "next_due_date"],
+        ["id", "wallet", "amount", "frequency", "next_due_date"],
     )
     require(
         data.get("installment_purchases", []),
@@ -457,6 +464,7 @@ def import_backup(workspace, data, requesting_user):
                 opening_balance=row.get("opening_balance") or "0",
                 current_balance=row.get("opening_balance") or "0",
                 counts_toward_net_worth=_coalesce(row, "counts_toward_net_worth", True),
+                low_balance_threshold=row.get("low_balance_threshold"),
                 goal_amount=row.get("goal_amount"),
                 goal_date=row.get("goal_date"),
                 monthly_contribution=row.get("monthly_contribution"),
@@ -542,13 +550,23 @@ def import_backup(workspace, data, requesting_user):
         )
 
         # --- recurrentes ---
+        # `type`/`to_wallet` son nuevos (antes toda fila era income/expense,
+        # nunca transfer): un respaldo viejo no los trae, así que si faltan
+        # se deduce el tipo de la categoría de la propia fila (siempre la
+        # tenía, porque antes era obligatoria) en vez de asumir "expense" a
+        # ciegas -- eso dejaría mal a las que en realidad eran de ingreso.
+        cat_type_by_id = {row["id"]: row["type"] for row in cat_rows}
         RecurringExpense.objects.bulk_create(
             [
                 RecurringExpense(
                     id=row["id"],
                     workspace=workspace,
-                    category_id=row["category"],
+                    type=_coalesce(row, "type", None)
+                    or cat_type_by_id.get(row.get("category"), RecurringExpense.TYPE_EXPENSE),
+                    name=_coalesce(row, "name", ""),
+                    category_id=row.get("category"),
                     wallet_id=row["wallet"],
+                    to_wallet_id=row.get("to_wallet"),
                     amount=row["amount"],
                     frequency=row["frequency"],
                     next_due_date=row["next_due_date"],

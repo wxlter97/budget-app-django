@@ -36,3 +36,9 @@ django-storages[google]~=1.14     # backend de Google Cloud Storage (solo si GS_
 
 # Importar/exportar transacciones vía plantilla de Excel
 openpyxl~=3.1
+
+# 2FA (TOTP) del login
+pyotp~=2.10
+
+# Push notifications en la versión web (VAPID)
+pywebpush~=2.0

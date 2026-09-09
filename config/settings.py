@@ -254,6 +254,11 @@ SPECTACULAR_SETTINGS = {
     # drf-spectacular resuelve la colisión con un sufijo autogenerado feo.
     "ENUM_NAME_OVERRIDES": {
         "LoyaltyKindEnum": "apps.loyalty.models.LoyaltyProgram.KIND_CHOICES",
+        # `RecurringExpense.type` tiene las mismas choices que
+        # `Transaction.type` (income/expense/transfer) -- sin esto,
+        # drf-spectacular no las funde en un solo enum y resuelve la
+        # colisión de nombre con un sufijo autogenerado feo.
+        "RecurringExpenseTypeEnum": "apps.transactions.models.RecurringExpense.TYPE_CHOICES",
     },
 }
 
@@ -363,6 +368,16 @@ INVITE_ACCEPT_URL_BASE = env("INVITE_ACCEPT_URL_BASE", default="budget://invite"
 # para desarrollo local sin credenciales reales todavía).
 # ---------------------------------------------------------------------------
 GOOGLE_CLIENT_IDS = [c for c in env.list("GOOGLE_CLIENT_IDS", default=[]) if c]
+
+# ---------------------------------------------------------------------------
+# Push notifications en la versión web (Web Push / RFC 8291, vía VAPID).
+# Vacío = se omiten los pushes a navegadores (nativo sigue andando igual,
+# ese va por Expo). Generar un par con:
+#   python manage.py generate_vapid_keys
+# ---------------------------------------------------------------------------
+VAPID_PUBLIC_KEY = env("VAPID_PUBLIC_KEY", default="")
+VAPID_PRIVATE_KEY = env("VAPID_PRIVATE_KEY", default="")
+VAPID_SUBJECT = env("VAPID_SUBJECT", default="mailto:soporte@budget.local")
 
 # ---------------------------------------------------------------------------
 # Importación por correo bancario (webhook de correo entrante)
