@@ -8,7 +8,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("loyalty", "0001_initial"),
-        ("transactions", "0016_installments_statement_only"),
+        ("transactions", "0017_installmentpurchase_drop_legacy_fields"),
     ]
 
     operations = [

@@ -10,6 +10,14 @@ corresponde a cuál cuota) se resetea limpio: se borran las
 `InstallmentPurchase` y las `Transaction` que hayan generado
 (`source=installment`), y se recalcula el saldo de las carteras que
 pudieran haber quedado afectadas por ese borrado.
+
+El `RemoveField` de los campos viejos va en la migración siguiente
+(0017) a propósito, en vez de acá mismo: Postgres no permite un
+`ALTER TABLE` sobre `transactions_installmentpurchase` en la MISMA
+transacción en la que se acaba de hacer un DELETE sobre esa tabla (el
+DELETE deja eventos de trigger de FK pendientes -- `ObjectInUse: cannot
+ALTER TABLE ... because it has pending trigger events`). Cada migración
+es su propia transacción, así que separarlas evita el error.
 """
 from decimal import Decimal
 
@@ -63,16 +71,4 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunPython(reset_installments, noop_reverse),
-        migrations.RemoveField(
-            model_name="installmentpurchase",
-            name="payment_wallet",
-        ),
-        migrations.RemoveField(
-            model_name="installmentpurchase",
-            name="installment_amount",
-        ),
-        migrations.RemoveField(
-            model_name="installmentpurchase",
-            name="installments_paid",
-        ),
     ]
