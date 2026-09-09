@@ -105,11 +105,29 @@ class ReceiptApiTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_rejects_unsupported_content_type(self):
-        pdf = SimpleUploadedFile("recibo.pdf", b"%PDF-1.4", content_type="application/pdf")
+        doc = SimpleUploadedFile("recibo.docx", b"not really a document", content_type="application/msword")
         res = self.client.post(
-            self._url(), {"file": pdf}, format="multipart", **{HEADER: str(self.ws.id)}
+            self._url(), {"file": doc}, format="multipart", **{HEADER: str(self.ws.id)}
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_accepts_pdf(self):
+        pdf = self._upload(name="recibo.pdf", content=b"%PDF-1.4 fake", content_type="application/pdf")
+        self.assertEqual(pdf.status_code, status.HTTP_200_OK, pdf.data)
+        self.assertTrue(pdf.data["has_receipt"])
+
+        res = self.client.get(self._url(), **{HEADER: str(self.ws.id)})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res["Content-Type"], "application/pdf")
+        self.assertEqual(b"".join(res.streaming_content), b"%PDF-1.4 fake")
+
+    def test_replacing_an_image_with_a_pdf_removes_the_old_file(self):
+        self._upload(name="foto.png")
+        first_name = Transaction.objects.get(pk=self.txn.pk).receipt.name
+        self._upload(name="recibo.pdf", content=b"%PDF-1.4 fake", content_type="application/pdf")
+        self.txn.refresh_from_db()
+        self.assertNotEqual(first_name, self.txn.receipt.name)
+        self.assertTrue(self.txn.receipt.name.endswith(".pdf"))
 
     def test_outsider_cannot_see_or_upload(self):
         self._upload()

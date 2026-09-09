@@ -578,7 +578,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         )
 
     RECEIPT_MAX_SIZE = 8 * 1024 * 1024  # 8 MB
-    RECEIPT_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+    RECEIPT_CONTENT_TYPES = {
+        "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf",
+    }
     IMPORT_MAX_SIZE = 5 * 1024 * 1024  # 5 MB -- de sobra para miles de filas de texto
 
     # Una sola URL (`/transactions/{id}/receipt/`), tres métodos: subir
@@ -593,7 +595,7 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         if file.size > self.RECEIPT_MAX_SIZE:
             raise ValidationError({"file": "El archivo pesa más de 8 MB."})
         if file.content_type not in self.RECEIPT_CONTENT_TYPES:
-            raise ValidationError({"file": "Formato no soportado (usá JPG, PNG, WEBP o HEIC)."})
+            raise ValidationError({"file": "Formato no soportado (usá JPG, PNG, WEBP, HEIC o PDF)."})
 
         if txn.receipt:
             txn.receipt.delete(save=False)
