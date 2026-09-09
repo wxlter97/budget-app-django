@@ -38,6 +38,27 @@ class RecurringExpenseGenerationTests(TestCase):
         self._recurring(dt.date(2026, 1, 1), is_active=False)
         self.assertEqual(generate_recurring_transactions(as_of=dt.date(2026, 2, 1)), [])
 
+    def test_transfer_recurring_moves_balance_between_wallets(self):
+        savings = Wallet.objects.create(
+            workspace=self.ws, name="Ahorro", purpose=Wallet.PURPOSE_SAVINGS
+        )
+        RecurringExpense.objects.create(
+            workspace=self.ws, wallet=self.account, to_wallet=savings,
+            type=RecurringExpense.TYPE_TRANSFER, amount=Decimal("50.00"),
+            next_due_date=dt.date(2026, 1, 1),
+        )
+        created = generate_recurring_transactions(as_of=dt.date(2026, 1, 15))
+        self.assertEqual(len(created), 1)
+        txn = created[0]
+        self.assertEqual(txn.type, Transaction.TYPE_TRANSFER)
+        self.assertEqual(txn.to_wallet_id, savings.id)
+        self.assertIsNone(txn.category_id)
+
+        self.account.refresh_from_db()
+        savings.refresh_from_db()
+        self.assertEqual(self.account.current_balance, Decimal("-50.00"))
+        self.assertEqual(savings.current_balance, Decimal("50.00"))
+
     def test_running_twice_does_not_duplicate(self):
         self._recurring(dt.date(2026, 1, 1))
         generate_recurring_transactions(as_of=dt.date(2026, 1, 20))

@@ -265,19 +265,57 @@ class RecurringExpense(BaseModel):
         FREQUENCY_YEARLY: {"years": 1},
     }
 
+    TYPE_INCOME = "income"
+    TYPE_EXPENSE = "expense"
+    TYPE_TRANSFER = "transfer"
+    TYPE_CHOICES = [
+        (TYPE_INCOME, "Ingreso"),
+        (TYPE_EXPENSE, "Gasto"),
+        (TYPE_TRANSFER, "Transferencia"),
+    ]
+
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="recurring_expenses")
-    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="recurring_expenses")
+    # Income/expense/transfer, igual que Transaction.type -- de ahí sale qué
+    # Transaction se genera cada vez que vence (ver `services.
+    # generate_recurring_transactions`). El nombre del modelo/tabla quedó
+    # como "RecurringExpense" por compatibilidad de migraciones; ya no es
+    # sólo gastos (ver también CLAUDE.md de Workspace sobre nombres legacy).
+    type = models.CharField(max_length=10, choices=TYPE_CHOICES, default=TYPE_EXPENSE)
+    # Requerida en income/expense; null en transfer (igual que Transaction).
+    category = models.ForeignKey(
+        Category, on_delete=models.CASCADE, null=True, blank=True, related_name="recurring_expenses"
+    )
+    # Cartera origen siempre; en una transferencia, de acá sale la plata.
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="recurring_expenses")
+    # Solo transferencias: cartera destino (p. ej. aporte automático mensual
+    # a una cartera de ahorro con meta).
+    to_wallet = models.ForeignKey(
+        Wallet,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="incoming_recurring_transfers",
+    )
     # Nombre libre (opcional): "Netflix", "iCloud+"... si no se define, las
-    # transacciones generadas y las listas usan el nombre de la categoría.
+    # transacciones generadas y las listas usan el nombre de la categoría (o,
+    # en una transferencia, "Transferencia a <cartera destino>").
     name = models.CharField(max_length=100, blank=True, default="")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     frequency = models.CharField(max_length=16, choices=FREQUENCY_CHOICES, default=FREQUENCY_MONTHLY)
     next_due_date = models.DateField()
     is_active = models.BooleanField(default=True)
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(type__in=["income", "expense", "transfer"]),
+                name="recurring_expense_type_valid",
+            ),
+        ]
+
     def __str__(self):
-        return self.name or f"{self.category} recurrente {self.amount}/{self.frequency}"
+        label = self.name or (self.category.name if self.category else None) or "Transferencia"
+        return f"{label} recurrente {self.amount}/{self.frequency}"
 
 
 class InstallmentPurchase(BaseModel):

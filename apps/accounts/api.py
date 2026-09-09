@@ -120,7 +120,7 @@ class WalletSerializer(serializers.ModelSerializer):
             has_own_activity = (
                 bool(parent.opening_balance)
                 or Transaction.objects.filter(Q(wallet=parent) | Q(to_wallet=parent)).exists()
-                or RecurringExpense.objects.filter(wallet=parent).exists()
+                or RecurringExpense.objects.filter(Q(wallet=parent) | Q(to_wallet=parent)).exists()
                 or InstallmentPurchase.objects.filter(wallet=parent).exists()
             )
             if has_own_activity:
@@ -319,6 +319,7 @@ class WalletViewSet(WorkspaceScopedViewSet):
             Transaction.all_objects.filter(wallet=wallet).update(wallet=child)
             Transaction.all_objects.filter(to_wallet=wallet).update(to_wallet=child)
             RecurringExpense.objects.filter(wallet=wallet).update(wallet=child)
+            RecurringExpense.objects.filter(to_wallet=wallet).update(to_wallet=child)
             InstallmentPurchase.objects.filter(wallet=wallet).update(wallet=child)
 
             if wallet.is_default:

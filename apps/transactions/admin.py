@@ -55,10 +55,10 @@ class CategoryProvisionAdmin(BaseModelAdmin):
 
 @admin.register(RecurringExpense)
 class RecurringExpenseAdmin(BaseModelAdmin):
-    list_display = ("category", "workspace", "amount", "frequency", "next_due_date", "is_active")
-    list_filter = ("frequency", "is_active")
-    search_fields = ("category__name", "workspace__name")
-    raw_id_fields = ("workspace", "category", "wallet")
+    list_display = ("__str__", "type", "workspace", "amount", "frequency", "next_due_date", "is_active")
+    list_filter = ("type", "frequency", "is_active")
+    search_fields = ("name", "category__name", "workspace__name")
+    raw_id_fields = ("workspace", "category", "wallet", "to_wallet")
     date_hierarchy = "next_due_date"
 
 

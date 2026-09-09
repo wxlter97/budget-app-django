@@ -104,6 +104,10 @@ class ScheduledItemSerializer(serializers.Serializer):
     category_name = serializers.CharField(allow_null=True)
     wallet = serializers.UUIDField()
     wallet_name = serializers.CharField()
+    # Solo un recurrente de tipo transferencia (p. ej. aporte automático a
+    # una cartera de ahorro con meta) los trae.
+    to_wallet = serializers.UUIDField(allow_null=True)
+    to_wallet_name = serializers.CharField(allow_null=True)
 
 
 class CashflowPointSerializer(serializers.Serializer):

@@ -881,20 +881,64 @@ class CategoryBudgetViewSet(WorkspaceScopedViewSet):
 # RecurringExpense
 # ---------------------------------------------------------------------------
 class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.ModelSerializer):
-    workspace_child_fields = ("category", "wallet")
+    """`type` es opcional al escribir: si se omite y viene `category`, se
+    deduce de ahí (igual que TransactionSerializer) -- así el cliente
+    viejo que sólo mandaba category/wallet sigue funcionando igual. Para
+    una transferencia hay que mandar `type: "transfer"` explícito + `to_wallet`
+    (no hay categoría de la que deducirlo)."""
+
+    workspace_child_fields = ("category", "wallet", "to_wallet")
+    type = serializers.ChoiceField(choices=RecurringExpense.TYPE_CHOICES, required=False)
 
     class Meta:
         model = RecurringExpense
         fields = (
-            "id", "name", "category", "wallet", "amount", "frequency", "next_due_date",
-            "is_active", "created_at", "updated_at",
+            "id", "type", "name", "category", "wallet", "to_wallet", "amount", "frequency",
+            "next_due_date", "is_active", "created_at", "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        wallet = attrs.get("wallet") or getattr(self.instance, "wallet", None)
+        inst = self.instance
+
+        wallet = attrs.get("wallet") or getattr(inst, "wallet", None)
+        to_wallet = attrs.get("to_wallet", getattr(inst, "to_wallet", None))
+        category = attrs.get("category", getattr(inst, "category", None))
+        txn_type = attrs.get("type") or getattr(inst, "type", None)
+
         _reject_if_group_wallet(wallet, "wallet")
+
+        if not txn_type and category is not None:
+            txn_type = category.type
+            attrs["type"] = txn_type
+        if not txn_type:
+            raise serializers.ValidationError(
+                {"type": "Requerido (o envía una categoría de la que deducirlo)."}
+            )
+
+        if txn_type == RecurringExpense.TYPE_TRANSFER:
+            if to_wallet is None:
+                raise serializers.ValidationError(
+                    {"to_wallet": "Requerida en una transferencia."}
+                )
+            if wallet is not None and to_wallet.id == wallet.id:
+                raise serializers.ValidationError(
+                    {"to_wallet": "La cartera destino debe ser distinta de la origen."}
+                )
+            _reject_if_group_wallet(to_wallet, "to_wallet")
+            attrs["category"] = None
+        else:
+            if category is None:
+                raise serializers.ValidationError(
+                    {"category": "Requerida en ingresos y gastos."}
+                )
+            if category.type != txn_type:
+                raise serializers.ValidationError(
+                    {"category": f"La categoría no es de tipo «{txn_type}»."}
+                )
+            attrs["to_wallet"] = None
+
         next_due = attrs.get("next_due_date")
         current = getattr(self.instance, "next_due_date", None)
         # Sólo rechaza si de verdad está ELIGIENDO una fecha pasada nueva --

@@ -92,3 +92,24 @@ class ScheduledEndpointTests(APITestCase):
             "/api/v1/reports/scheduled/?until=nope", **{HEADER: str(self.ws.id)}
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_transfer_recurring_shows_destination_wallet_and_no_category(self, _localdate):
+        savings = Wallet.objects.create(
+            workspace=self.ws, name="Ahorro", purpose=Wallet.PURPOSE_SAVINGS
+        )
+        RecurringExpense.objects.create(
+            workspace=self.ws, wallet=self.wallet, to_wallet=savings,
+            type=RecurringExpense.TYPE_TRANSFER, amount=Decimal("25.00"),
+            next_due_date=dt.date(2026, 3, 1),
+        )
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        transfer_item = next(
+            i for i in res.data if i["kind"] == "recurring" and i["amount"] == "25.00"
+        )
+        self.assertIsNone(transfer_item["category"])
+        self.assertEqual(transfer_item["to_wallet"], str(savings.id))
+        self.assertIn(savings.name, transfer_item["description"])
