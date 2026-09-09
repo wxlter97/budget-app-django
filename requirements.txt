@@ -39,3 +39,6 @@ openpyxl~=3.1
 
 # 2FA (TOTP) del login
 pyotp~=2.10
+
+# Push notifications en la versión web (VAPID)
+pywebpush~=2.0

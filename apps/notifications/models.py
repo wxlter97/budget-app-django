@@ -29,11 +29,21 @@ class PushDevice(BaseModel):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="push_devices"
     )
-    # "ExponentPushToken[...]". Único: un dispositivo que se re-registra
-    # (reinstalar la app, cambiar de cuenta) simplemente reasigna el dueño
-    # en vez de acumular filas muertas -- ver PushDeviceSerializer.create.
-    token = models.CharField(max_length=255, unique=True)
+    # Nativo (ios/android): "ExponentPushToken[...]" -- va por la Expo Push
+    # API. Web: la URL `endpoint` de la suscripción (PushSubscription) --
+    # ya es única por sí sola (identifica el canal push del navegador), así
+    # que también sirve como `token` acá; `p256dh`/`auth` (abajo) son lo
+    # que le falta para poder cifrar el payload (ver
+    # `apps.notifications.services.send_push`). Único en los dos casos: un
+    # dispositivo/navegador que se re-registra (reinstalar la app, otra
+    # cuenta, se renovó la suscripción) simplemente reasigna el dueño en
+    # vez de acumular filas muertas -- ver PushDeviceSerializer.create.
+    token = models.CharField(max_length=512, unique=True)
     platform = models.CharField(max_length=10, choices=PLATFORM_CHOICES, blank=True)
+    # Solo platform=web (Web Push / RFC 8291): claves públicas de la
+    # PushSubscription del navegador, para cifrar el payload contra VAPID.
+    p256dh = models.CharField(max_length=255, blank=True, default="")
+    auth = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         ordering = ["-updated_at"]

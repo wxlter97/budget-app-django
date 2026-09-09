@@ -1,10 +1,12 @@
 import datetime as dt
+import json
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -59,6 +61,37 @@ class PushDeviceApiTests(APITestCase):
         self.client.force_authenticate(self.alice)
         self.client.post(f"{self.URL}unregister/", {"token": "ExponentPushToken[bob]"})
         self.assertTrue(PushDevice.objects.filter(user=self.bob).exists())
+
+    def test_web_platform_requires_p256dh_and_auth(self):
+        self.client.force_authenticate(self.alice)
+        resp = self.client.post(
+            self.URL, {"token": "https://push.example.com/sub/1", "platform": "web"}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_web_platform_registers_with_keys(self):
+        self.client.force_authenticate(self.alice)
+        resp = self.client.post(
+            self.URL,
+            {
+                "token": "https://push.example.com/sub/1",
+                "platform": "web",
+                "p256dh": "pkey",
+                "auth": "akey",
+            },
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        device = PushDevice.objects.get()
+        self.assertEqual(device.p256dh, "pkey")
+        self.assertEqual(device.auth, "akey")
+
+    @override_settings(VAPID_PUBLIC_KEY="pub-key-for-the-browser")
+    def test_vapid_public_key_is_public(self):
+        # Sin autenticar a propósito: hace falta ANTES de que el navegador
+        # pueda registrar nada.
+        resp = self.client.get(f"{self.URL}vapid-public-key/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["vapid_public_key"], "pub-key-for-the-browser")
 
 
 class NotificationPreferenceApiTests(APITestCase):
@@ -357,3 +390,66 @@ class SendPushTests(TestCase):
         devices = [PushDevice(token="tok")]
         # No debe lanzar aunque Expo esté caído -- se loggea y se sigue.
         services.send_push(devices, title="x", body="y")
+
+    @patch("apps.notifications.services.urllib_request.urlopen")
+    def test_web_devices_never_go_to_expo(self, mock_urlopen):
+        web_device = PushDevice(
+            token="https://fcm.googleapis.com/x", platform=PushDevice.PLATFORM_WEB,
+            p256dh="pkey", auth="akey",
+        )
+        with override_settings(VAPID_PUBLIC_KEY="", VAPID_PRIVATE_KEY=""):
+            services.send_push([web_device], title="x", body="y")
+        mock_urlopen.assert_not_called()
+
+
+@override_settings(VAPID_PUBLIC_KEY="pub-key", VAPID_PRIVATE_KEY="priv-key")
+class SendWebPushTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("erin", "e@example.com", "pw")
+        self.device = PushDevice.objects.create(
+            user=self.user, token="https://push.example.com/sub/1",
+            platform=PushDevice.PLATFORM_WEB, p256dh="pkey", auth="akey",
+        )
+
+    @patch("pywebpush.webpush")
+    def test_calls_webpush_with_subscription_and_vapid_claims(self, mock_webpush):
+        services.send_push([self.device], title="Hola", body="Mundo")
+        mock_webpush.assert_called_once()
+        kwargs = mock_webpush.call_args.kwargs
+        self.assertEqual(
+            kwargs["subscription_info"],
+            {"endpoint": self.device.token, "keys": {"p256dh": "pkey", "auth": "akey"}},
+        )
+        self.assertEqual(kwargs["vapid_private_key"], "priv-key")
+        self.assertEqual(kwargs["vapid_claims"], {"sub": settings.VAPID_SUBJECT})
+        payload = json.loads(kwargs["data"])
+        self.assertEqual(payload["title"], "Hola")
+        self.assertEqual(payload["body"], "Mundo")
+
+    @override_settings(VAPID_PUBLIC_KEY="", VAPID_PRIVATE_KEY="")
+    @patch("pywebpush.webpush")
+    def test_skips_without_vapid_configured(self, mock_webpush):
+        services.send_push([self.device], title="x", body="y")
+        mock_webpush.assert_not_called()
+
+    @patch("pywebpush.webpush")
+    def test_expired_subscription_is_deleted(self, mock_webpush):
+        from pywebpush import WebPushException
+
+        response = type("Resp", (), {"status_code": 410})()
+        mock_webpush.side_effect = WebPushException("gone", response=response)
+        services.send_push([self.device], title="x", body="y")
+        self.assertFalse(PushDevice.objects.filter(id=self.device.id).exists())
+
+    @patch("pywebpush.webpush")
+    def test_other_error_does_not_delete_the_device(self, mock_webpush):
+        from pywebpush import WebPushException
+
+        response = type("Resp", (), {"status_code": 500})()
+        mock_webpush.side_effect = WebPushException("server error", response=response)
+        services.send_push([self.device], title="x", body="y")
+        self.assertTrue(PushDevice.objects.filter(id=self.device.id).exists())
+
+    @patch("pywebpush.webpush", side_effect=OSError("network down"))
+    def test_network_error_does_not_raise(self, mock_webpush):
+        services.send_push([self.device], title="x", body="y")
