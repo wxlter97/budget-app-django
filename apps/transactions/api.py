@@ -1,4 +1,5 @@
 import datetime as dt
+import io
 import mimetypes
 import uuid
 from decimal import Decimal
@@ -20,6 +21,7 @@ from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewS
 from apps.loyalty.models import LoyaltyEarning, LoyaltyProgram
 
 from . import services
+from . import xlsx_import as xlsx
 from .models import (
     Category,
     CategoryBudget,
@@ -577,6 +579,7 @@ class TransactionViewSet(WorkspaceScopedViewSet):
 
     RECEIPT_MAX_SIZE = 8 * 1024 * 1024  # 8 MB
     RECEIPT_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+    IMPORT_MAX_SIZE = 5 * 1024 * 1024  # 5 MB -- de sobra para miles de filas de texto
 
     # Una sola URL (`/transactions/{id}/receipt/`), tres métodos: subir
     # (reemplaza si ya había uno), ver el archivo, y borrarlo. `get_object()`
@@ -677,6 +680,78 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             txn.soft_delete()
 
         return Response(self.get_serializer(new_parts, many=True).data, status=201)
+
+    @action(detail=False, methods=["get"], url_path="import-template")
+    def import_template(self, request):
+        """Plantilla .xlsx para cargar transacciones en lote (ver acción
+        `import`), con los nombres reales de carteras/categorías del
+        workspace en hojas de referencia."""
+        wallets = _visible_wallets(request.workspace, request.user).filter(is_archived=False)
+        categories = Category.objects.filter(workspace=request.workspace)
+        content = xlsx.build_template(wallets, categories)
+        response = FileResponse(
+            io.BytesIO(content),
+            as_attachment=True,
+            filename="plantilla-transacciones.xlsx",
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        return response
+
+    @action(detail=False, methods=["post"], url_path="import", parser_classes=[MultiPartParser])
+    def import_xlsx(self, request):
+        """Crea transacciones en lote desde el .xlsx de `import-template`
+        (ya editado por el usuario). Es "todo lo que se pueda": cada fila
+        se valida por su cuenta con el mismo `TransactionSerializer` de
+        siempre, así que una fila con error no frena a las demás -- se
+        crean las válidas y se reportan los errores fila por fila."""
+        file = request.FILES.get("file")
+        if not file:
+            raise ValidationError({"file": "Requerido."})
+        if file.size > self.IMPORT_MAX_SIZE:
+            raise ValidationError({"file": "El archivo pesa más de 5 MB."})
+
+        try:
+            rows = xlsx.parse_workbook(file)
+        except xlsx.InvalidWorkbook:
+            raise ValidationError(
+                {"file": "No se pudo leer el archivo -- ¿es un .xlsx válido descargado desde acá?"}
+            )
+
+        wallets_by_name = xlsx.index_wallets_by_name(
+            _visible_wallets(request.workspace, request.user).filter(is_archived=False)
+        )
+        categories_by_name = xlsx.index_categories_by_name(
+            Category.objects.filter(workspace=request.workspace)
+        )
+
+        context = self.get_serializer_context()
+        created = []
+        errors = []
+        with db_transaction.atomic():
+            for row_number, values in rows:
+                try:
+                    payload = xlsx.row_to_payload(values, wallets_by_name, categories_by_name)
+                except xlsx.RowError as exc:
+                    errors.append({"row": row_number, "message": str(exc)})
+                    continue
+                serializer = TransactionSerializer(data=payload, context=context)
+                if not serializer.is_valid():
+                    message = "; ".join(
+                        f"{field}: {', '.join(str(m) for m in msgs)}"
+                        for field, msgs in serializer.errors.items()
+                    )
+                    errors.append({"row": row_number, "message": message})
+                    continue
+                created.append(serializer.save())
+
+        return Response(
+            {
+                "created": len(created),
+                "errors": errors,
+                "transactions": TransactionSerializer(created, many=True, context=context).data,
+            },
+            status=200,
+        )
 
 
 # ---------------------------------------------------------------------------
