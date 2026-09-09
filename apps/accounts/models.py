@@ -129,6 +129,8 @@ class Wallet(BaseModel):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="wallets",
+        verbose_name="producto de tarjeta",
+        help_text="Sólo tarjetas de crédito -- se define en el admin (Loyalty → Productos de tarjeta).",
     )
     counterparty = models.CharField(
         max_length=100, blank=True, help_text="Persona/entidad de la deuda"

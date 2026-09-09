@@ -16,10 +16,10 @@ from .models import (
 
 @admin.register(Category)
 class CategoryAdmin(BaseModelAdmin):
-    list_display = ("name", "workspace", "type", "parent")
-    list_filter = ("type",)
+    list_display = ("name", "workspace", "type", "parent", "category_type")
+    list_filter = ("type", "category_type")
     search_fields = ("name", "workspace__name")
-    raw_id_fields = ("workspace", "parent")
+    raw_id_fields = ("workspace", "parent", "category_type")
 
 
 @admin.register(Tag)
