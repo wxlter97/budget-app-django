@@ -94,12 +94,14 @@ class Transaction(BaseModel):
     SOURCE_RECURRING = "recurring"
     SOURCE_INSTALLMENT = "installment"
     SOURCE_QUICK_ADD = "quick_add"
+    SOURCE_EXCEL_IMPORT = "excel_import"
     SOURCE_CHOICES = [
         (SOURCE_MANUAL, "Manual"),
         (SOURCE_EMAIL_IMPORT, "Importada por correo"),
         (SOURCE_RECURRING, "Gasto recurrente"),
         (SOURCE_INSTALLMENT, "Cuota de compra a plazo"),
         (SOURCE_QUICK_ADD, "Alta rápida (Atajo)"),
+        (SOURCE_EXCEL_IMPORT, "Importada de Excel"),
     ]
 
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
