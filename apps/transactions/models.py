@@ -41,6 +41,8 @@ class Category(BaseModel):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="categories",
+        verbose_name="rubro para tarjetas con recompensas",
+        help_text="Opcional -- se define en el admin (Loyalty → Rubros).",
     )
 
     class Meta:
