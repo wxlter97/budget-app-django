@@ -219,6 +219,7 @@ REST_FRAMEWORK = {
         "auth": env("THROTTLE_AUTH", default="10/min"),      # login / registro
         "inbound": env("THROTTLE_INBOUND", default="120/min"),  # webhook de correo
         "quick_add": env("THROTTLE_QUICK_ADD", default="60/min"),  # Atajo de Apple Shortcuts
+        "dashboard": env("THROTTLE_DASHBOARD", default="30/min"),  # Villa Wxlter (saldo)
     },
 }
 if RUNNING_TESTS:
@@ -289,6 +290,17 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 from corsheaders.defaults import default_headers  # noqa: E402
 
 CORS_ALLOW_HEADERS = (*default_headers, "x-workspace-id")
+
+# ---------------------------------------------------------------------------
+# Dashboard externo (Villa Wxlter) — endpoint de solo lectura, ver apps.reports
+# ---------------------------------------------------------------------------
+# Token fijo compartido con el dashboard (header `Authorization: Bearer <token>`).
+# Vacío (default) = el endpoint rechaza todo, nunca "abierto por accidente".
+# Generar con: python -c "import secrets; print(secrets.token_urlsafe(32))"
+DASHBOARD_API_TOKEN = env("DASHBOARD_API_TOKEN", default="")
+# UUID del workspace a exponer. Vacío = se usa el único Workspace que exista
+# (falla explícito si hay 0 o más de uno, para no mostrar el dato equivocado).
+DASHBOARD_WORKSPACE_ID = env("DASHBOARD_WORKSPACE_ID", default="")
 
 # ---------------------------------------------------------------------------
 # Celery

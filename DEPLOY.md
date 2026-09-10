@@ -150,6 +150,26 @@ gcloud run services update budget-api --region us-east1 \
 Dominio propio más adelante: sumá los orígenes con coma en `CORS_ALLOWED_ORIGINS`,
 `DJANGO_ALLOWED_HOSTS` y `DJANGO_CSRF_TRUSTED_ORIGINS`.
 
+### 4.1 Dashboard externo (Villa Wxlter)
+
+El endpoint `GET /api/v1/dashboard/balance/` (patrimonio neto, sin JWT) lo
+consume el mapa de Villa Wxlter para el tooltip del edificio Banco. Necesita
+su propio token — no reutiliza login de usuario:
+
+```bash
+gcloud run services update budget-api --region us-east1 \
+  --update-secrets "DASHBOARD_API_TOKEN=dashboard-api-token:latest" \
+  --update-env-vars "CORS_ALLOWED_ORIGINS=https://moneyapp.vercel.app,https://villa-wxlter.vercel.app"
+```
+
+- Generar el token: `python -c "import secrets; print(secrets.token_urlsafe(32))"`,
+  guardarlo como secret `dashboard-api-token` (igual que `django-secret-key`,
+  ver §2.1) y dárselo al dashboard como variable de entorno en Vercel.
+- `DASHBOARD_WORKSPACE_ID` solo hace falta si alguna vez hay más de un
+  Workspace en la base — con uno solo (el caso de uso real) el endpoint lo
+  detecta automáticamente y falla explícito si es ambiguo, en vez de mostrar
+  el saldo equivocado.
+
 ---
 
 ## 5. Prueba de humo
