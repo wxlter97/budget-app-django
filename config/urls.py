@@ -19,6 +19,7 @@ from apps.reports.api import (
     NetWorthView,
     ScheduledView,
 )
+from apps.reports.dashboard_api import DashboardBalanceView
 from apps.users.api import (
     GoogleLinkView,
     GoogleLoginView,
@@ -59,6 +60,7 @@ api_v1_patterns = [
     path("reports/category-trends/", CategoryTrendsView.as_view(), name="report-category-trends"),
     path("reports/summary/", DashboardSummaryView.as_view(), name="report-summary"),
     path("reports/scheduled/", ScheduledView.as_view(), name="report-scheduled"),
+    path("dashboard/balance/", DashboardBalanceView.as_view(), name="dashboard-balance"),
     path(
         "email-import/inbound/",
         InboundEmailWebhookView.as_view(),
