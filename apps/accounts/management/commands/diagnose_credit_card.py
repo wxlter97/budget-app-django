@@ -7,10 +7,12 @@ de cuenta no cuadra con lo esperado.
 Imprime, para cada tarjeta:
 - opening_balance / current_balance (cacheado) vs. recalculado desde movimientos
 - cada Transacción viva con su efecto (con signo) sobre el saldo
-- el desglose del estado de cuenta a la fecha, con la reconciliación
-  `total_due = gastos - abonos + cuotas_vencidas - opening_balance`
-- los movimientos del período abierto (después del corte), que alimentan
-  `current_period_spent` / `current_period_paid`
+- el estado de cada compra a plazo (`installment_status`) y el desglose del
+  "pago de contado" a la fecha, con la reconciliación
+  `total_due = saldo_usado - capital_a_plazo_aún_no_vencido`
+  (ver el docstring de `credit_card_statement` para el detalle)
+- los movimientos después del corte más reciente (aún no reflejados en ningún
+  estado de cuenta cerrado)
 - avisos: `source=installment` sueltos, transferencias "ajuste", etc.
 """
 from decimal import Decimal

@@ -59,12 +59,18 @@ def apply_balance_delta(wallet_id, delta) -> None:
     )
 
 
-def recompute_wallet_balance(wallet) -> Decimal:
-    """Recalcula `current_balance` (propio) desde cero: opening_balance + Σ
-    transacciones vivas (income +, expense -, transfer saliente -, entrante +)."""
+def _balance_as_of(wallet, until_date=None) -> Decimal:
+    """Saldo PROPIO de ``wallet``: opening_balance + Σ transacciones vivas
+    (income +, expense -, transfer saliente -, entrante +), contando solo
+    hasta ``until_date`` inclusive (todas, si es ``None``). Única fuente de
+    la convención de signo -- tanto `recompute_wallet_balance` (todo el
+    historial) como `credit_card_statement` (a una fecha) parten de acá para
+    no arriesgarse a que diverjan si esta regla cambia."""
     from apps.transactions.models import Transaction
 
-    out = Transaction.objects.filter(wallet=wallet).aggregate(
+    until = {"date__lte": until_date} if until_date is not None else {}
+
+    out = Transaction.objects.filter(wallet=wallet, **until).aggregate(
         total=Sum(
             Case(
                 When(type=Transaction.TYPE_INCOME, then=F("amount")),
@@ -75,10 +81,16 @@ def recompute_wallet_balance(wallet) -> Decimal:
     )["total"] or Decimal("0")
 
     incoming = Transaction.objects.filter(
-        to_wallet=wallet, type=Transaction.TYPE_TRANSFER
+        to_wallet=wallet, type=Transaction.TYPE_TRANSFER, **until
     ).aggregate(total=Sum("amount", output_field=_MONEY))["total"] or Decimal("0")
 
-    wallet.current_balance = wallet.opening_balance + out + incoming
+    return wallet.opening_balance + out + incoming
+
+
+def recompute_wallet_balance(wallet) -> Decimal:
+    """Recalcula `current_balance` (propio) desde cero: opening_balance + Σ
+    transacciones vivas (income +, expense -, transfer saliente -, entrante +)."""
+    wallet.current_balance = _balance_as_of(wallet)
     wallet.save(update_fields=["current_balance", "updated_at"])
     return wallet.current_balance
 
@@ -305,28 +317,6 @@ def installment_status(purchase, as_of=None) -> dict:
     }
 
 
-def _card_balance_at(wallet, until_date) -> Decimal:
-    """Saldo PROPIO de ``wallet`` contando solo transacciones con fecha <=
-    ``until_date`` -- misma convención de signo que `recompute_wallet_balance`
-    (negativo = deuda). ``-_card_balance_at(...)`` es el saldo usado de la
-    tarjeta (``límite - disponible``) a esa fecha."""
-    from apps.transactions.models import Transaction
-
-    out = Transaction.objects.filter(wallet=wallet, date__lte=until_date).aggregate(
-        total=Sum(
-            Case(
-                When(type=Transaction.TYPE_INCOME, then=F("amount")),
-                default=-F("amount"),
-                output_field=_MONEY,
-            )
-        )
-    )["total"] or Decimal("0")
-    incoming = Transaction.objects.filter(
-        to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__lte=until_date
-    ).aggregate(total=Sum("amount", output_field=_MONEY))["total"] or Decimal("0")
-    return wallet.opening_balance + out + incoming
-
-
 def _installment_pending(wallet, cutoff_date):
     """Capital a plazo que aún NO vence, a ``cutoff_date``: el total de cada
     compra a plazo de ``wallet`` ya bajó el disponible al registrarse (es una
@@ -366,10 +356,11 @@ def credit_card_statement(wallet, as_of=None):
         pago_de_contado = saldo_usado                       (= límite - disponible)
                         - capital_a_plazo_aún_no_vencido
 
-    ``saldo_usado`` es ``-_card_balance_at(wallet, as_of)`` -- exactamente lo
+    ``saldo_usado`` es ``-_balance_as_of(wallet, as_of)`` -- exactamente lo
     que la app tiene como saldo de la tarjeta (``current_balance`` cuando
-    ``as_of`` es hoy). El disponible sale de ahí: ``límite + saldo``. Cuando el
-    saldo cacheado es correcto, el pago de contado también.
+    ``as_of`` es hoy). El disponible sale de ahí: ``límite + saldo``, sin
+    superar el límite (un saldo a favor no es "más disponible que el límite").
+    Cuando el saldo cacheado es correcto, el pago de contado también.
 
     Las cuotas se cuentan "vencidas" por el CORTE de la tarjeta, no por el
     calendario de la compra: cuota ``n`` vence en su ``n``-ésimo corte desde
@@ -385,10 +376,12 @@ def credit_card_statement(wallet, as_of=None):
     next_cutoff_date = _next_cutoff(wallet.billing_cycle_day, cutoff_date)
     payment_due_date = _payment_due_date(wallet, cutoff_date)
 
-    balance = _card_balance_at(wallet, as_of)
+    balance = _balance_as_of(wallet, as_of)
     used = -balance
     available = (
-        wallet.credit_limit + balance if wallet.credit_limit is not None else None
+        min(wallet.credit_limit, wallet.credit_limit + balance)
+        if wallet.credit_limit is not None
+        else None
     )
 
     financed_not_due, lines = _installment_pending(wallet, cutoff_date)

@@ -132,6 +132,19 @@ class CreditCardStatementServiceTests(APITestCase):
         data = credit_card_statement(w, as_of=dt.date(2024, 1, 3))
         self.assertEqual(data["total_due"], -w.current_balance)
         self.assertEqual(data["total_due"], Decimal("-225.00"))
+        # Un saldo a favor (used negativo) no infla el disponible por encima
+        # del límite -- "disponible" nunca es más que el límite de la tarjeta.
+        self.assertEqual(data["used"], Decimal("-225.00"))
+        self.assertEqual(data["available"], Decimal("5000.00"))
+
+    def test_available_never_exceeds_credit_limit(self):
+        w = self._card(billing_cycle_day=3, credit_limit=Decimal("1000.00"))
+        # Pago que deja la tarjeta con saldo a favor (used negativo).
+        self._payment(w, "50.00", dt.date(2024, 1, 1))
+        recompute_wallet_balance(w)
+        data = credit_card_statement(w, as_of=dt.date(2024, 1, 5))
+        self.assertEqual(data["used"], Decimal("-50.00"))
+        self.assertEqual(data["available"], Decimal("1000.00"))
 
     def test_used_is_as_of_not_frozen_at_cutoff(self):
         w = self._card(billing_cycle_day=3)
