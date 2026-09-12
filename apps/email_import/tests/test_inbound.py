@@ -3,13 +3,17 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import Wallet
 from apps.email_import.bank_parsers import ParsedEmail
+from apps.email_import.bank_parsers.bac_credomatic import parse as bac_parse
+from apps.email_import.bank_parsers.banco_cuscatlan import parse as cuscatlan_parse
 from apps.email_import.bank_parsers.demo_bank import parse as demo_parse
 from apps.email_import.bank_parsers.nu_style import parse as nu_parse
+from apps.email_import.bank_parsers.siman import parse as siman_parse
 from apps.email_import.models import BankEmailSchema, EmailImportLog
 from apps.email_import.services import (
     WorkspaceNotResolved,
@@ -54,6 +58,119 @@ class ParserUnitTests(TestCase):
         self.assertEqual(parsed.merchant, "RAPPI COLOMBIA")
         self.assertEqual(parsed.card_last4, "1234")
 
+    def test_banco_cuscatlan_parser_tarjeta_adicional(self):
+        body = (
+            "Estimado Cliente: WALTER\n \n"
+            "Se ha realizado una compra con su tarjeta adicional de Banco CUSCATLAN "
+            "XXXXXXXXXX9126 por USD 13.00 en UNO SAN FERNANDO AHUA el día "
+            "2026-09-11 16:35. Consultas al 22122000."
+        )
+        parsed = cuscatlan_parse(
+            "Compra con Tarjeta de Credito Adicional", body, "notificaciones@bancocuscatlan.com"
+        )
+        self.assertEqual(parsed.amount, Decimal("13.00"))
+        self.assertEqual(parsed.date, dt.date(2026, 9, 11))
+        self.assertEqual(parsed.merchant, "UNO SAN FERNANDO AHUA")
+        self.assertEqual(parsed.card_last4, "9126")
+        self.assertEqual(parsed.currency, "USD")
+
+    def test_banco_cuscatlan_parser_tarjeta_titular_single_digit_hour(self):
+        # La hora puede venir sin cero a la izquierda ("3:49" en vez de
+        # "03:49") -- no debe hacer fallar el corte de la fecha.
+        body = (
+            "Estimado Cliente: WALTER ERNESTO\n \n"
+            "Se ha realizado una compra con su tarjeta titular de Banco CUSCATLAN "
+            "XXXXXXXXXX8303 por USD 2.39 en ANDA PAGO AUTOMATICO Z el día "
+            "2026-09-09 3:49. Consultas al 22122000."
+        )
+        parsed = cuscatlan_parse(
+            "Compra con Tarjeta de Credito Titular", body, "notificaciones@bancocuscatlan.com"
+        )
+        self.assertEqual(parsed.amount, Decimal("2.39"))
+        self.assertEqual(parsed.date, dt.date(2026, 9, 9))
+        self.assertEqual(parsed.merchant, "ANDA PAGO AUTOMATICO Z")
+        self.assertEqual(parsed.card_last4, "8303")
+
+    def test_banco_cuscatlan_parser_merchant_with_special_chars(self):
+        # El comercio puede traer "*" (agregadores tipo PedidosYa) -- no debe
+        # cortar el nombre a la mitad.
+        body = (
+            "Se ha realizado una compra con su tarjeta titular de Banco CUSCATLAN "
+            "XXXXXXXXXX8303 por USD 15.07 en PedidosYa*Crepe Lovers el día "
+            "2026-09-08 14:46. Consultas al 22122000."
+        )
+        parsed = cuscatlan_parse("Compra con Tarjeta de Credito Titular", body, "notificaciones@bancocuscatlan.com")
+        self.assertEqual(parsed.merchant, "PedidosYa*Crepe Lovers")
+        self.assertEqual(parsed.amount, Decimal("15.07"))
+
+    def test_banco_cuscatlan_parser_raises_on_garbage(self):
+        from apps.email_import.bank_parsers import ParseError
+
+        with self.assertRaises(ParseError):
+            cuscatlan_parse("x", "nada que ver aquí", "notificaciones@bancocuscatlan.com")
+
+    def test_bac_credomatic_parser_amex(self):
+        body = (
+            "Estimado/a: WALTER ERNESTO RAMIREZ CASTILLO\n"
+            "Se acaba de realizar una compra con tu tarjeta AMEX terminada en 9655\n"
+            "Detalles del movimiento:\n\n"
+            "Comercio\nMonto\nDENNYS RAMBLAS SANT\n5.99\n\n"
+            "Fecha y hora\n2026/09/04-16:46:17\n\n"
+            "Tipo de la compra\nEstado\nTarjeta Presente\nAprobada"
+        )
+        parsed = bac_parse("Alerta PRF BAC Credomatic", body, "info@baccredomatic.com")
+        self.assertEqual(parsed.amount, Decimal("5.99"))
+        self.assertEqual(parsed.date, dt.date(2026, 9, 4))
+        self.assertEqual(parsed.merchant, "DENNYS RAMBLAS SANT")
+        self.assertEqual(parsed.card_last4, "9655")
+        self.assertEqual(parsed.currency, "USD")  # no viene en el correo -- default
+
+    def test_bac_credomatic_parser_visa(self):
+        body = (
+            "Estimado/a: WALTER ERNESTO RAMIREZ CASTILLO\n"
+            "Se acaba de realizar una compra con tu tarjeta VISA terminada en 0585\n"
+            "Detalles del movimiento:\n\n"
+            "Comercio\nMonto\nSELECTOS SAN LUIS\n63.39\n\n"
+            "Fecha y hora\n2026/09/01-18:50:53\n\n"
+            "Tipo de la compra\nEstado\nTarjeta Presente\nAprobada"
+        )
+        parsed = bac_parse("Alerta PRF BAC Credomatic", body, "info@baccredomatic.com")
+        self.assertEqual(parsed.amount, Decimal("63.39"))
+        self.assertEqual(parsed.date, dt.date(2026, 9, 1))
+        self.assertEqual(parsed.merchant, "SELECTOS SAN LUIS")
+        self.assertEqual(parsed.card_last4, "0585")
+
+    def test_bac_credomatic_parser_raises_on_garbage(self):
+        from apps.email_import.bank_parsers import ParseError
+
+        with self.assertRaises(ParseError):
+            bac_parse("x", "nada que ver aquí", "info@baccredomatic.com")
+
+    def test_siman_parser(self):
+        body = (
+            "Estimado(a) WALTER ERNESTO RAMIREZ CASTILLO,\n"
+            "Se le informa que su tarjeta CREDISIMAN VISA GOLD 5818 ha realizado una "
+            "compra por USD 3.99 en Almacenes Siman 0000 SV.\n"
+            "En caso de que usted no haya generado esta transacción, por favor "
+            "comuníquese con nuestro centro de contacto al 2298-3777 o al correo "
+            "contacto_credisiman@siman.com"
+        )
+        parsed = siman_parse(
+            "Notificación de Transacción Credisiman VISA", body, "no-reply@simaninternet.net"
+        )
+        self.assertEqual(parsed.amount, Decimal("3.99"))
+        # El correo no trae fecha -- se usa la de hoy (ver docstring del parser).
+        self.assertEqual(parsed.date, timezone.localdate())
+        self.assertEqual(parsed.merchant, "Almacenes Siman 0000 SV")
+        self.assertEqual(parsed.card_last4, "5818")
+        self.assertEqual(parsed.currency, "USD")
+
+    def test_siman_parser_raises_on_garbage(self):
+        from apps.email_import.bank_parsers import ParseError
+
+        with self.assertRaises(ParseError):
+            siman_parse("x", "nada que ver aquí", "no-reply@simaninternet.net")
+
 
 class IngestServiceTests(TestCase):
     @classmethod
@@ -97,6 +214,7 @@ class IngestServiceTests(TestCase):
             subject="Alerta", text=DEMO_BODY,
         )
         self.assertEqual(log.status, EmailImportLog.STATUS_PENDING)
+        self.assertEqual(log.raw_email_body, DEMO_BODY)
         self.assertEqual(log.extracted_amount, Decimal("1234.56"))
         self.assertEqual(log.extracted_merchant, "STARBUCKS REFORMA")
         self.assertEqual(log.extracted_date, dt.date(2026, 1, 20))

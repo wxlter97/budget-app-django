@@ -49,6 +49,7 @@ class EmailImportLog(BaseModel):
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     raw_email_subject = models.CharField(max_length=255, blank=True)
+    raw_email_body = models.TextField(blank=True, default="")
     extracted_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     extracted_merchant = models.CharField(max_length=255, blank=True)
     extracted_date = models.DateField(null=True, blank=True)

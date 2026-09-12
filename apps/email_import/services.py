@@ -72,7 +72,11 @@ def ingest_inbound_email(*, to, sender, subject="", text="", workspace=None):
     if workspace is None:
         workspace = resolve_workspace(to)
 
-    base = dict(workspace=workspace, raw_email_subject=(subject or "")[:255])
+    base = dict(
+        workspace=workspace,
+        raw_email_subject=(subject or "")[:255],
+        raw_email_body=text or "",
+    )
 
     schema = _match_schema(sender)
     if schema is None:
