@@ -12,5 +12,8 @@ from .base import ParsedEmail, ParseError  # noqa: F401
 from .registry import get_parser, registered_keys  # noqa: F401
 
 # Importa cada módulo de parser para que se registre en el import de la app.
+from . import bac_credomatic  # noqa: F401,E402
+from . import banco_cuscatlan  # noqa: F401,E402
 from . import demo_bank  # noqa: F401,E402
 from . import nu_style  # noqa: F401,E402
+from . import siman  # noqa: F401,E402
