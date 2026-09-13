@@ -62,6 +62,103 @@ def visible_transactions(workspace, user):
     )
 
 
+# ---------------------------------------------------------------------------
+# Categorías por defecto (grupo → categoría, estilo Buddy, en es)
+# ---------------------------------------------------------------------------
+# grupo: (nombre, icono, color, [ (categoría, icono, color), ... ])
+DEFAULT_EXPENSE_CATEGORY_GROUPS = [
+    ("Vivienda", "🏠", "#F59E0B", [
+        ("Alquiler / Préstamo", "🏦", "#F59E0B"),
+        ("Internet", "📶", "#F59E0B"),
+        ("Electricidad", "⚡", "#F59E0B"),
+        ("Agua", "💧", "#F59E0B"),
+        ("Teléfono", "📱", "#F59E0B"),
+        ("Mantenimiento", "🔧", "#F59E0B"),
+    ]),
+    ("Comida", "🍽", "#3B82F6", [
+        ("Comida", "🍽", "#3B82F6"),
+        ("Supermercado", "🛒", "#3B82F6"),
+        ("Restaurantes", "🍔", "#3B82F6"),
+    ]),
+    ("Transporte", "🚗", "#8B5CF6", [
+        ("Gasolina", "⛽", "#8B5CF6"),
+        ("Transporte público", "🚌", "#8B5CF6"),
+        ("Parking", "🅿️", "#8B5CF6"),
+        ("Costes de vehículo", "🚗", "#8B5CF6"),
+    ]),
+    ("Estilo de vida", "✨", "#EC4899", [
+        ("Suscripciones", "🔁", "#EC4899"),
+        ("Entretenimiento", "🎬", "#EC4899"),
+        ("Ropa", "👕", "#EC4899"),
+        ("Gimnasio", "🏋️", "#EC4899"),
+        ("Bienestar", "❤️", "#EC4899"),
+        ("Regalos", "🎁", "#EC4899"),
+        ("Hobby", "🎨", "#EC4899"),
+    ]),
+    ("Salud", "🏥", "#EF4444", [
+        ("Salud", "🏥", "#EF4444"),
+        ("Farmacia", "💊", "#EF4444"),
+    ]),
+    ("Educación", "📚", "#6366F1", [
+        ("Educación", "📚", "#6366F1"),
+    ]),
+    ("Ahorro", "🐷", "#14B8A6", [
+        ("Ahorro", "🐷", "#14B8A6"),
+    ]),
+    ("Otros", "📦", "#94A3B8", [
+        ("Impuestos", "🧾", "#94A3B8"),
+        ("Comisiones", "🏛️", "#94A3B8"),
+        ("Otros gastos", "💸", "#94A3B8"),
+    ]),
+]
+
+DEFAULT_INCOME_CATEGORY_GROUPS = [
+    ("Ingresos", "💰", "#22C55E", [
+        ("Sueldo", "💼", "#22C55E"),
+        ("Freelance", "🧑‍💻", "#22C55E"),
+        ("Inversiones", "📈", "#22C55E"),
+        ("Reembolsos", "↩️", "#22C55E"),
+        ("Regalos", "🎁", "#22C55E"),
+        ("Otros ingresos", "💰", "#22C55E"),
+    ]),
+]
+
+
+def seed_default_categories(workspace) -> int:
+    """
+    Crea el set de categorías por defecto (grupos → categorías) en
+    ``workspace`` -- idempotente (``get_or_create`` por workspace + nombre +
+    tipo), así que correrlo sobre un workspace que ya tiene categorías sólo
+    agrega lo que falte, nunca duplica ni pisa lo que el usuario ya armó.
+
+    La llaman tanto ``WorkspaceViewSet.perform_create`` (todo workspace
+    nuevo arranca con esto, nunca en blanco) como el comando de management
+    ``seed_categories`` (para aplicarlo a mano a workspaces que ya existían
+    de antes). Devuelve cuántas categorías nuevas creó.
+    """
+    created = 0
+    order = 0
+    for cat_type, groups in (
+        (Category.TYPE_EXPENSE, DEFAULT_EXPENSE_CATEGORY_GROUPS),
+        (Category.TYPE_INCOME, DEFAULT_INCOME_CATEGORY_GROUPS),
+    ):
+        for gname, gicon, gcolor, children in groups:
+            group, made = Category.objects.get_or_create(
+                workspace=workspace, name=gname, type=cat_type, parent=None,
+                defaults={"icon": gicon, "color": gcolor, "sort_order": order},
+            )
+            order += 1
+            created += int(made)
+            for cname, cicon, ccolor in children:
+                _, made = Category.objects.get_or_create(
+                    workspace=workspace, name=cname, type=cat_type,
+                    defaults={"icon": cicon, "color": ccolor, "parent": group, "sort_order": order},
+                )
+                order += 1
+                created += int(made)
+    return created
+
+
 def _advance(date, frequency):
     delta = RecurringExpense.FREQUENCY_DELTAS.get(
         frequency, RecurringExpense.FREQUENCY_DELTAS[RecurringExpense.FREQUENCY_MONTHLY]

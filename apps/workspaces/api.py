@@ -86,12 +86,19 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
+        from apps.transactions.services import seed_default_categories
+
         workspace = serializer.save()
         Membership.objects.create(
             workspace=workspace,
             user=self.request.user,
             role=Membership.ROLE_OWNER,
         )
+        # Un workspace recién creado sin ninguna categoría es una pantalla en
+        # blanco poco amigable (no hay dónde categorizar la primera
+        # transacción) -- arranca ya con el set por defecto, igual que el
+        # comando `seed_categories` para los que quedaron así de antes.
+        seed_default_categories(workspace)
 
     def perform_destroy(self, instance):
         instance.soft_delete()
