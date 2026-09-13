@@ -12,7 +12,7 @@ from apps.loyalty.api import (
     LoyaltyEarningViewSet,
     LoyaltyProgramViewSet,
 )
-from apps.notifications.api import PushDeviceViewSet
+from apps.notifications.api import NotificationViewSet, PushDeviceViewSet
 from apps.quickadd.api import PersonalAccessTokenViewSet
 from apps.reports.api import MonthlySnapshotViewSet
 from apps.transactions.api import (
@@ -60,6 +60,7 @@ router.register("loyalty-earnings", LoyaltyEarningViewSet, basename="loyaltyearn
 router.register("personal-tokens", PersonalAccessTokenViewSet, basename="personaltoken")
 
 router.register("push-devices", PushDeviceViewSet, basename="pushdevice")
+router.register("notifications", NotificationViewSet, basename="notification")
 
 router.register("plans", PlanViewSet, basename="plan")
 

@@ -20,11 +20,14 @@ from apps.reports.api import (
     NetWorthView,
     ScheduledView,
 )
+from apps.reports.dashboard_api import DashboardBalanceView
 from apps.users.api import (
+    ChangePasswordView,
     GoogleLinkView,
     GoogleLoginView,
     MeView,
     RegisterView,
+    SetPasswordView,
     TokenObtainPairThrottledView,
     TokenRefreshThrottledView,
     TwoFactorDisableView,
@@ -41,6 +44,8 @@ api_v1_patterns = [
     path("auth/google/", GoogleLoginView.as_view(), name="google_login"),
     path("auth/google/link/", GoogleLinkView.as_view(), name="google_link"),
     path("auth/me/", MeView.as_view(), name="me"),
+    path("auth/password/change/", ChangePasswordView.as_view(), name="password-change"),
+    path("auth/password/set/", SetPasswordView.as_view(), name="password-set"),
     path("auth/token/", TokenObtainPairThrottledView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", TokenRefreshThrottledView.as_view(), name="token_refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token_verify"),
@@ -60,6 +65,7 @@ api_v1_patterns = [
     path("reports/category-trends/", CategoryTrendsView.as_view(), name="report-category-trends"),
     path("reports/summary/", DashboardSummaryView.as_view(), name="report-summary"),
     path("reports/scheduled/", ScheduledView.as_view(), name="report-scheduled"),
+    path("dashboard/balance/", DashboardBalanceView.as_view(), name="dashboard-balance"),
     path(
         "email-import/inbound/",
         InboundEmailWebhookView.as_view(),

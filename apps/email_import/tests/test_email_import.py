@@ -256,3 +256,82 @@ class BankEmailSchemaTests(APITestCase):
             "/api/v1/bank-email-schemas/", {"bank_name": "Nuevo", "sender_pattern": "n"}
         )
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+
+# ---------------------------------------------------------------------------
+# Centro de notificaciones: confirmar/rechazar resuelve el "correo por
+# revisar" que le llegó a cada miembro del workspace (ver
+# `apps.email_import.services._notify_pending_email_import` y
+# `apps.email_import.api._resolve_pending_notification`).
+# ---------------------------------------------------------------------------
+class EmailImportNotificationTests(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = User.objects.create_user("alice", "alice@example.com", "pw")
+        cls.member = User.objects.create_user("bob", "bob@example.com", "pw")
+        cls.ws = make_workspace(cls.owner, "Casa")
+        Membership.objects.create(workspace=cls.ws, user=cls.member, role=Membership.ROLE_MEMBER)
+        cls.schema = BankEmailSchema.objects.create(
+            bank_name="Banco X", sender_pattern="@bancox.com"
+        )
+        cls.wallet = Wallet.objects.create(
+            workspace=cls.ws, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT
+        )
+        cls.group = Category.objects.create(workspace=cls.ws, name="Casa", type=Category.TYPE_EXPENSE)
+        cls.category = Category.objects.create(
+            workspace=cls.ws, name="Super", type=Category.TYPE_EXPENSE, parent=cls.group
+        )
+
+    def setUp(self):
+        self.client.force_authenticate(self.owner)
+        self.client.credentials(**{HEADER: str(self.ws.id)})
+
+    def _pending_with_notifications(self):
+        from apps.email_import.services import _notify_pending_email_import
+
+        log = EmailImportLog.objects.create(
+            workspace=self.ws, bank_schema=self.schema, wallet=self.wallet,
+            status=EmailImportLog.STATUS_PENDING, raw_email_subject="Compra aprobada",
+            extracted_amount="123.45", extracted_merchant="SUPERMERCADO",
+            extracted_date=dt.date(2026, 1, 20),
+        )
+        _notify_pending_email_import(log)
+        return log
+
+    def test_notifies_every_active_member_not_just_the_owner(self):
+        from apps.notifications.models import Notification
+
+        log = self._pending_with_notifications()
+        kinds = Notification.objects.filter(
+            related_object_id=str(log.id), kind=Notification.KIND_EMAIL_IMPORT_PENDING
+        )
+        self.assertEqual(set(kinds.values_list("user", flat=True)), {self.owner.id, self.member.id})
+        self.assertTrue(all(n.status == Notification.STATUS_UNREAD for n in kinds))
+
+    def test_confirm_resolves_it_for_every_member(self):
+        from apps.notifications.models import Notification
+
+        log = self._pending_with_notifications()
+        resp = self.client.post(
+            f"/api/v1/email-import-logs/{log.id}/confirm/", {"category": str(self.category.id)}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+        kinds = Notification.objects.filter(
+            related_object_id=str(log.id), kind=Notification.KIND_EMAIL_IMPORT_PENDING
+        )
+        self.assertTrue(all(n.status == Notification.STATUS_RESOLVED for n in kinds))
+
+    def test_reject_resolves_it_too(self):
+        from apps.notifications.models import Notification
+
+        log = self._pending_with_notifications()
+        resp = self.client.post(f"/api/v1/email-import-logs/{log.id}/reject/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+        self.assertTrue(
+            Notification.objects.filter(
+                related_object_id=str(log.id), kind=Notification.KIND_EMAIL_IMPORT_PENDING
+            ).values_list("status", flat=True).distinct().get()
+            == Notification.STATUS_RESOLVED
+        )

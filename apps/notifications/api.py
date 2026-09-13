@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import NotificationPreference, PushDevice
+from .models import Notification, NotificationPreference, PushDevice
 
 
 # ---------------------------------------------------------------------------
@@ -118,3 +118,54 @@ class NotificationPreferenceView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         pref, _ = NotificationPreference.objects.get_or_create(user=self.request.user)
         return pref
+
+
+# ---------------------------------------------------------------------------
+# Centro de notificaciones (por usuario, no por workspace)
+# ---------------------------------------------------------------------------
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = (
+            "id", "kind", "title", "body", "data", "status", "workspace", "created_at",
+        )
+        read_only_fields = fields
+
+
+@extend_schema(tags=["notifications"])
+class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """
+    Historial de notificaciones del usuario autenticado -- recordatorios
+    programados que de verdad se mandaron, invitaciones a presupuestos y
+    correos bancarios por revisar (ver `apps.notifications.services`). Solo
+    lectura + marcar leída: las crea el propio backend, nunca el cliente.
+    """
+
+    serializer_class = NotificationSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = Notification.objects.all()
+
+    def get_queryset(self):
+        return Notification.objects.filter(user=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="unread-count")
+    def unread_count(self, request):
+        count = Notification.objects.filter(
+            user=request.user, status=Notification.STATUS_UNREAD
+        ).count()
+        return Response({"count": count})
+
+    @action(detail=True, methods=["post"])
+    def read(self, request, pk=None):
+        notification = self.get_object()
+        if notification.status == Notification.STATUS_UNREAD:
+            notification.status = Notification.STATUS_READ
+            notification.save(update_fields=["status", "updated_at"])
+        return Response(self.get_serializer(notification).data)
+
+    @action(detail=False, methods=["post"], url_path="mark-all-read")
+    def mark_all_read(self, request):
+        updated = Notification.objects.filter(
+            user=request.user, status=Notification.STATUS_UNREAD
+        ).update(status=Notification.STATUS_READ)
+        return Response({"updated": updated})

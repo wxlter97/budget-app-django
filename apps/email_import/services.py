@@ -163,7 +163,7 @@ def ingest_inbound_email(*, to, sender, subject="", text="", workspace=None):
         if len(candidates) == 1:
             wallet = candidates[0]
 
-    return EmailImportLog.objects.create(
+    log = EmailImportLog.objects.create(
         status=EmailImportLog.STATUS_PENDING,
         wallet=wallet,
         extracted_amount=parsed.amount,
@@ -171,3 +171,33 @@ def ingest_inbound_email(*, to, sender, subject="", text="", workspace=None):
         extracted_date=parsed.date,
         **base,
     )
+    _notify_pending_email_import(log)
+    return log
+
+
+def _notify_pending_email_import(log):
+    """A cualquier miembro del workspace (no hay un dueño único del
+    `EmailImportLog`) -- ver `apps.notifications.services.notify_user`."""
+    # Import diferido: evita el ciclo apps.email_import <-> apps.notifications.
+    from apps.notifications.models import Notification
+    from apps.notifications.services import notify_user
+    from apps.workspaces.models import Membership
+
+    memberships = Membership.objects.filter(
+        workspace=log.workspace, is_deleted=False
+    ).select_related("user")
+    for membership in memberships:
+        notify_user(
+            membership.user,
+            kind=Notification.KIND_EMAIL_IMPORT_PENDING,
+            title="Correo bancario por revisar",
+            body=f"{log.extracted_merchant or log.raw_email_subject or 'Nuevo movimiento'} "
+            f"— {log.workspace.name}",
+            workspace=log.workspace,
+            data={
+                "type": Notification.KIND_EMAIL_IMPORT_PENDING,
+                "workspace": str(log.workspace.id),
+                "log_id": str(log.id),
+            },
+            related_object_id=log.id,
+        )

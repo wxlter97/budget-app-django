@@ -107,6 +107,15 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         seed_default_categories(workspace)
 
     def perform_destroy(self, instance):
+        # Sin al menos un workspace no hay dónde aterrizar: `_layout.tsx` en
+        # el cliente da por hecho que, autenticado, siempre hay un
+        # `activeId` -- dejar a alguien en cero lo deja sin poder usar la
+        # app (y sin forma de crear uno nuevo desde ahí). Se borra el
+        # workspace, pero no el último.
+        if self.get_queryset().count() <= 1:
+            raise serializers.ValidationError(
+                "No podés borrar tu único presupuesto -- creá otro primero."
+            )
         instance.soft_delete()
 
     @action(detail=True, methods=["post"], url_path="rotate-inbound-token")
@@ -337,6 +346,8 @@ class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
     @action(detail=True, methods=["post"])
     def accept(self, request, token=None):
         from apps.billing.services import can_add_member
+        from apps.notifications.models import Notification
+        from apps.notifications.services import resolve_notifications
 
         invitation = self.get_object()
         self._require_own_pending_invitation(invitation, request.user)
@@ -353,15 +364,20 @@ class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
             invitation.status = Invitation.STATUS_ACCEPTED
             invitation.responded_at = timezone.now()
             invitation.save(update_fields=["status", "responded_at", "updated_at"])
+        resolve_notifications(Notification.KIND_INVITATION, invitation.id)
         return Response(self.get_serializer(invitation).data)
 
     @action(detail=True, methods=["post"])
     def decline(self, request, token=None):
+        from apps.notifications.models import Notification
+        from apps.notifications.services import resolve_notifications
+
         invitation = self.get_object()
         self._require_own_pending_invitation(invitation, request.user)
         invitation.status = Invitation.STATUS_DECLINED
         invitation.responded_at = timezone.now()
         invitation.save(update_fields=["status", "responded_at", "updated_at"])
+        resolve_notifications(Notification.KIND_INVITATION, invitation.id)
         return Response(self.get_serializer(invitation).data)
 
     @staticmethod
