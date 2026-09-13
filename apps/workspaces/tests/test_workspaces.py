@@ -41,3 +41,34 @@ class WorkspaceCreateTests(APITestCase):
         other = Workspace.objects.create(name="Otro, sin categorías")
         self.client.post("/api/v1/workspaces/", {"name": "Casa"})
         self.assertFalse(Category.objects.filter(workspace=other).exists())
+
+
+class WorkspaceDeleteTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("alice", "alice@example.com", "pw")
+        self.client.force_authenticate(self.user)
+        self.only = Workspace.objects.create(name="Único")
+        Membership.objects.create(workspace=self.only, user=self.user, role=Membership.ROLE_OWNER)
+
+    def test_cannot_delete_only_workspace(self):
+        resp = self.client.delete(f"/api/v1/workspaces/{self.only.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.only.refresh_from_db()
+        self.assertFalse(self.only.is_deleted)
+
+    def test_can_delete_when_another_workspace_remains(self):
+        second = Workspace.objects.create(name="Segundo")
+        Membership.objects.create(workspace=second, user=self.user, role=Membership.ROLE_OWNER)
+        resp = self.client.delete(f"/api/v1/workspaces/{self.only.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.only.refresh_from_db()
+        self.assertTrue(self.only.is_deleted)
+
+    def test_member_cannot_delete_workspace_regardless(self):
+        second = Workspace.objects.create(name="Segundo")
+        Membership.objects.create(workspace=second, user=self.user, role=Membership.ROLE_OWNER)
+        member = User.objects.create_user("bob", "bob@example.com", "pw")
+        Membership.objects.create(workspace=self.only, user=member, role=Membership.ROLE_MEMBER)
+        self.client.force_authenticate(member)
+        resp = self.client.delete(f"/api/v1/workspaces/{self.only.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
