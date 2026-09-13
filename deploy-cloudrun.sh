@@ -7,12 +7,12 @@
 #   - los secrets `django-secret-key` y `database-url` creados (ver DEPLOY.md §2.1)
 #
 # Variables ajustables por entorno:
-#   REGION (us-east1)   SERVICE (budget-api)   TZ (America/Mexico_City)
+#   REGION (us-east1)   SERVICE (budget-api)   TZ (America/El_Salvador)
 set -euo pipefail
 
 REGION="${REGION:-us-east1}"
 SERVICE="${SERVICE:-budget-api}"
-TZ="${TZ:-America/Mexico_City}"
+TZ="${TZ:-America/El_Salvador}"
 
 PROJECT="$(gcloud config get-value project 2>/dev/null)"
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"

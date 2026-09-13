@@ -110,6 +110,32 @@ gcloud run jobs deploy budget-admin \
 gcloud run jobs execute budget-admin --region us-east1 --wait
 ```
 
+### 2.4 Planes de billing (una sola vez, la primera vez que se activa)
+
+`seed_billing_plans` crea los planes Free/Pro -- correrlo es seguro en
+cualquier momento (es idempotente). Pero si esto es un entorno que **ya
+tenía usuarios reales** antes de que existiera billing, corré también
+`grandfather_existing_users` justo después (ver la docstring del comando
+para el porqué: sin esto, alguien que ya usaba una función Pro-only la
+pierde de un día para el otro):
+
+```bash
+gcloud run jobs deploy budget-admin \
+  --source . --region us-east1 \
+  --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
+  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
+  --command python --args "manage.py,seed_billing_plans"
+gcloud run jobs execute budget-admin --region us-east1 --wait
+
+# Sólo si ya había usuarios reales antes de esto -- primero en dry-run:
+gcloud run jobs update budget-admin --region us-east1 \
+  --command python --args "manage.py,grandfather_existing_users,--dry-run"
+gcloud run jobs execute budget-admin --region us-east1 --wait
+gcloud run jobs update budget-admin --region us-east1 \
+  --command python --args "manage.py,grandfather_existing_users"
+gcloud run jobs execute budget-admin --region us-east1 --wait
+```
+
 ---
 
 ## 3. Frontend — Vercel
@@ -185,7 +211,13 @@ La **primera** request del día tarda ~2-4 s (Cloud Run + Neon despiertan).
 
 ## 6. Tareas sin Celery
 
-Los `@shared_task` se ejecutan sincrónicamente llamándolos como función:
+`manage.py run_daily_tasks` corre las tres tareas periódicas en el orden
+correcto (recurrentes → cierre de mes → recordatorios, ver
+`apps/common/management/commands/run_daily_tasks.py`) sincrónicamente, sin
+broker. Todas son idempotentes: no pasa nada si el job corre dos veces el
+mismo día, o a una hora que no es la ideal.
+
+### 6.1 Cloud Run Job (una sola vez)
 
 ```bash
 gcloud run jobs deploy budget-cron \
@@ -193,21 +225,50 @@ gcloud run jobs deploy budget-cron \
   --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
   --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
   --command python \
-  --args "manage.py,shell,-c,from apps.transactions.tasks import generate_recurring_transactions, post_due_installments; from apps.reports.tasks import close_previous_month; from apps.notifications.tasks import send_daily_reminders; generate_recurring_transactions(); post_due_installments(); close_previous_month(); send_daily_reminders()"
+  --args "manage.py,run_daily_tasks"
 
-gcloud run jobs execute budget-cron --region us-east1 --wait
+gcloud run jobs execute budget-cron --region us-east1 --wait   # probarlo a mano una vez
 ```
 
-`send_daily_reminders` es idempotente (una tabla de log evita reavisar lo
-mismo), así que no pasa nada si corre a una hora que no es la ideal para un
-recordatorio (la `CELERY_BEAT_SCHEDULE` de `config/settings.py` lo pone a las
-7am sólo como referencia para cuando sí haya Celery corriendo, p. ej. en
-`docker-compose`). Si te importa que llegue puntual a la mañana, creá un
-segundo Cloud Scheduler → Cloud Run Job apuntando sólo a
-`send_daily_reminders()` a la hora que prefieras (todavía entra en el tier
-gratis de 3 jobs).
+### 6.2 Cloud Scheduler → Cloud Run Job (para que corra solo cada día)
 
-Para que corra solo cada día: **Cloud Scheduler → Cloud Run Job** (3 jobs gratis).
+Un Cloud Scheduler que dispara el Job de arriba todos los días a las 7am
+hora de El Salvador. Necesita su propia service account con permiso para
+ejecutar ESE job (no el rol amplio de administrar Cloud Run):
+
+```bash
+# Habilitar la API (una sola vez por proyecto)
+gcloud services enable cloudscheduler.googleapis.com
+
+# Service account dedicada, sólo con permiso de invocar este job puntual
+gcloud iam service-accounts create budget-cron-invoker \
+  --display-name "Invoca budget-cron desde Cloud Scheduler"
+
+gcloud run jobs add-iam-policy-binding budget-cron \
+  --region us-east1 \
+  --member "serviceAccount:budget-cron-invoker@TU_PROJECT_ID.iam.gserviceaccount.com" \
+  --role "roles/run.invoker"
+
+# El propio Scheduler, apuntando al endpoint `:run` de la Admin API de Cloud Run
+gcloud scheduler jobs create http budget-cron-daily \
+  --location us-east1 \
+  --schedule "0 7 * * *" \
+  --time-zone "America/El_Salvador" \
+  --uri "https://us-east1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/TU_PROJECT_ID/jobs/budget-cron:run" \
+  --http-method POST \
+  --oauth-service-account-email "budget-cron-invoker@TU_PROJECT_ID.iam.gserviceaccount.com"
+```
+
+Verificar que quedó armado (y forzar una corrida sin esperar a mañana):
+
+```bash
+gcloud scheduler jobs describe budget-cron-daily --location us-east1
+gcloud scheduler jobs run budget-cron-daily --location us-east1
+gcloud run jobs executions list --job budget-cron --region us-east1   # ver que corrió
+```
+
+Todavía entra en el tier gratis (3 jobs de Scheduler, 2M invocaciones de
+Cloud Run al mes).
 
 ---
 
