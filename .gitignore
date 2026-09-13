@@ -30,3 +30,7 @@ htmlcov/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Override local de docker-compose (p. ej. publicar el puerto de `db` para
+# correr los tests con el venv del host en vez de docker compose run).
+docker-compose.override.yml

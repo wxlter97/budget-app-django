@@ -84,9 +84,18 @@ class MeTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data["email"], "yo@example.com")
         self.assertEqual(resp.data["username"], "yo")
+        self.assertFalse(resp.data["two_factor_enabled"])
         # Creada directo con `create_user` (no vía /auth/register/): cuenta
         # "de antes", no debe quedar pidiendo el tour de bienvenida.
         self.assertTrue(resp.data["onboarding_completed"])
+
+    def test_me_reports_two_factor_enabled(self):
+        from apps.users.models import TwoFactorAuth
+
+        TwoFactorAuth.objects.create(user=self.user, enabled=True)
+        self.client.force_authenticate(self.user)
+        resp = self.client.get(ME)
+        self.assertTrue(resp.data["two_factor_enabled"])
 
     def test_me_can_mark_onboarding_completed(self):
         self.user.onboarding_completed = False
