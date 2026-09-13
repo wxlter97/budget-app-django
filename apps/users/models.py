@@ -27,6 +27,12 @@ class User(AbstractUser):
     # una cuenta con ese correo hecha con contraseña" (no dejar entrar por
     # Google sin que el dueño la vincule a propósito primero).
     google_linked = models.BooleanField("cuenta de Google vinculada", default=False)
+    # Default True a propósito: el valor de la COLUMNA (no el de una cuenta
+    # puntual) es lo que ven las cuentas que ya existían antes de este campo
+    # -- no tiene sentido mostrarles el tour de bienvenida a quien ya usa la
+    # app. Las cuentas realmente nuevas lo arrancan en False a mano, en el
+    # punto donde se crean (`RegisterSerializer.create`, `GoogleLoginView`).
+    onboarding_completed = models.BooleanField("tour de bienvenida completado", default=True)
 
     def __str__(self):
         return self.get_username()

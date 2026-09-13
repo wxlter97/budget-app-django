@@ -286,7 +286,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
-        return User.objects.create_user(**validated_data)
+        # A diferencia de una cuenta que ya existía antes del tour de
+        # bienvenida (default=True en la columna, ver `User.onboarding_completed`),
+        # una cuenta que se está creando ACÁ es realmente nueva -- lo arranca
+        # en False a propósito.
+        return User.objects.create_user(**validated_data, onboarding_completed=False)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -296,7 +300,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id", "username", "email", "first_name", "last_name",
-            "profile_photo_url", "google_linked", "date_joined",
+            "profile_photo_url", "google_linked", "onboarding_completed", "date_joined",
         )
         read_only_fields = (
             "id", "username", "profile_photo_url", "google_linked", "date_joined",
@@ -397,6 +401,7 @@ class GoogleLoginView(generics.GenericAPIView):
                 last_name=claims.get("family_name") or "",
                 profile_photo_url=picture,
                 google_linked=True,
+                onboarding_completed=False,
             )
             user.set_unusable_password()
             user.save(update_fields=["password"])
