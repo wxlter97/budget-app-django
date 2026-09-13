@@ -86,7 +86,13 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
+        from apps.billing.services import can_own_another_workspace
         from apps.transactions.services import seed_default_categories
+
+        if not can_own_another_workspace(self.request.user):
+            raise serializers.ValidationError(
+                "Llegaste al límite de presupuestos de tu plan -- pasate a Pro para crear más."
+            )
 
         workspace = serializer.save()
         Membership.objects.create(
@@ -252,11 +258,19 @@ class MembershipViewSet(WorkspaceScopedViewSet):
         enlace para sumarse; responde 202 con la Invitation para que el
         cliente distinga "ya quedó adentro" de "le mandamos un correo".
         """
+        from apps.billing.services import can_add_member
+
         input_serializer = InviteInputSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         email = input_serializer.validated_data["email"]
         role = input_serializer.validated_data["role"]
         workspace = request.workspace
+
+        if not can_add_member(workspace):
+            raise serializers.ValidationError(
+                "Este presupuesto llegó al límite de miembros de su plan -- "
+                "pasate a Pro para invitar a más gente."
+            )
 
         user = User.objects.filter(email__iexact=email).first()
         if user is None:
@@ -331,11 +345,16 @@ class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
 
     @action(detail=True, methods=["post"])
     def accept(self, request, token=None):
+        from apps.billing.services import can_add_member
         from apps.notifications.models import Notification
         from apps.notifications.services import resolve_notifications
 
         invitation = self.get_object()
         self._require_own_pending_invitation(invitation, request.user)
+        if not can_add_member(invitation.workspace):
+            raise serializers.ValidationError(
+                "Este presupuesto ya llegó al límite de miembros de su plan."
+            )
         with transaction.atomic():
             Membership.objects.get_or_create(
                 workspace=invitation.workspace,
