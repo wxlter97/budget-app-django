@@ -1,6 +1,8 @@
 import datetime as dt
 from decimal import Decimal
+from unittest.mock import patch
 
+import requests
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -245,6 +247,68 @@ class IngestServiceTests(TestCase):
         )
         self.assertEqual(log.status, EmailImportLog.STATUS_FAILED)
         self.assertEqual(EmailImportLog.objects.filter(workspace=self.ws).count(), 1)
+
+
+class GmailForwardingAutoConfirmTests(TestCase):
+    """
+    Gmail exige click en un link de confirmación que llega a la MISMA
+    dirección que se está agregando como reenvío (nuestro webhook) -- nadie
+    "lee" esa casilla, así que sin este auto-clic ningún usuario de Gmail
+    podría activar el reenvío automático nativo.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.ws = Workspace.objects.create(name="A")
+
+    def _to(self):
+        return f"import+{self.ws.inbound_token}@inbound.budget.local"
+
+    GMAIL_BODY = (
+        "Alguien solicitó reenviar el correo de tu-usuario@gmail.com a esta "
+        "dirección. Si querés recibirlo, confirmá acá:\n"
+        "https://mail-settings.google.com/mail/vf-abc123XYZ\n"
+        "Si no reconocés esta solicitud, ignorá este mensaje."
+    )
+
+    @patch("apps.email_import.services.requests.get")
+    def test_follows_the_confirmation_link_and_marks_auto_handled(self, mock_get):
+        log = ingest_inbound_email(
+            to=self._to(), sender="Gmail Team <forwarding-noreply@google.com>",
+            subject="Gmail Forwarding Confirmation", text=self.GMAIL_BODY,
+        )
+        mock_get.assert_called_once_with(
+            "https://mail-settings.google.com/mail/vf-abc123XYZ", timeout=10
+        )
+        self.assertEqual(log.status, EmailImportLog.STATUS_AUTO_HANDLED)
+
+    @patch("apps.email_import.services.requests.get", side_effect=requests.RequestException("boom"))
+    def test_request_failure_falls_back_to_failed_log(self, mock_get):
+        log = ingest_inbound_email(
+            to=self._to(), sender="forwarding-noreply@google.com",
+            subject="Gmail Forwarding Confirmation", text=self.GMAIL_BODY,
+        )
+        self.assertEqual(log.status, EmailImportLog.STATUS_FAILED)
+
+    @patch("apps.email_import.services.requests.get")
+    def test_no_recognizable_link_falls_back_to_failed_log_without_any_request(self, mock_get):
+        log = ingest_inbound_email(
+            to=self._to(), sender="forwarding-noreply@google.com",
+            subject="Gmail Forwarding Confirmation", text="sin ningún link acá",
+        )
+        mock_get.assert_not_called()
+        self.assertEqual(log.status, EmailImportLog.STATUS_FAILED)
+
+    @patch("apps.email_import.services.requests.get")
+    def test_ignores_links_to_other_hosts(self, mock_get):
+        # Un link que no sea de google.com (p. ej. inyectado en el cuerpo) no
+        # se sigue -- no hay forma de que sea el link real de confirmación.
+        log = ingest_inbound_email(
+            to=self._to(), sender="forwarding-noreply@google.com",
+            subject="x", text="confirmá acá: https://evil.example.com/steal",
+        )
+        mock_get.assert_not_called()
+        self.assertEqual(log.status, EmailImportLog.STATUS_FAILED)
 
 
 class BankAutoDetectFallbackTests(TestCase):
