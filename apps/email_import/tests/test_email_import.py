@@ -115,6 +115,36 @@ class EmailImportConfirmTests(APITestCase):
         log.refresh_from_db()
         self.assertEqual(log.status, EmailImportLog.STATUS_REJECTED)
 
+    def test_clear_failed_soft_deletes_only_failed_ones(self):
+        failed = self._pending(status=EmailImportLog.STATUS_FAILED, error_message="banco sin schema")
+        pending = self._pending()
+        confirmed = self._pending(status=EmailImportLog.STATUS_CONFIRMED)
+
+        resp = self.client.post("/api/v1/email-import-logs/clear-failed/")
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(resp.data["cleared"], 1)
+        self.assertFalse(EmailImportLog.objects.filter(id=failed.id).exists())
+        self.assertTrue(EmailImportLog.objects.filter(id=pending.id).exists())
+        self.assertTrue(EmailImportLog.objects.filter(id=confirmed.id).exists())
+
+    def test_clear_failed_scoped_to_workspace(self):
+        # Falla en otro workspace -- "limpiar" desde A no debe tocarla.
+        self._pending(workspace=self.ws_b, status=EmailImportLog.STATUS_FAILED, wallet=self.account_b)
+
+        resp = self.client.post("/api/v1/email-import-logs/clear-failed/")
+
+        self.assertEqual(resp.data["cleared"], 0)
+        self.assertEqual(
+            EmailImportLog.objects.filter(workspace=self.ws_b, status=EmailImportLog.STATUS_FAILED).count(),
+            1,
+        )
+
+    def test_clear_failed_with_nothing_to_clear(self):
+        resp = self.client.post("/api/v1/email-import-logs/clear-failed/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["cleared"], 0)
+
     def test_confirm_rejects_foreign_category(self):
         foreign_cat = Category.objects.create(
             workspace=self.ws_b, name="Ajena", type=Category.TYPE_EXPENSE
