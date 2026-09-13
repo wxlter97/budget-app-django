@@ -34,7 +34,7 @@ django-environ~=0.12            # lee settings desde variables de entorno / .env
 requests~=2.34                  # auto-confirmar el link de reenvío que manda Gmail
 
 # Adjuntos (recibos de transacciones)
-Pillow~=11.0                      # valida/procesa las imágenes de ImageField
+Pillow~=12.3                      # valida/procesa las imágenes de ImageField
 django-storages[google]~=1.14     # backend de Google Cloud Storage (solo si GS_BUCKET_NAME está seteada)
 
 # Importar/exportar transacciones vía plantilla de Excel

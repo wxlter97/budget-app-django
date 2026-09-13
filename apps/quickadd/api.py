@@ -83,6 +83,12 @@ class PersonalAccessTokenViewSet(
         context["workspace"] = self.request.workspace
         return context
 
+    def perform_create(self, serializer):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "quick_add")
+        serializer.save()
+
     def perform_destroy(self, instance):
         # Borrado real, no soft-delete: un token revocado no tiene "papelera".
         instance.delete()
@@ -164,6 +170,8 @@ class QuickAddView(APIView):
     throttle_scope = "quick_add"
 
     def post(self, request):
+        from apps.billing.services import require_feature_for_workspace
+
         serializer = QuickAddSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -172,6 +180,11 @@ class QuickAddView(APIView):
         workspace = token.workspace
         wallet = token.wallet
         txn_type = data["type"]
+
+        # Re-chequeado acá y no sólo al crear el token: si el workspace bajó
+        # a Free después (venció la suscripción), un token viejo no debe
+        # seguir funcionando.
+        require_feature_for_workspace(workspace, "quick_add")
 
         category = _resolve_category(
             workspace=workspace,

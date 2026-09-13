@@ -41,6 +41,9 @@ class MonthlySnapshotViewSet(
     queryset = MonthlySnapshot.objects.select_related("workspace").all()
 
     def get_queryset(self):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "net_worth_history")
         return super().get_queryset().filter(workspace=self.request.workspace)
 
 
@@ -197,6 +200,9 @@ class CashflowView(_BaseReportView):
         responses=CashflowPointSerializer(many=True),
     )
     def get(self, request):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "advanced_reports")
         try:
             months = int(request.query_params.get("months", 6))
         except (TypeError, ValueError):
@@ -214,6 +220,9 @@ class CategoryTrendsView(_BaseReportView):
         responses=CategoryTrendsSerializer,
     )
     def get(self, request):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "advanced_reports")
         try:
             months = int(request.query_params.get("months", 6))
         except (TypeError, ValueError):
