@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from apps.common.api import WorkspaceScopedViewSet
 from apps.workspaces.models import Membership
 
-from .models import Wallet
+from .models import Wallet, WalletCard
 from .services import (
     credit_card_statement,
     credit_card_statements_summary,
@@ -32,6 +32,15 @@ def _parse_as_of(request):
         return None, False
 
 
+class WalletCardSerializer(serializers.Serializer):
+    """Un plástico adicional (ver docstring de `WalletCard`). Sin `id`: el
+    cliente manda la lista completa y se reemplaza entera (ver
+    `WalletSerializer.update`), igual que `tag_names` en transacciones."""
+
+    last4 = serializers.RegexField(r"^\d{4}$", error_messages={"invalid": "Deben ser 4 dígitos."})
+    label = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+
+
 class WalletSerializer(serializers.ModelSerializer):
     aggregated_balance = serializers.DecimalField(
         max_digits=16, decimal_places=2, read_only=True
@@ -43,6 +52,7 @@ class WalletSerializer(serializers.ModelSerializer):
     bank_name = serializers.CharField(source="bank_schema.bank_name", read_only=True, default=None)
     card_product_name = serializers.CharField(source="card_product.name", read_only=True, default=None)
     card_bank_name = serializers.CharField(source="card_product.bank.name", read_only=True, default=None)
+    extra_cards = WalletCardSerializer(many=True, required=False)
 
     class Meta:
         model = Wallet
@@ -66,6 +76,7 @@ class WalletSerializer(serializers.ModelSerializer):
             "monthly_contribution",
             "progress_pct",
             "card_last4",
+            "extra_cards",
             "billing_cycle_day",
             "payment_due_day",
             "interest_rate",
@@ -151,18 +162,34 @@ class WalletSerializer(serializers.ModelSerializer):
             )
         return attrs
 
+    def _sync_extra_cards(self, instance, extra_cards):
+        # Reemplazo completo (igual que `tag_names` con `.set()`): el
+        # cliente manda la lista final, no altas/bajas incrementales.
+        instance.extra_cards.all().delete()
+        WalletCard.objects.bulk_create(
+            WalletCard(wallet=instance, last4=c["last4"], label=c.get("label", ""))
+            for c in extra_cards
+        )
+
     def create(self, validated_data):
         validated_data["workspace"] = self.context["workspace"]
-        return super().create(validated_data)
+        extra_cards = validated_data.pop("extra_cards", None)
+        instance = super().create(validated_data)
+        if extra_cards is not None:
+            self._sync_extra_cards(instance, extra_cards)
+        return instance
 
     def update(self, instance, validated_data):
         opening_changed = (
             "opening_balance" in validated_data
             and validated_data["opening_balance"] != instance.opening_balance
         )
+        extra_cards = validated_data.pop("extra_cards", None)
         instance = super().update(instance, validated_data)
         if opening_changed:
             recompute_wallet_balance(instance)
+        if extra_cards is not None:
+            self._sync_extra_cards(instance, extra_cards)
         return instance
 
 
