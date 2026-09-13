@@ -706,6 +706,10 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         se valida por su cuenta con el mismo `TransactionSerializer` de
         siempre, así que una fila con error no frena a las demás -- se
         crean las válidas y se reportan los errores fila por fila."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "import_excel")
+
         file = request.FILES.get("file")
         if not file:
             raise ValidationError({"file": "Requerido."})

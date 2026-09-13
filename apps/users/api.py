@@ -16,7 +16,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, Token
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .models import TwoFactorAuth, _generate_secret
-from .services import GoogleTokenError, verify_google_id_token
+from .services import AccountDeletionBlocked, GoogleTokenError, delete_own_account, verify_google_id_token
 
 User = get_user_model()
 
@@ -435,6 +435,45 @@ class MeView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class DeleteAccountSerializer(serializers.Serializer):
+    """Si la cuenta tiene contraseña utilizable, hay que probarla (mismo
+    criterio que `ChangePasswordSerializer`). Una cuenta de solo Google no
+    tiene contraseña que confirmar -- ahí alcanza con `confirm=true` (mismo
+    patrón que `WorkspaceViewSet.reset`/`restore`)."""
+
+    password = serializers.CharField(required=False, allow_blank=True)
+    confirm = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        user = self.context["request"].user
+        if user.has_usable_password():
+            if not check_password(attrs.get("password", ""), user.password):
+                raise serializers.ValidationError({"password": "Contraseña incorrecta."})
+        elif not attrs.get("confirm"):
+            raise serializers.ValidationError({"confirm": "Enviá confirm=true para borrar tu cuenta."})
+        return attrs
+
+
+class DeleteAccountView(generics.GenericAPIView):
+    """POST /auth/me/delete/: borra la cuenta del usuario autenticado --
+    ver `apps.users.services.delete_own_account` para qué pasa con sus
+    workspaces. Irreversible."""
+
+    serializer_class = DeleteAccountSerializer
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        try:
+            delete_own_account(request.user)
+        except AccountDeletionBlocked as exc:
+            raise serializers.ValidationError({"detail": str(exc)})
+        return Response(status=204)
 
 
 def _unique_username_from_email(email):

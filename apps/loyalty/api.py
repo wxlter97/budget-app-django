@@ -175,12 +175,18 @@ class LoyaltyEarningViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vi
     filterset_fields = {"kind": ["exact"], "program": ["exact"]}
 
     def get_queryset(self):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "loyalty")
         return super().get_queryset().filter(workspace=self.request.workspace)
 
     @action(detail=False, methods=["get"])
     def summary(self, request):
         """Saldo de puntos por cartera + cashback ganado / descuento ahorrado
         en el período (``?date_after=&date_before=``, ambos opcionales)."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "loyalty")
         data = services.loyalty_summary(
             request.workspace,
             request.query_params.get("date_after"),

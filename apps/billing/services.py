@@ -7,6 +7,7 @@ necesita chequear un límite la lógica de "cuál suscripción cuenta".
 from __future__ import annotations
 
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 
 from .models import Plan, Subscription
 from .providers import WebhookEvent
@@ -85,6 +86,52 @@ def can_add_member(workspace) -> bool:
         return True
     current = workspace.memberships.filter(is_deleted=False).count()
     return current < plan.max_members_per_workspace
+
+
+# ---------------------------------------------------------------------------
+# Feature flags -- convención de claves en `Plan.features`, ver `models.py`
+# y `seed_billing_plans`. Mismo fail-open que los límites de arriba: sin
+# plan configurado (entorno sin seedear), la feature se considera habilitada.
+# ---------------------------------------------------------------------------
+_DEFAULT_UPGRADE_MESSAGE = "Esta función es parte del plan Pro -- pasate a Pro para activarla."
+
+FEATURE_UPGRADE_MESSAGES = {
+    "import_email": "La importación automática de correos bancarios es una función Pro -- pasate a Pro para activarla.",
+    "import_excel": "Importar desde Excel es una función Pro -- pasate a Pro para activarla.",
+    "net_worth_history": "El historial de patrimonio neto es una función Pro -- pasate a Pro para verlo.",
+    "advanced_reports": "Tendencias y flujo de caja son funciones Pro -- pasate a Pro para verlas.",
+    "export": "Exportar tus datos es una función Pro -- pasate a Pro para hacerlo.",
+    "backup": "El respaldo y restauración son funciones Pro -- pasate a Pro para usarlas.",
+    "loyalty": "El seguimiento de puntos y cashback es una función Pro -- pasate a Pro para activarlo.",
+    "multi_currency": "Múltiples monedas con conversión es una función Pro -- pasate a Pro para activarla.",
+    "quick_add": "Los atajos de carga rápida son una función Pro -- pasate a Pro para crear uno.",
+}
+
+
+def has_feature(user, key: str) -> bool:
+    plan = plan_for_user(user)
+    if plan is None:
+        return True
+    return plan.has_feature(key)
+
+
+def has_feature_for_workspace(workspace, key: str) -> bool:
+    plan = plan_for_workspace(workspace)
+    if plan is None:
+        return True
+    return plan.has_feature(key)
+
+
+def require_feature(user, key: str) -> None:
+    """Levanta `PermissionDenied` (403) con el mensaje de upsell estándar
+    si el plan efectivo del usuario no tiene `key` habilitada."""
+    if not has_feature(user, key):
+        raise PermissionDenied(FEATURE_UPGRADE_MESSAGES.get(key, _DEFAULT_UPGRADE_MESSAGE))
+
+
+def require_feature_for_workspace(workspace, key: str) -> None:
+    if not has_feature_for_workspace(workspace, key):
+        raise PermissionDenied(FEATURE_UPGRADE_MESSAGES.get(key, _DEFAULT_UPGRADE_MESSAGE))
 
 
 # ---------------------------------------------------------------------------

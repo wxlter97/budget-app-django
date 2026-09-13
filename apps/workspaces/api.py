@@ -162,10 +162,13 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         etiquetas, presupuestos, recurrentes, compras a plazo y
         transacciones -- sin fotos de recibo) para descargar y, más
         adelante, restaurar con `restore`. Solo owner."""
+        from apps.billing.services import require_feature_for_workspace
+
         from .services import export_backup
 
         workspace = self.get_object()
         self._require_owner(workspace, request.user)
+        require_feature_for_workspace(workspace, "backup")
         return Response(export_backup(workspace))
 
     @action(detail=True, methods=["post"])
@@ -174,10 +177,13 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         IRREVERSIBLE: primero borra TODO lo que hay en el workspace (como
         `reset` con ``scope=todo``) y después recrea todo desde el archivo.
         Solo owner. Body: ``{..backup.., "confirm": true}``."""
+        from apps.billing.services import require_feature_for_workspace
+
         from .services import BackupError, import_backup
 
         workspace = self.get_object()
         self._require_owner(workspace, request.user)
+        require_feature_for_workspace(workspace, "backup")
 
         if request.data.get("confirm") is not True:
             raise serializers.ValidationError(
@@ -446,6 +452,12 @@ class ExchangeRateViewSet(WorkspaceScopedViewSet):
     serializer_class = ExchangeRateSerializer
     permission_classes = [IsAuthenticated, HasWorkspaceMembership]
     queryset = ExchangeRate.objects.all()
+
+    def perform_create(self, serializer):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "multi_currency")
+        serializer.save()
 
     def perform_destroy(self, instance):
         # Hard delete: si fuera soft-delete, la UniqueConstraint (workspace,
