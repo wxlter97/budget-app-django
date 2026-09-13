@@ -2,6 +2,7 @@
 from rest_framework.routers import DefaultRouter
 
 from apps.accounts.api import WalletViewSet
+from apps.billing.api import PlanViewSet
 from apps.email_import.api import BankEmailSchemaViewSet, EmailImportLogViewSet
 from apps.loyalty.api import (
     BankViewSet,
@@ -59,5 +60,7 @@ router.register("loyalty-earnings", LoyaltyEarningViewSet, basename="loyaltyearn
 router.register("personal-tokens", PersonalAccessTokenViewSet, basename="personaltoken")
 
 router.register("push-devices", PushDeviceViewSet, basename="pushdevice")
+
+router.register("plans", PlanViewSet, basename="plan")
 
 urlpatterns = router.urls

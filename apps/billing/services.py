@@ -1,0 +1,131 @@
+"""
+Resolución del plan efectivo de un usuario/workspace, y aplicación de
+eventos de webhook. El resto de la app (otros apps incluidos) importa SOLO
+de acá -- nunca de `models` directo -- para no repetir en cada lugar que
+necesita chequear un límite la lógica de "cuál suscripción cuenta".
+"""
+from __future__ import annotations
+
+from django.utils import timezone
+
+from .models import Plan, Subscription
+from .providers import WebhookEvent
+
+
+def get_default_plan() -> Plan | None:
+    """
+    El plan default (``is_default=True``), o None si todavía no se corrió
+    ``seed_billing_plans`` en este entorno. Deliberadamente NO levanta
+    excepción: un entorno sin planes configurados no debe tirar 500 en cada
+    creación de workspace -- los chequeos de límite (`can_own_another_workspace`,
+    `can_add_member`) tratan "sin plan" como "sin límite" (fail-open).
+    """
+    return Plan.objects.filter(is_default=True).first()
+
+
+def active_subscription_for(user) -> Subscription | None:
+    """La suscripción vigente del usuario (activa o en gracia por pago
+    vencido, sin vencer todavía), o None si no tiene ninguna."""
+    candidates = (
+        Subscription.objects.filter(
+            user=user, status__in=[Subscription.STATUS_ACTIVE, Subscription.STATUS_PAST_DUE]
+        )
+        .select_related("plan", "plan_price")
+        .order_by("-created_at")
+    )
+    for sub in candidates:
+        if sub.is_in_force:
+            return sub
+    return None
+
+
+def plan_for_user(user) -> Plan | None:
+    sub = active_subscription_for(user)
+    return sub.plan if sub else get_default_plan()
+
+
+def plan_for_workspace(workspace) -> Plan | None:
+    """
+    Se cobra por workspace a través de su dueño, no por asiento: el plan
+    efectivo del workspace es el del usuario Owner -- los miembros
+    invitados heredan las features sin pagar aparte. Import diferido de
+    `Membership` para evitar un ciclo apps.billing <-> apps.workspaces
+    (mismo patrón que `apps.common.api.resolve_workspace`).
+    """
+    from apps.workspaces.models import Membership
+
+    owner_membership = (
+        workspace.memberships.filter(role=Membership.ROLE_OWNER, is_deleted=False)
+        .select_related("user")
+        .first()
+    )
+    if owner_membership is None:
+        return get_default_plan()
+    return plan_for_user(owner_membership.user)
+
+
+# ---------------------------------------------------------------------------
+# Chequeos de límite -- lo que usan los endpoints de otras apps para gatear
+# ---------------------------------------------------------------------------
+def can_own_another_workspace(user) -> bool:
+    from apps.workspaces.models import Membership
+
+    plan = plan_for_user(user)
+    if plan is None or plan.max_workspaces_owned is None:
+        return True
+    owned = Membership.objects.filter(
+        user=user, role=Membership.ROLE_OWNER, is_deleted=False, workspace__is_deleted=False
+    ).count()
+    return owned < plan.max_workspaces_owned
+
+
+def can_add_member(workspace) -> bool:
+    plan = plan_for_workspace(workspace)
+    if plan is None or plan.max_members_per_workspace is None:
+        return True
+    current = workspace.memberships.filter(is_deleted=False).count()
+    return current < plan.max_members_per_workspace
+
+
+# ---------------------------------------------------------------------------
+# Webhooks
+# ---------------------------------------------------------------------------
+def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscription | None:
+    """
+    Aplica un `WebhookEvent` ya normalizado a la Subscription
+    correspondiente. Busca primero por `checkout_reference` (funciona
+    incluso antes de conocer el id del proveedor, en el primer evento) y
+    si no, por `external_subscription_id` (renovaciones/cancelaciones
+    posteriores). Sin ninguna coincidencia, no hace nada y devuelve None
+    -- p. ej. un evento de prueba del lado del proveedor.
+    """
+    sub = None
+    if event.reference:
+        sub = Subscription.objects.filter(checkout_reference=event.reference).first()
+    if sub is None and event.external_subscription_id:
+        sub = Subscription.objects.filter(
+            provider=provider_code, external_subscription_id=event.external_subscription_id
+        ).first()
+    if sub is None:
+        return None
+
+    if event.external_subscription_id:
+        sub.external_subscription_id = event.external_subscription_id
+    if event.external_customer_id:
+        sub.external_customer_id = event.external_customer_id
+
+    if event.kind in ("subscription.activated", "subscription.renewed"):
+        sub.status = Subscription.STATUS_ACTIVE
+        if event.current_period_end:
+            sub.current_period_end = event.current_period_end
+    elif event.kind == "subscription.failed":
+        sub.status = Subscription.STATUS_PAST_DUE
+    elif event.kind == "subscription.canceled":
+        sub.status = Subscription.STATUS_CANCELED
+        sub.canceled_at = timezone.now()
+
+    sub.save(update_fields=[
+        "status", "current_period_end", "canceled_at",
+        "external_subscription_id", "external_customer_id", "updated_at",
+    ])
+    return sub

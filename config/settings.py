@@ -77,6 +77,7 @@ LOCAL_APPS = [
     "apps.email_import",
     "apps.quickadd",
     "apps.notifications",
+    "apps.billing",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -219,6 +220,7 @@ REST_FRAMEWORK = {
         "auth": env("THROTTLE_AUTH", default="10/min"),      # login / registro
         "inbound": env("THROTTLE_INBOUND", default="120/min"),  # webhook de correo
         "quick_add": env("THROTTLE_QUICK_ADD", default="60/min"),  # Atajo de Apple Shortcuts
+        "billing_webhook": env("THROTTLE_BILLING_WEBHOOK", default="120/min"),
     },
 }
 if RUNNING_TESTS:
@@ -390,6 +392,16 @@ INBOUND_WEBHOOK_SECRET = env("INBOUND_WEBHOOK_SECRET", default="")
 # Si se configura, se verifica la firma HMAC nativa de Mailgun cuando el
 # payload trae timestamp/token/signature (en vez del secreto en el header).
 INBOUND_MAILGUN_SIGNING_KEY = env("INBOUND_MAILGUN_SIGNING_KEY", default="")
+
+# ---------------------------------------------------------------------------
+# Pagos y suscripciones (apps.billing) -- ver apps/billing/providers.py
+# ---------------------------------------------------------------------------
+# Proveedor que usa el checkout cuando el cliente no especifica uno.
+# Agregar un proveedor nuevo = una clase en providers.py + este nombre.
+DEFAULT_PAYMENT_PROVIDER = env("DEFAULT_PAYMENT_PROVIDER", default="wompi")
+
+WOMPI_API_KEY = env("WOMPI_API_KEY", default="")
+WOMPI_WEBHOOK_SECRET = env("WOMPI_WEBHOOK_SECRET", default="")
 
 LOGGING = {
     "version": 1,

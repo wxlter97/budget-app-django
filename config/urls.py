@@ -8,6 +8,7 @@ from drf_spectacular.views import (
 )
 from rest_framework_simplejwt.views import TokenVerifyView
 
+from apps.billing.api import CancelSubscriptionView, CheckoutView, MyPlanView, WompiWebhookView
 from apps.email_import.api import InboundEmailWebhookView
 from apps.notifications.api import NotificationPreferenceView
 from apps.quickadd.api import QuickAddView
@@ -70,6 +71,10 @@ api_v1_patterns = [
         NotificationPreferenceView.as_view(),
         name="notification-preferences",
     ),
+    path("billing/me/", MyPlanView.as_view(), name="billing-me"),
+    path("billing/checkout/", CheckoutView.as_view(), name="billing-checkout"),
+    path("billing/cancel/", CancelSubscriptionView.as_view(), name="billing-cancel"),
+    path("billing/webhooks/wompi/", WompiWebhookView.as_view(), name="billing-webhook-wompi"),
     *api_v1_router,
 ]
 
