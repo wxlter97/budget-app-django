@@ -22,6 +22,17 @@ class RegisterTests(APITestCase):
         user = User.objects.get(username="nueva")
         self.assertTrue(user.check_password("S3gura-pw-99"))
 
+    def test_register_starts_onboarding_pending(self):
+        # A diferencia de una cuenta que ya existía antes de este campo
+        # (default=True en la columna), una cuenta que se crea ACÁ es
+        # realmente nueva -- tiene que ver el tour de bienvenida.
+        self.client.post(
+            REGISTER,
+            {"username": "nueva", "email": "nueva@example.com", "password": "S3gura-pw-99"},
+        )
+        user = User.objects.get(username="nueva")
+        self.assertFalse(user.onboarding_completed)
+
     def test_duplicate_email_is_rejected_case_insensitive(self):
         User.objects.create_user("existente", "dup@example.com", "x")
         resp = self.client.post(
@@ -74,6 +85,9 @@ class MeTests(APITestCase):
         self.assertEqual(resp.data["email"], "yo@example.com")
         self.assertEqual(resp.data["username"], "yo")
         self.assertFalse(resp.data["two_factor_enabled"])
+        # Creada directo con `create_user` (no vía /auth/register/): cuenta
+        # "de antes", no debe quedar pidiendo el tour de bienvenida.
+        self.assertTrue(resp.data["onboarding_completed"])
 
     def test_me_reports_two_factor_enabled(self):
         from apps.users.models import TwoFactorAuth
@@ -82,6 +96,15 @@ class MeTests(APITestCase):
         self.client.force_authenticate(self.user)
         resp = self.client.get(ME)
         self.assertTrue(resp.data["two_factor_enabled"])
+
+    def test_me_can_mark_onboarding_completed(self):
+        self.user.onboarding_completed = False
+        self.user.save(update_fields=["onboarding_completed"])
+        self.client.force_authenticate(self.user)
+        resp = self.client.patch(ME, {"onboarding_completed": True})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.onboarding_completed)
 
     def test_me_can_update_names_and_email(self):
         self.client.force_authenticate(self.user)

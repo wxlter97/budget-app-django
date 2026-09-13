@@ -37,6 +37,7 @@ class GoogleLoginTests(APITestCase):
         self.assertEqual(user.last_name, "Persona")
         self.assertEqual(user.profile_photo_url, CLAIMS["picture"])
         self.assertFalse(user.has_usable_password())
+        self.assertFalse(user.onboarding_completed)
 
     @patch("apps.users.api.verify_google_id_token")
     def test_second_login_reuses_same_account(self, verify):
