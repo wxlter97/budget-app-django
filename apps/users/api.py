@@ -268,6 +268,82 @@ class TokenRefreshThrottledView(TokenRefreshView):
     throttle_scope = "auth"
 
 
+class ChangePasswordSerializer(serializers.Serializer):
+    """Para una cuenta que YA tiene contraseña utilizable: hay que probar la
+    actual antes de reemplazarla. Ver `SetPasswordSerializer` para el caso
+    de una cuenta que entró solo por Google y todavía no tiene una."""
+
+    current_password = serializers.CharField()
+    new_password = serializers.CharField()
+
+    def validate_current_password(self, value):
+        if not check_password(value, self.context["request"].user.password):
+            raise serializers.ValidationError("Contraseña actual incorrecta.")
+        return value
+
+    def validate_new_password(self, value):
+        validate_password(value, user=self.context["request"].user)
+        return value
+
+
+class ChangePasswordView(generics.GenericAPIView):
+    """POST /auth/password/change/: requiere la contraseña actual. Solo
+    tiene sentido si la cuenta ya tiene una utilizable -- para una cuenta
+    de solo Google, usar `SetPasswordView`."""
+
+    serializer_class = ChangePasswordSerializer
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        if not request.user.has_usable_password():
+            raise serializers.ValidationError(
+                "Esta cuenta todavía no tiene contraseña -- usá POST /auth/password/set/."
+            )
+        serializer = self.get_serializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        request.user.set_password(serializer.validated_data["new_password"])
+        request.user.save(update_fields=["password"])
+        return Response(status=204)
+
+
+class SetPasswordSerializer(serializers.Serializer):
+    """Para una cuenta que entró solo con "Continuar con Google" y todavía
+    no tiene contraseña propia (`set_unusable_password()` en
+    `GoogleLoginView`) -- no hay una "actual" que confirmar, ya está
+    autenticada por sesión."""
+
+    new_password = serializers.CharField()
+
+    def validate_new_password(self, value):
+        validate_password(value, user=self.context["request"].user)
+        return value
+
+
+class SetPasswordView(generics.GenericAPIView):
+    """POST /auth/password/set/: le agrega contraseña a una cuenta que hasta
+    ahora solo entraba por Google, para que además pueda entrar con
+    usuario/contraseña. Si ya tiene una, hay que usar `ChangePasswordView`
+    (no se puede "agregar" una segunda vez sin probar la que ya tiene)."""
+
+    serializer_class = SetPasswordSerializer
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        if request.user.has_usable_password():
+            raise serializers.ValidationError(
+                "Esta cuenta ya tiene contraseña -- usá POST /auth/password/change/."
+            )
+        serializer = self.get_serializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        request.user.set_password(serializer.validated_data["new_password"])
+        request.user.save(update_fields=["password"])
+        return Response(status=204)
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, style={"input_type": "password"})
 
@@ -299,20 +375,28 @@ class UserSerializer(serializers.ModelSerializer):
     # Para mostrar el estado ("Activa"/"Inactiva") en Herramientas → Seguridad
     # sin tener que entrar a Verificación en dos pasos sólo para averiguarlo.
     two_factor_enabled = serializers.SerializerMethodField()
+    # Para que el cliente sepa si mostrar "Cambiar contraseña" (ya tiene una)
+    # o "Agregar contraseña" (entró solo por Google, `set_unusable_password()`
+    # en `GoogleLoginView`) en Herramientas → Cuenta.
+    has_password = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = (
             "id", "username", "email", "first_name", "last_name",
             "profile_photo_url", "google_linked", "two_factor_enabled",
-            "onboarding_completed", "date_joined",
+            "has_password", "onboarding_completed", "date_joined",
         )
         read_only_fields = (
-            "id", "username", "profile_photo_url", "google_linked", "two_factor_enabled", "date_joined",
+            "id", "username", "profile_photo_url", "google_linked", "two_factor_enabled",
+            "has_password", "date_joined",
         )
 
     def get_two_factor_enabled(self, user) -> bool:
         return getattr(getattr(user, "two_factor_auth", None), "enabled", False)
+
+    def get_has_password(self, user) -> bool:
+        return user.has_usable_password()
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk).exists():

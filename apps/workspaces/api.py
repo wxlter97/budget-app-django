@@ -101,6 +101,15 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         seed_default_categories(workspace)
 
     def perform_destroy(self, instance):
+        # Sin al menos un workspace no hay dónde aterrizar: `_layout.tsx` en
+        # el cliente da por hecho que, autenticado, siempre hay un
+        # `activeId` -- dejar a alguien en cero lo deja sin poder usar la
+        # app (y sin forma de crear uno nuevo desde ahí). Se borra el
+        # workspace, pero no el último.
+        if self.get_queryset().count() <= 1:
+            raise serializers.ValidationError(
+                "No podés borrar tu único presupuesto -- creá otro primero."
+            )
         instance.soft_delete()
 
     @action(detail=True, methods=["post"], url_path="rotate-inbound-token")

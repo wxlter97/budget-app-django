@@ -7,6 +7,8 @@ User = get_user_model()
 REGISTER = "/api/v1/auth/register/"
 ME = "/api/v1/auth/me/"
 TOKEN = "/api/v1/auth/token/"
+PASSWORD_CHANGE = "/api/v1/auth/password/change/"
+PASSWORD_SET = "/api/v1/auth/password/set/"
 
 
 class RegisterTests(APITestCase):
@@ -85,6 +87,7 @@ class MeTests(APITestCase):
         self.assertEqual(resp.data["email"], "yo@example.com")
         self.assertEqual(resp.data["username"], "yo")
         self.assertFalse(resp.data["two_factor_enabled"])
+        self.assertTrue(resp.data["has_password"])
         # Creada directo con `create_user` (no vía /auth/register/): cuenta
         # "de antes", no debe quedar pidiendo el tour de bienvenida.
         self.assertTrue(resp.data["onboarding_completed"])
@@ -124,4 +127,81 @@ class MeTests(APITestCase):
         User.objects.create_user("otro", "ocupado@example.com", "pw")
         self.client.force_authenticate(self.user)
         resp = self.client.patch(ME, {"email": "ocupado@example.com"})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ChangePasswordTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("yo", "yo@example.com", "S3gura-pw-99")
+        self.client.force_authenticate(self.user)
+
+    def test_requires_authentication(self):
+        self.client.force_authenticate(None)
+        resp = self.client.post(
+            PASSWORD_CHANGE, {"current_password": "S3gura-pw-99", "new_password": "Otra-pw-88"}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_changes_password_with_correct_current_password(self):
+        resp = self.client.post(
+            PASSWORD_CHANGE, {"current_password": "S3gura-pw-99", "new_password": "Otra-pw-88"}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT, resp.data)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("Otra-pw-88"))
+
+    def test_rejects_wrong_current_password(self):
+        resp = self.client.post(
+            PASSWORD_CHANGE, {"current_password": "mala", "new_password": "Otra-pw-88"}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("current_password", resp.data)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("S3gura-pw-99"))
+
+    def test_rejects_weak_new_password(self):
+        resp = self.client.post(
+            PASSWORD_CHANGE, {"current_password": "S3gura-pw-99", "new_password": "123"}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("new_password", resp.data)
+
+    def test_google_only_account_must_use_set_endpoint(self):
+        self.user.set_unusable_password()
+        self.user.save(update_fields=["password"])
+        resp = self.client.post(
+            PASSWORD_CHANGE, {"current_password": "x", "new_password": "Otra-pw-88"}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SetPasswordTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            "soloGoogle", "google@example.com", "irrelevante"
+        )
+        self.user.set_unusable_password()
+        self.user.save(update_fields=["password"])
+        self.client.force_authenticate(self.user)
+
+    def test_requires_authentication(self):
+        self.client.force_authenticate(None)
+        resp = self.client.post(PASSWORD_SET, {"new_password": "Otra-pw-88"})
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_sets_password_on_google_only_account(self):
+        resp = self.client.post(PASSWORD_SET, {"new_password": "Otra-pw-88"})
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT, resp.data)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("Otra-pw-88"))
+        self.assertTrue(self.user.has_usable_password())
+
+    def test_rejects_weak_password(self):
+        resp = self.client.post(PASSWORD_SET, {"new_password": "123"})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_account_with_password_already_must_use_change_endpoint(self):
+        self.user.set_password("Ya-tengo-pw-1")
+        self.user.save(update_fields=["password"])
+        resp = self.client.post(PASSWORD_SET, {"new_password": "Otra-pw-88"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)

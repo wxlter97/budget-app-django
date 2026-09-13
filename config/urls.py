@@ -20,10 +20,12 @@ from apps.reports.api import (
     ScheduledView,
 )
 from apps.users.api import (
+    ChangePasswordView,
     GoogleLinkView,
     GoogleLoginView,
     MeView,
     RegisterView,
+    SetPasswordView,
     TokenObtainPairThrottledView,
     TokenRefreshThrottledView,
     TwoFactorDisableView,
@@ -40,6 +42,8 @@ api_v1_patterns = [
     path("auth/google/", GoogleLoginView.as_view(), name="google_login"),
     path("auth/google/link/", GoogleLinkView.as_view(), name="google_link"),
     path("auth/me/", MeView.as_view(), name="me"),
+    path("auth/password/change/", ChangePasswordView.as_view(), name="password-change"),
+    path("auth/password/set/", SetPasswordView.as_view(), name="password-set"),
     path("auth/token/", TokenObtainPairThrottledView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", TokenRefreshThrottledView.as_view(), name="token_refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token_verify"),
