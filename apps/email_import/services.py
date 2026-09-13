@@ -15,7 +15,9 @@ llama a :func:`ingest_inbound_email`, que:
 Nunca crea una Transaction: eso solo ocurre al confirmar el log.
 """
 import re
+from urllib.parse import urlparse
 
+import requests
 from django.db.models import Q
 from django.utils.text import slugify
 
@@ -26,6 +28,31 @@ from .bank_parsers import ParseError, get_parser
 from .models import BankEmailSchema, EmailImportLog
 
 _TOKEN_RE = re.compile(r"\+([A-Za-z0-9_-]+)@")
+
+# Gmail exige "verificar" una direccion de reenvio haciendo click en un link
+# que manda... a esa misma direccion (nuestro webhook). Como nadie lee esa
+# casilla, sin este auto-clic ningun usuario de Gmail podria activar nunca el
+# reenvio automatico nativo -- lo seguimos nosotros mismos (un GET, lo mismo
+# que haria un click humano) apenas detectamos el remitente de Gmail.
+_GMAIL_FORWARDING_SENDER_RE = re.compile(r"forwarding-noreply@google\.com", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+
+def _confirm_gmail_forwarding_link(text):
+    """Busca en ``text`` un link de google.com y lo sigue con un GET.
+
+    Devuelve True si encontro y siguio un link; False si no habia ninguno
+    reconocible o si el request fallo (queda como `failed` para revision).
+    """
+    for url in _URL_RE.findall(text or ""):
+        host = urlparse(url).netloc.lower()
+        if host == "google.com" or host.endswith(".google.com"):
+            try:
+                requests.get(url, timeout=10)
+            except requests.RequestException:
+                return False
+            return True
+    return False
 
 
 class WorkspaceNotResolved(Exception):
@@ -78,6 +105,15 @@ def ingest_inbound_email(*, to, sender, subject="", text="", workspace=None):
         raw_email_subject=(subject or "")[:255],
         raw_email_body=text or "",
     )
+
+    if _GMAIL_FORWARDING_SENDER_RE.search(sender or ""):
+        if _confirm_gmail_forwarding_link(text):
+            return EmailImportLog.objects.create(status=EmailImportLog.STATUS_AUTO_HANDLED, **base)
+        return EmailImportLog.objects.create(
+            status=EmailImportLog.STATUS_FAILED,
+            error_message="Correo de confirmación de reenvío de Gmail sin link reconocible.",
+            **base,
+        )
 
     schema = _match_schema(sender)
     if schema is None:

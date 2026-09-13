@@ -33,11 +33,13 @@ class EmailImportLog(BaseModel):
     STATUS_CONFIRMED = "confirmed"   # el usuario aprobo y se creo la Transaction
     STATUS_REJECTED = "rejected"     # el usuario descarto la candidata
     STATUS_FAILED = "failed"         # no se pudo parsear (banco sin schema o formato no reconocido)
+    STATUS_AUTO_HANDLED = "auto_handled"  # no era un correo bancario; el sistema lo resolvio solo
     STATUS_CHOICES = [
         (STATUS_PENDING, "Pendiente de confirmar"),
         (STATUS_CONFIRMED, "Confirmada"),
         (STATUS_REJECTED, "Rechazada"),
         (STATUS_FAILED, "Fallo de parseo"),
+        (STATUS_AUTO_HANDLED, "Resuelto automaticamente"),
     ]
 
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="email_import_logs")
