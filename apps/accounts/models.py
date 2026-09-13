@@ -218,3 +218,34 @@ class Wallet(BaseModel):
 
     def __str__(self):
         return f"{self.name} ({self.workspace})"
+
+
+class WalletCard(BaseModel):
+    """Un número de tarjeta física ADICIONAL de ``wallet``, además del
+    `card_last4` principal de la cartera.
+
+    Una tarjeta titular + sus adicionales comparten UNA sola cuenta: un
+    saldo, un límite, un estado de cuenta -- por eso NO se modelan como
+    carteras separadas (ni como padre/hijo: eso es para carteras con saldo
+    propio de verdad, ver `Wallet.aggregated_balance`). Acá simplemente se
+    registran los últimos 4 dígitos de cada plástico extra, para que una
+    notificación de compra por correo (`apps.email_import`) caiga en esta
+    misma `wallet` sin importar con cuál de los plásticos se pagó."""
+
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="extra_cards")
+    last4 = models.CharField("últimos 4 dígitos", max_length=4)
+    label = models.CharField(
+        "etiqueta (opcional)", max_length=50, blank=True,
+        help_text="Para identificar el plástico, p. ej. \"Adicional -- María\".",
+    )
+
+    class Meta:
+        ordering = ["label", "last4"]
+        verbose_name = "tarjeta adicional"
+        verbose_name_plural = "tarjetas adicionales"
+        constraints = [
+            models.UniqueConstraint(fields=["wallet", "last4"], name="unique_extra_last4_per_wallet"),
+        ]
+
+    def __str__(self):
+        return f"{self.label or 'Tarjeta'} ···{self.last4} ({self.wallet.name})"

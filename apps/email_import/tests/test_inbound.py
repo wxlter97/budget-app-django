@@ -303,6 +303,28 @@ class BankAutoDetectFallbackTests(TestCase):
         )
         self.assertEqual(log.wallet, exact)
 
+    def test_matches_wallet_by_extra_card_not_just_card_last4(self):
+        # Titular + adicional de la MISMA cuenta: el correo de la adicional
+        # (4321) debe caer en la wallet cuyo card_last4 principal es OTRO
+        # número, porque 4321 está registrado como tarjeta adicional.
+        from apps.accounts.models import WalletCard
+
+        wallet = Wallet.objects.create(
+            workspace=self.ws, name="Tarjeta (titular 9999)", purpose=Wallet.PURPOSE_DEBT,
+            card_last4="9999",
+        )
+        WalletCard.objects.create(wallet=wallet, last4="4321", label="Adicional")
+        Wallet.objects.create(
+            workspace=self.ws, name="Otra sin relación", purpose=Wallet.PURPOSE_DEBT,
+            card_last4="0000",
+        )
+
+        log = ingest_inbound_email(
+            to=self._to(), sender="alertas@demobank.com",
+            subject="Alerta", text=DEMO_BODY,
+        )
+        self.assertEqual(log.wallet, wallet)
+
 
 @override_settings(INBOUND_WEBHOOK_SECRET=SECRET)
 class InboundWebhookTests(APITestCase):

@@ -16,6 +16,7 @@ Nunca crea una Transaction: eso solo ocurre al confirmar el log.
 """
 import re
 
+from django.db.models import Q
 from django.utils.text import slugify
 
 from apps.accounts.models import Wallet
@@ -106,8 +107,13 @@ def ingest_inbound_email(*, to, sender, subject="", text="", workspace=None):
 
     wallet = None
     if parsed.card_last4:
+        # Además del `card_last4` principal, una cartera puede tener
+        # plásticos adicionales (titular + adicionales de la misma cuenta,
+        # ver `Wallet.extra_cards`) -- cualquiera de los dos hace caer el
+        # correo en la misma cartera.
         wallet = Wallet.objects.filter(
-            workspace=workspace, card_last4=parsed.card_last4
+            Q(card_last4=parsed.card_last4) | Q(extra_cards__last4=parsed.card_last4),
+            workspace=workspace,
         ).first()
     if wallet is None:
         # Fallback por banco: si el correo no trae los últimos 4 dígitos (o

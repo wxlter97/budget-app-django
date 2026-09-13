@@ -154,7 +154,11 @@ def export_backup(workspace):
         Transaction,
     )
 
-    wallets = Wallet.objects.filter(workspace=workspace).order_by("sort_order", "name")
+    wallets = (
+        Wallet.objects.filter(workspace=workspace)
+        .prefetch_related("extra_cards")
+        .order_by("sort_order", "name")
+    )
     categories = Category.objects.filter(workspace=workspace).order_by("sort_order", "name")
     tags = Tag.objects.filter(workspace=workspace).order_by("name")
     budgets = CategoryBudget.objects.filter(workspace=workspace)
@@ -189,6 +193,9 @@ def export_backup(workspace):
                 "monthly_contribution": _dec(w.monthly_contribution),
                 "credit_limit": _dec(w.credit_limit),
                 "card_last4": w.card_last4,
+                "extra_cards": [
+                    {"last4": c.last4, "label": c.label} for c in w.extra_cards.all()
+                ],
                 "billing_cycle_day": w.billing_cycle_day,
                 "payment_due_day": w.payment_due_day,
                 "interest_rate": _dec(w.interest_rate),
@@ -403,7 +410,7 @@ def import_backup(workspace, data, requesting_user):
     ejemplo) cae a `None` en carteras y a `requesting_user` en transacciones,
     en vez de fallar.
     """
-    from apps.accounts.models import Wallet
+    from apps.accounts.models import Wallet, WalletCard
     from apps.accounts.services import recompute_wallet_balance
     from apps.transactions.models import (
         Category,
@@ -503,6 +510,16 @@ def import_backup(workspace, data, requesting_user):
                 to_update[w.id] = w
         if to_update:
             Wallet.objects.bulk_update(to_update.values(), ["parent", "is_default"], batch_size=BATCH)
+
+        # --- tarjetas adicionales de cada cartera (titular + adicionales de
+        # la misma cuenta, ver `WalletCard`) -- el `wallet_id` ya se conoce
+        # de antemano porque el backup conserva el UUID original. ---
+        extra_cards = [
+            WalletCard(wallet_id=row["id"], last4=card["last4"], label=card.get("label", ""))
+            for row in wallet_rows
+            for card in row.get("extra_cards") or []
+        ]
+        WalletCard.objects.bulk_create(extra_cards, batch_size=BATCH)
 
         # --- categorías: mismo patrón para `parent` ---
         categories = [

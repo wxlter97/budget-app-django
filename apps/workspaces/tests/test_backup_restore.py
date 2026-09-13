@@ -11,7 +11,7 @@ from django.test.utils import CaptureQueriesContext
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import Wallet
+from apps.accounts.models import Wallet, WalletCard
 from apps.transactions.models import (
     Category,
     CategoryBudget,
@@ -169,6 +169,21 @@ class BackupRestoreServiceTests(APITestCase):
         restored_txn = Transaction.objects.get(id=txn1_id)
         self.assertEqual([t.id for t in restored_txn.tags.all()], [tag_id])
         self.assertEqual(restored_txn.created_by_id, self.owner.id)
+
+    def test_extra_cards_round_trip(self):
+        WalletCard.objects.create(wallet=self.parent_wallet, last4="9126", label="Adicional")
+        backup = export_backup(self.ws)
+        parent_id = self.parent_wallet.id
+
+        Transaction.all_objects.filter(wallet__workspace=self.ws).delete()
+        self.child_wallet.delete()
+        self.parent_wallet.delete()
+
+        import_backup(self.ws, backup, self.owner)
+
+        card = WalletCard.objects.get(wallet_id=parent_id)
+        self.assertEqual(card.last4, "9126")
+        self.assertEqual(card.label, "Adicional")
 
     def test_wipes_existing_data_before_restoring(self):
         backup = export_backup(self.ws)
