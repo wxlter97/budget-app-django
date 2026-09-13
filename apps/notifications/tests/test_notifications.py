@@ -13,9 +13,9 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import Wallet
 from apps.notifications import services
-from apps.notifications.models import NotificationLog, NotificationPreference, PushDevice
+from apps.notifications.models import Notification, NotificationLog, NotificationPreference, PushDevice
 from apps.transactions.models import Category, CategoryBudget, RecurringExpense, Transaction
-from apps.workspaces.models import Membership, Workspace
+from apps.workspaces.models import Invitation, Membership, Workspace
 
 User = get_user_model()
 
@@ -176,6 +176,19 @@ class NotifyDueItemsTests(NotificationServicesTestCase):
         self.device.delete()
         services.notify_due_items()
         mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_still_creates_in_app_notification_without_a_device(self, mock_send):
+        # Sin dispositivo no hay push, pero el centro de notificaciones de
+        # la app tiene que verlo igual -- no depende de tener uno registrado.
+        self.device.delete()
+        services.notify_due_items()
+        mock_send.assert_not_called()
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.user, kind=Notification.KIND_RECURRING_DUE, status=Notification.STATUS_UNREAD
+            ).exists()
+        )
 
     @patch("apps.notifications.services.send_push")
     def test_no_reminder_when_due_date_is_further_out(self, mock_send):
@@ -453,3 +466,126 @@ class SendWebPushTests(TestCase):
     @patch("pywebpush.webpush", side_effect=OSError("network down"))
     def test_network_error_does_not_raise(self, mock_webpush):
         services.send_push([self.device], title="x", body="y")
+
+
+# ---------------------------------------------------------------------------
+# Centro de notificaciones -- API
+# ---------------------------------------------------------------------------
+class NotificationApiTests(APITestCase):
+    LIST = "/api/v1/notifications/"
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", "a@example.com", "pw")
+        self.bob = User.objects.create_user("bob", "b@example.com", "pw")
+        self.client.force_authenticate(self.alice)
+
+    def _make(self, user, **kwargs):
+        defaults = dict(
+            kind=Notification.KIND_LOW_BALANCE, title="Saldo bajo", body="...",
+            status=Notification.STATUS_UNREAD,
+        )
+        defaults.update(kwargs)
+        return Notification.objects.create(user=user, **defaults)
+
+    def test_only_lists_own_notifications(self):
+        mine = self._make(self.alice)
+        self._make(self.bob)
+        resp = self.client.get(self.LIST)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in resp.data["results"]}
+        self.assertEqual(ids, {str(mine.id)})
+
+    def test_list_includes_resolved_ones_too_not_just_unread(self):
+        # Es un historial, no solo una bandeja de pendientes.
+        self._make(self.alice, status=Notification.STATUS_RESOLVED)
+        resp = self.client.get(self.LIST)
+        self.assertEqual(len(resp.data["results"]), 1)
+
+    def test_unread_count_only_counts_unread(self):
+        self._make(self.alice, status=Notification.STATUS_UNREAD)
+        self._make(self.alice, status=Notification.STATUS_READ)
+        self._make(self.alice, status=Notification.STATUS_RESOLVED)
+        resp = self.client.get(f"{self.LIST}unread-count/")
+        self.assertEqual(resp.data["count"], 1)
+
+    def test_read_marks_it_read(self):
+        n = self._make(self.alice)
+        resp = self.client.post(f"{self.LIST}{n.id}/read/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        n.refresh_from_db()
+        self.assertEqual(n.status, Notification.STATUS_READ)
+
+    def test_read_does_not_downgrade_a_resolved_one_back_to_read(self):
+        n = self._make(self.alice, status=Notification.STATUS_RESOLVED)
+        self.client.post(f"{self.LIST}{n.id}/read/")
+        n.refresh_from_db()
+        self.assertEqual(n.status, Notification.STATUS_RESOLVED)
+
+    def test_cannot_read_someone_elses_notification(self):
+        theirs = self._make(self.bob)
+        resp = self.client.post(f"{self.LIST}{theirs.id}/read/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_mark_all_read_only_touches_own_unread(self):
+        a1 = self._make(self.alice)
+        a2 = self._make(self.alice)
+        b1 = self._make(self.bob)
+        resp = self.client.post(f"{self.LIST}mark-all-read/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["updated"], 2)
+        for n in (a1, a2):
+            n.refresh_from_db()
+            self.assertEqual(n.status, Notification.STATUS_READ)
+        b1.refresh_from_db()
+        self.assertEqual(b1.status, Notification.STATUS_UNREAD)
+
+
+# ---------------------------------------------------------------------------
+# Invitaciones pendientes de antes de tener cuenta (ver signals.py)
+# ---------------------------------------------------------------------------
+class InvitationNotificationSignalTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("alice", "alice@example.com", "pw")
+        self.workspace = Workspace.objects.create(name="Casa")
+        Membership.objects.create(workspace=self.workspace, user=self.owner, role=Membership.ROLE_OWNER)
+
+    def test_registering_with_an_invited_email_creates_a_notification(self):
+        invitation = Invitation.objects.create(
+            workspace=self.workspace, email="nueva@example.com", invited_by=self.owner
+        )
+        resp = self.client.post(
+            "/api/v1/auth/register/",
+            {"username": "nueva", "email": "nueva@example.com", "password": "S3gura-pw-99"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+        user = User.objects.get(username="nueva")
+        n = Notification.objects.get(user=user, kind=Notification.KIND_INVITATION)
+        self.assertEqual(n.status, Notification.STATUS_UNREAD)
+        self.assertEqual(n.related_object_id, str(invitation.id))
+        self.assertEqual(n.data["invitation_id"], str(invitation.id))
+
+    def test_registering_with_no_invitation_creates_none(self):
+        self.client.post(
+            "/api/v1/auth/register/",
+            {"username": "nueva", "email": "sin-invitacion@example.com", "password": "S3gura-pw-99"},
+        )
+        user = User.objects.get(username="nueva")
+        self.assertFalse(Notification.objects.filter(user=user).exists())
+
+    def test_accepting_the_invitation_resolves_the_notification(self):
+        invitation = Invitation.objects.create(
+            workspace=self.workspace, email="nueva@example.com", invited_by=self.owner
+        )
+        self.client.post(
+            "/api/v1/auth/register/",
+            {"username": "nueva", "email": "nueva@example.com", "password": "S3gura-pw-99"},
+        )
+        user = User.objects.get(username="nueva")
+        self.client.force_authenticate(user)
+
+        resp = self.client.post(f"/api/v1/invitations/{invitation.token}/accept/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+        n = Notification.objects.get(user=user, kind=Notification.KIND_INVITATION)
+        self.assertEqual(n.status, Notification.STATUS_RESOLVED)

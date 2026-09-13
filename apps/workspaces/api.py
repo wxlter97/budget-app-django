@@ -331,6 +331,9 @@ class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
 
     @action(detail=True, methods=["post"])
     def accept(self, request, token=None):
+        from apps.notifications.models import Notification
+        from apps.notifications.services import resolve_notifications
+
         invitation = self.get_object()
         self._require_own_pending_invitation(invitation, request.user)
         with transaction.atomic():
@@ -342,15 +345,20 @@ class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
             invitation.status = Invitation.STATUS_ACCEPTED
             invitation.responded_at = timezone.now()
             invitation.save(update_fields=["status", "responded_at", "updated_at"])
+        resolve_notifications(Notification.KIND_INVITATION, invitation.id)
         return Response(self.get_serializer(invitation).data)
 
     @action(detail=True, methods=["post"])
     def decline(self, request, token=None):
+        from apps.notifications.models import Notification
+        from apps.notifications.services import resolve_notifications
+
         invitation = self.get_object()
         self._require_own_pending_invitation(invitation, request.user)
         invitation.status = Invitation.STATUS_DECLINED
         invitation.responded_at = timezone.now()
         invitation.save(update_fields=["status", "responded_at", "updated_at"])
+        resolve_notifications(Notification.KIND_INVITATION, invitation.id)
         return Response(self.get_serializer(invitation).data)
 
     @staticmethod

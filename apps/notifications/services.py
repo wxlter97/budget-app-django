@@ -20,7 +20,7 @@ from django.utils import timezone
 from apps.reports.services import budget_vs_actual, upcoming_scheduled
 from apps.workspaces.models import Membership
 
-from .models import NotificationLog, NotificationPreference, PushDevice
+from .models import Notification, NotificationLog, NotificationPreference, PushDevice
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,53 @@ def _mark_sent(user, workspace, kind, dedupe_key) -> bool:
     return not created
 
 
+def notify_user(
+    user, *, kind, title, body, workspace=None, data=None, related_object_id=""
+) -> Notification:
+    """Crea la fila en el centro de notificaciones del usuario (ver
+    ``NotificationViewSet``). No manda push por sí sola -- eso lo decide
+    cada caller (ver ``_notify`` para los recordatorios programados, que sí
+    lo hacen cuando hay dispositivos registrados)."""
+    return Notification.objects.create(
+        user=user,
+        workspace=workspace,
+        kind=kind,
+        title=title,
+        body=body,
+        data=data or {},
+        related_object_id=str(related_object_id) if related_object_id else "",
+    )
+
+
+def resolve_notifications(kind, related_object_id, *, users=None):
+    """Marca como resueltas las notificaciones de ``kind`` ligadas a
+    ``related_object_id`` -- p. ej. al aceptar/rechazar una invitación, o
+    confirmar/rechazar un correo bancario DESDE SU PROPIA PANTALLA (no
+    desde el centro de notificaciones). ``users`` filtra a quién; sin
+    especificar, resuelve para cualquiera que tuviera una (p. ej. cualquier
+    miembro del workspace, para un correo bancario que le llegó a todos)."""
+    qs = Notification.objects.filter(
+        kind=kind, related_object_id=str(related_object_id)
+    ).exclude(status=Notification.STATUS_RESOLVED)
+    if users is not None:
+        qs = qs.filter(user__in=users)
+    qs.update(status=Notification.STATUS_RESOLVED)
+
+
+def _notify(user, workspace, kind, dedupe_key, *, title, body, data, devices):
+    """Registra el aviso (una vez por ocurrencia, ver ``_mark_sent``), crea
+    la fila del centro de notificaciones, y lo manda por push si el usuario
+    tiene algún dispositivo registrado -- las tres cosas juntas para no
+    repetir esta secuencia en cada ``notify_*`` de abajo. A propósito NO
+    depende de que haya dispositivos: sin ninguno, igual queda visible en
+    la app -- sólo se omite el push en sí."""
+    if _mark_sent(user, workspace, kind, dedupe_key):
+        return
+    notify_user(user, kind=kind, title=title, body=body, workspace=workspace, data=data)
+    if devices:
+        send_push(devices, title=title, body=body, data=data)
+
+
 def _active_memberships():
     return Membership.objects.select_related("user", "workspace").filter(
         workspace__is_deleted=False
@@ -156,8 +203,6 @@ def notify_due_items():
         if not (pref.remind_recurring or pref.remind_installments):
             continue
         devices = _devices_for(user)
-        if not devices:
-            continue
 
         for item in upcoming_scheduled(workspace, user, since=tomorrow, until=tomorrow):
             is_recurring = item["kind"] == "recurring"
@@ -172,14 +217,12 @@ def notify_due_items():
                 else NotificationLog.KIND_INSTALLMENT_DUE
             )
             dedupe_key = f"{item['source_id']}:{item['date'].isoformat()}"
-            if _mark_sent(user, workspace, kind, dedupe_key):
-                continue
-
-            send_push(
-                devices,
+            _notify(
+                user, workspace, kind, dedupe_key,
                 title="Gasto recurrente mañana" if is_recurring else "Cuota mañana",
                 body=f"{item['description']} · {_fmt_amount(item['amount'])} — {workspace.name}",
                 data={"type": kind, "workspace": str(workspace.id), "source_id": str(item["source_id"])},
+                devices=devices,
             )
 
 
@@ -193,8 +236,6 @@ def notify_budget_thresholds():
         if not pref.warn_budget:
             continue
         devices = _devices_for(user)
-        if not devices:
-            continue
 
         for row in budget_vs_actual(workspace, user, today.year, today.month)["rows"]:
             budgeted = row["budgeted"] + row["provision"]
@@ -205,12 +246,9 @@ def notify_budget_thresholds():
                 continue
 
             dedupe_key = f"{row['category']}:{today.year}-{today.month:02d}"
-            if _mark_sent(user, workspace, NotificationLog.KIND_BUDGET_THRESHOLD, dedupe_key):
-                continue
-
             title = "Presupuesto superado" if pct >= 100 else "Presupuesto casi agotado"
-            send_push(
-                devices,
+            _notify(
+                user, workspace, NotificationLog.KIND_BUDGET_THRESHOLD, dedupe_key,
                 title=title,
                 body=f"{row['category_name']}: {pct:.0f}% usado — {workspace.name}",
                 data={
@@ -218,6 +256,7 @@ def notify_budget_thresholds():
                     "workspace": str(workspace.id),
                     "category": row["category"],
                 },
+                devices=devices,
             )
 
 
@@ -236,8 +275,6 @@ def notify_low_balance():
         if not pref.remind_low_balance:
             continue
         devices = _devices_for(user)
-        if not devices:
-            continue
 
         wallets = Wallet.objects.filter(
             workspace=workspace, is_archived=False, low_balance_threshold__isnull=False
@@ -247,11 +284,8 @@ def notify_low_balance():
                 continue
 
             dedupe_key = f"{wallet.id}:{today.year}-{today.month:02d}"
-            if _mark_sent(user, workspace, NotificationLog.KIND_LOW_BALANCE, dedupe_key):
-                continue
-
-            send_push(
-                devices,
+            _notify(
+                user, workspace, NotificationLog.KIND_LOW_BALANCE, dedupe_key,
                 title="Saldo bajo",
                 body=f"{wallet.name}: {_fmt_amount(wallet.current_balance)} {wallet.currency} — {workspace.name}",
                 data={
@@ -259,6 +293,7 @@ def notify_low_balance():
                     "workspace": str(workspace.id),
                     "wallet": str(wallet.id),
                 },
+                devices=devices,
             )
 
 
@@ -277,8 +312,6 @@ def notify_statement_due():
         if not pref.warn_statement_due:
             continue
         devices = _devices_for(user)
-        if not devices:
-            continue
 
         wallets = (
             Wallet.objects.filter(
@@ -297,11 +330,8 @@ def notify_statement_due():
                 continue
 
             dedupe_key = f"{wallet.id}:{due_date.isoformat()}"
-            if _mark_sent(user, workspace, NotificationLog.KIND_STATEMENT_DUE, dedupe_key):
-                continue
-
-            send_push(
-                devices,
+            _notify(
+                user, workspace, NotificationLog.KIND_STATEMENT_DUE, dedupe_key,
                 title="Estado de cuenta por vencer",
                 body=(
                     f"{wallet.name}: {_fmt_amount(statement['total_due'])} {wallet.currency} "
@@ -312,4 +342,5 @@ def notify_statement_due():
                     "workspace": str(workspace.id),
                     "wallet": str(wallet.id),
                 },
+                devices=devices,
             )
