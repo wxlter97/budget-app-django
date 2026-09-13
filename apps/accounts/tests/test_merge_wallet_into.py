@@ -170,6 +170,32 @@ class MergeWalletIntoTests(TestCase):
             self._run(self.adicional, self.titular)
         self.assertTrue(Wallet.objects.filter(id=self.adicional.id).exists())
 
+    def test_destino_that_is_actually_origens_child_gets_reparented_to_none(self):
+        # Caso real: "origen" es el contenedor vacío que dejó "Dividir
+        # cartera" y "destino" es la hija que se quedó con toda la
+        # actividad -- al revés de lo que el nombre origen/destino sugiere.
+        self.adicional.parent = None
+        self.adicional.save(update_fields=["parent"])
+        self.titular.parent = self.adicional
+        self.titular.save(update_fields=["parent"])
+
+        self._run(self.adicional, self.titular)
+
+        self.titular.refresh_from_db()
+        self.assertIsNone(self.titular.parent_id)
+
+    def test_destino_that_is_origens_child_gets_promoted_to_origens_parent(self):
+        abuela = Wallet.objects.create(workspace=self.ws, name="Abuela")
+        self.adicional.parent = abuela
+        self.adicional.save(update_fields=["parent"])
+        self.titular.parent = self.adicional
+        self.titular.save(update_fields=["parent"])
+
+        self._run(self.adicional, self.titular)
+
+        self.titular.refresh_from_db()
+        self.assertEqual(self.titular.parent_id, abuela.id)
+
     def test_workspace_required_when_more_than_one(self):
         Workspace.objects.create(name="Otro")
         with self.assertRaises(CommandError):

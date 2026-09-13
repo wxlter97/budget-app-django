@@ -25,7 +25,13 @@ tipo de cosa que conviene revisar antes de ejecutar, no después: usá
 transacción o gasto recurrente que ya conecta <origen> y <destino> entre sí
 (por ejemplo una transferencia de una tarjeta a la otra) -- fusionarlas
 crearía una fila con wallet == to_wallet, que no tiene sentido. Esos casos
-hay que resolverlos a mano."""
+hay que resolverlos a mano.
+
+Si <destino> resulta ser hija de <origen> (p.ej. <origen> es el contenedor
+vacío que dejó "Dividir cartera" y <destino> la que se quedó con toda la
+actividad), su `parent` se sube un nivel -- al padre de <origen>, o queda
+sin padre si <origen> no tenía -- para no dejarla apuntando a una cartera
+recién soft-eliminada."""
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction as db_transaction
 from django.db.models import Q
@@ -163,6 +169,16 @@ class Command(BaseCommand):
                 RecurringExpense.objects.filter(to_wallet=origen).update(to_wallet=destino)
                 inst_qs.update(wallet=destino)
                 children_qs.update(parent=destino)
+
+            # Si destino era, al revés, hija de origen (p.ej. origen es el
+            # contenedor vacío que dejó "Dividir cartera" y destino la que
+            # recibió la actividad), su `parent` quedaría apuntando a una
+            # cartera soft-eliminada -- cualquier edición posterior de
+            # destino fallaría al revalidar ese campo. La sube un nivel
+            # (al padre de origen, si tenía; si no, la deja sin padre).
+            if destino.parent_id == origen.id:
+                destino.parent = origen.parent
+                destino.save(update_fields=["parent", "updated_at"])
 
             existing_last4s = {destino.card_last4} | set(
                 destino.extra_cards.values_list("last4", flat=True)
