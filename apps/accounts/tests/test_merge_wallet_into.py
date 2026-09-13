@@ -9,7 +9,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from apps.accounts.models import Wallet, WalletCard
-from apps.transactions.models import Category, Transaction
+from apps.transactions.models import Category, InstallmentPurchase, RecurringExpense, Transaction
 from apps.workspaces.models import Workspace
 
 
@@ -111,6 +111,64 @@ class MergeWalletIntoTests(TestCase):
             "merge_wallet_into", str(self.adicional.id), str(self.titular.id), stdout=StringIO()
         )
         self.assertFalse(Wallet.objects.filter(id=self.adicional.id).exists())
+
+    def test_move_activity_reassigns_transactions_recurring_installments_and_children(self):
+        cat = Category.objects.create(workspace=self.ws, name="Compras", type=Category.TYPE_EXPENSE)
+        tx = Transaction.objects.create(
+            wallet=self.adicional, category=cat, amount=Decimal("10.00"), date=dt.date(2026, 1, 1)
+        )
+        rec = RecurringExpense.objects.create(
+            workspace=self.ws, wallet=self.adicional, category=cat, name="Netflix",
+            amount=Decimal("9.99"), next_due_date=dt.date(2026, 2, 5),
+        )
+        inst = InstallmentPurchase.objects.create(
+            workspace=self.ws, wallet=self.adicional, category=cat, description="TV",
+            total_amount=Decimal("300.00"), installments_total=6, start_date=dt.date(2026, 1, 1),
+        )
+        nieta = Wallet.objects.create(workspace=self.ws, name="Nieta", parent=self.adicional)
+
+        self._run(self.adicional, self.titular, move_activity=True)
+
+        tx.refresh_from_db()
+        rec.refresh_from_db()
+        inst.refresh_from_db()
+        nieta.refresh_from_db()
+        self.assertEqual(tx.wallet_id, self.titular.id)
+        self.assertEqual(rec.wallet_id, self.titular.id)
+        self.assertEqual(inst.wallet_id, self.titular.id)
+        self.assertEqual(nieta.parent_id, self.titular.id)
+        self.assertFalse(Wallet.objects.filter(id=self.adicional.id).exists())
+
+    def test_move_activity_dry_run_does_not_write(self):
+        cat = Category.objects.create(workspace=self.ws, name="Compras", type=Category.TYPE_EXPENSE)
+        tx = Transaction.objects.create(
+            wallet=self.adicional, category=cat, amount=Decimal("10.00"), date=dt.date(2026, 1, 1)
+        )
+
+        self._run(self.adicional, self.titular, move_activity=True, dry_run=True)
+
+        tx.refresh_from_db()
+        self.assertEqual(tx.wallet_id, self.adicional.id)
+        self.assertTrue(Wallet.objects.filter(id=self.adicional.id).exists())
+
+    def test_move_activity_still_refuses_crossed_transaction(self):
+        cat = Category.objects.create(workspace=self.ws, name="Pagos", type=Category.TYPE_EXPENSE)
+        Transaction.objects.create(
+            wallet=self.adicional, to_wallet=self.titular, category=cat,
+            amount=Decimal("50.00"), date=dt.date(2026, 1, 1),
+        )
+        with self.assertRaises(CommandError):
+            self._run(self.adicional, self.titular, move_activity=True)
+        self.assertTrue(Wallet.objects.filter(id=self.adicional.id).exists())
+
+    def test_without_move_activity_flag_still_refuses(self):
+        cat = Category.objects.create(workspace=self.ws, name="Compras", type=Category.TYPE_EXPENSE)
+        Transaction.objects.create(
+            wallet=self.adicional, category=cat, amount=Decimal("10.00"), date=dt.date(2026, 1, 1)
+        )
+        with self.assertRaises(CommandError):
+            self._run(self.adicional, self.titular)
+        self.assertTrue(Wallet.objects.filter(id=self.adicional.id).exists())
 
     def test_workspace_required_when_more_than_one(self):
         Workspace.objects.create(name="Otro")
