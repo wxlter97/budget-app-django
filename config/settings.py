@@ -421,3 +421,35 @@ LOGGING = {
     "handlers": {"console": {"class": "logging.StreamHandler"}},
     "root": {"handlers": ["console"], "level": env("DJANGO_LOG_LEVEL", default="INFO")},
 }
+
+# ---------------------------------------------------------------------------
+# Error tracking (Sentry) -- opcional. Vacío = no hace nada (ni importa el
+# SDK), así que no hace falta tener la cuenta creada para que el resto de la
+# app funcione. Cuando exista un proyecto de Sentry, sólo hay que setear
+# SENTRY_DSN (Secret Manager en Cloud Run, ver DEPLOY.md) -- nada de código
+# que tocar de nuevo.
+# ---------------------------------------------------------------------------
+SENTRY_DSN = env("SENTRY_DSN", default="")
+if SENTRY_DSN and not RUNNING_TESTS:
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=env("SENTRY_ENVIRONMENT", default="production" if not DEBUG else "development"),
+        release=env("SENTRY_RELEASE", default=None),
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+            # Cualquier `logger.error(...)` (no sólo excepciones no manejadas)
+            # también viaja a Sentry como evento -- útil para los `except`
+            # que ya loguean en vez de re-lanzar (p. ej. `webPush`/providers).
+            LoggingIntegration(level=None, event_level="ERROR"),
+        ],
+        # Traza de performance: 10% de las requests alcanza para ver
+        # tendencias sin acercarse a los límites del plan free de Sentry.
+        traces_sample_rate=env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.1),
+        send_default_pii=False,
+    )

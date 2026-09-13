@@ -45,3 +45,6 @@ pyotp~=2.10
 
 # Push notifications en la versión web (VAPID)
 pywebpush~=2.0
+
+# Error tracking (opcional -- sin SENTRY_DSN no hace nada, ver settings.py)
+sentry-sdk~=2.0
