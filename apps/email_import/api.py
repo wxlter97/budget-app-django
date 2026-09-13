@@ -129,6 +129,15 @@ class ConfirmImportSerializer(serializers.Serializer):
         self.fields["category"].queryset = Category.objects.filter(workspace=workspace)
 
 
+def _resolve_pending_notification(log):
+    """Saca del centro de notificaciones (de TODOS los miembros que la
+    tenían) el "correo por revisar" de `log`, confirmado o rechazado."""
+    from apps.notifications.models import Notification
+    from apps.notifications.services import resolve_notifications
+
+    resolve_notifications(Notification.KIND_EMAIL_IMPORT_PENDING, log.id)
+
+
 class EmailImportLogViewSet(
     mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet
 ):
@@ -205,6 +214,7 @@ class EmailImportLogViewSet(
             log.status = EmailImportLog.STATUS_CONFIRMED
             log.save(update_fields=["resulting_transaction", "wallet", "status", "updated_at"])
 
+        _resolve_pending_notification(log)
         return Response(self.get_serializer(log).data)
 
     @action(detail=True, methods=["post"])
@@ -214,6 +224,7 @@ class EmailImportLogViewSet(
             raise ValidationError(f"El registro no está pendiente (status={log.status}).")
         log.status = EmailImportLog.STATUS_REJECTED
         log.save(update_fields=["status", "updated_at"])
+        _resolve_pending_notification(log)
         return Response(self.get_serializer(log).data)
 
     @action(detail=False, methods=["post"], url_path="clear-failed")
