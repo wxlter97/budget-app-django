@@ -1,5 +1,4 @@
 from django.core import exceptions as django_exceptions
-from django.db.models import Count
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, serializers, viewsets
@@ -11,6 +10,7 @@ from rest_framework.views import APIView
 
 from apps.common.api import HasWorkspaceMembership
 from apps.transactions.models import Category, Transaction
+from apps.transactions.services import guess_category_by_merchant
 
 from .authentication import PersonalAccessTokenAuthentication
 from .models import PersonalAccessToken
@@ -115,24 +115,7 @@ def _resolve_category(*, workspace, txn_type, merchant, requested):
             match = assignable.filter(name__iexact=requested).first()
         return match
 
-    if not merchant:
-        return None
-
-    best = (
-        Transaction.objects.filter(
-            wallet__workspace=workspace,
-            type=txn_type,
-            category__isnull=False,
-            description__icontains=merchant,
-        )
-        .values("category")
-        .annotate(n=Count("category"))
-        .order_by("-n")
-        .first()
-    )
-    if not best:
-        return None
-    return assignable.filter(pk=best["category"]).first()
+    return guess_category_by_merchant(workspace=workspace, txn_type=txn_type, merchant=merchant)
 
 
 class QuickAddSerializer(serializers.Serializer):

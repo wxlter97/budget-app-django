@@ -10,11 +10,44 @@ estado de cuenta (ver `apps.accounts.services.installment_status`).
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 from django.db import transaction as db_transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 
-from .models import RecurringExpense, Transaction
+from .models import Category, RecurringExpense, Transaction
+
+
+def guess_category_by_merchant(*, workspace, txn_type, merchant):
+    """
+    Adivina la ``Category`` más probable para un comercio, mirando cómo se
+    categorizó ese mismo comercio antes: la categoría más frecuente entre
+    transacciones pasadas del workspace cuya descripción lo contenga.
+    ``None`` si no hay comercio o no hay historial suficiente.
+
+    Usado por el alta rápida de Apple Shortcuts (``apps.quickadd``) y por la
+    confirmación de importación de correos bancarios (``apps.email_import``)
+    -- mismo comercio, misma forma de adivinar en los dos lugares.
+    """
+    if not merchant:
+        return None
+
+    assignable = Category.objects.filter(workspace=workspace, type=txn_type, parent__isnull=False)
+
+    best = (
+        Transaction.objects.filter(
+            wallet__workspace=workspace,
+            type=txn_type,
+            category__isnull=False,
+            description__icontains=merchant,
+        )
+        .values("category")
+        .annotate(n=Count("category"))
+        .order_by("-n")
+        .first()
+    )
+    if not best:
+        return None
+    return assignable.filter(pk=best["category"]).first()
 
 
 def visible_transactions(workspace, user):

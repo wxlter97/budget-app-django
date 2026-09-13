@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 from apps.accounts.models import Wallet
 from apps.common.api import HasWorkspaceMembership
 from apps.transactions.models import Category, Transaction
+from apps.transactions.services import guess_category_by_merchant
 
 from . import services
 from .models import BankEmailSchema, EmailImportLog
@@ -68,6 +69,8 @@ class BankEmailSchemaViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------------------------------
 class EmailImportLogSerializer(serializers.ModelSerializer):
     bank_name = serializers.CharField(source="bank_schema.bank_name", read_only=True, default=None)
+    suggested_category = serializers.SerializerMethodField()
+    suggested_category_name = serializers.SerializerMethodField()
 
     class Meta:
         model = EmailImportLog
@@ -75,9 +78,30 @@ class EmailImportLogSerializer(serializers.ModelSerializer):
             "id", "status", "bank_schema", "bank_name", "wallet",
             "raw_email_subject", "extracted_amount", "extracted_merchant",
             "extracted_date", "resulting_transaction", "error_message",
+            "suggested_category", "suggested_category_name",
             "created_at",
         )
         read_only_fields = fields
+
+    def _guess(self, log):
+        # Cacheado en la instancia: category y category_name comparten la
+        # misma consulta, y un mismo log solo se serializa una vez por
+        # response de todos modos.
+        if not hasattr(log, "_suggested_category_cache"):
+            log._suggested_category_cache = guess_category_by_merchant(
+                workspace=log.workspace,
+                txn_type=Transaction.TYPE_EXPENSE,
+                merchant=log.extracted_merchant,
+            )
+        return log._suggested_category_cache
+
+    def get_suggested_category(self, log) -> str | None:
+        guess = self._guess(log)
+        return str(guess.id) if guess else None
+
+    def get_suggested_category_name(self, log) -> str | None:
+        guess = self._guess(log)
+        return guess.name if guess else None
 
 
 class ConfirmImportSerializer(serializers.Serializer):
@@ -89,7 +113,11 @@ class ConfirmImportSerializer(serializers.Serializer):
     wallet = serializers.PrimaryKeyRelatedField(
         queryset=Wallet.objects.none(), required=False
     )
-    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.none())
+    # Opcional: si no viene, `confirm()` intenta adivinarla por el comercio
+    # (ver `suggested_category` en el log) antes de pedirla.
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.none(), required=False, allow_null=True
+    )
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
     date = serializers.DateField(required=False)
     description = serializers.CharField(max_length=255, required=False, allow_blank=True)
@@ -139,6 +167,11 @@ class EmailImportLogViewSet(
         amount = data.get("amount", log.extracted_amount)
         date = data.get("date", log.extracted_date)
         description = data.get("description") or log.extracted_merchant
+        category = data.get("category") or guess_category_by_merchant(
+            workspace=request.workspace,
+            txn_type=Transaction.TYPE_EXPENSE,
+            merchant=log.extracted_merchant,
+        )
 
         missing = [
             name for name, value in (("wallet", wallet), ("amount", amount), ("date", date))
@@ -148,11 +181,19 @@ class EmailImportLogViewSet(
             raise ValidationError(
                 {m: "Requerido (no vino en el correo)." for m in missing}
             )
+        if category is None:
+            options = Category.objects.filter(
+                workspace=request.workspace, type=Transaction.TYPE_EXPENSE, parent__isnull=False
+            ).values("id", "name")
+            raise ValidationError({
+                "category": "No pude adivinar la categoría — elegí una.",
+                "categories": list(options),
+            })
 
         with db_transaction.atomic():
             txn = Transaction.objects.create(
                 wallet=wallet,
-                category=data["category"],
+                category=category,
                 amount=amount,
                 description=description,
                 date=date,
