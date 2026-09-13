@@ -292,15 +292,22 @@ class RegisterSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     """Datos del usuario autenticado (`/auth/me/`). El username no se cambia aquí."""
 
+    # Para mostrar el estado ("Activa"/"Inactiva") en Herramientas → Seguridad
+    # sin tener que entrar a Verificación en dos pasos sólo para averiguarlo.
+    two_factor_enabled = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = (
             "id", "username", "email", "first_name", "last_name",
-            "profile_photo_url", "google_linked", "date_joined",
+            "profile_photo_url", "google_linked", "two_factor_enabled", "date_joined",
         )
         read_only_fields = (
-            "id", "username", "profile_photo_url", "google_linked", "date_joined",
+            "id", "username", "profile_photo_url", "google_linked", "two_factor_enabled", "date_joined",
         )
+
+    def get_two_factor_enabled(self, user) -> bool:
+        return getattr(getattr(user, "two_factor_auth", None), "enabled", False)
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk).exists():
