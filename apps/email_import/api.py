@@ -175,6 +175,19 @@ class EmailImportLogViewSet(
         log.save(update_fields=["status", "updated_at"])
         return Response(self.get_serializer(log).data)
 
+    @action(detail=False, methods=["post"], url_path="clear-failed")
+    def clear_failed(self, request):
+        """
+        Limpia (soft-delete) el historial de correos que no se pudieron
+        parsear (``status=failed``) del workspace activo -- normalmente
+        bancos sin schema todavía o un formato que cambió. No toca
+        pending/confirmed/rejected.
+        """
+        cleared = EmailImportLog.objects.filter(
+            workspace=request.workspace, status=EmailImportLog.STATUS_FAILED
+        ).update(is_deleted=True)
+        return Response({"cleared": cleared})
+
 
 # ---------------------------------------------------------------------------
 # Webhook de correo entrante
