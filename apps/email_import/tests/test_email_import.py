@@ -33,8 +33,13 @@ class EmailImportConfirmTests(APITestCase):
         cls.account_a = Wallet.objects.create(
             workspace=cls.ws_a, name="Tarjeta", purpose=Wallet.PURPOSE_DEBT
         )
+        cls.group_a = Category.objects.create(
+            workspace=cls.ws_a, name="Casa", type=Category.TYPE_EXPENSE
+        )
+        # "Casa" es grupo (sin parent); las asignables son sus subcategorías,
+        # igual que en el resto de la app (ver apps.quickadd.tests).
         cls.category_a = Category.objects.create(
-            workspace=cls.ws_a, name="Super", type=Category.TYPE_EXPENSE
+            workspace=cls.ws_a, name="Super", type=Category.TYPE_EXPENSE, parent=cls.group_a
         )
         cls.account_b = Wallet.objects.create(
             workspace=cls.ws_b, name="Ajena", purpose=Wallet.PURPOSE_DEBT
@@ -79,6 +84,50 @@ class EmailImportConfirmTests(APITestCase):
         resp = self.client.post(f"/api/v1/email-import-logs/{log.id}/confirm/", {})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("category", resp.data)
+        self.assertIn("categories", resp.data)  # opciones para que el cliente arme un picker
+
+    def test_confirm_without_category_guesses_by_merchant_history(self):
+        Transaction.objects.create(
+            type=Transaction.TYPE_EXPENSE, wallet=self.account_a, category=self.category_a,
+            amount="10.00", date=dt.date(2026, 1, 1), description="SUPERMERCADO La Colonia",
+        )
+        log = self._pending()
+        resp = self.client.post(f"/api/v1/email-import-logs/{log.id}/confirm/", {})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        log.refresh_from_db()
+        self.assertEqual(log.resulting_transaction.category_id, self.category_a.id)
+
+    def test_explicit_category_overrides_the_guess(self):
+        other = Category.objects.create(
+            workspace=self.ws_a, name="Otra", type=Category.TYPE_EXPENSE
+        )
+        Transaction.objects.create(
+            type=Transaction.TYPE_EXPENSE, wallet=self.account_a, category=self.category_a,
+            amount="10.00", date=dt.date(2026, 1, 1), description="SUPERMERCADO La Colonia",
+        )
+        log = self._pending()
+        resp = self.client.post(
+            f"/api/v1/email-import-logs/{log.id}/confirm/", {"category": str(other.id)}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        log.refresh_from_db()
+        self.assertEqual(log.resulting_transaction.category_id, other.id)
+
+    def test_pending_log_exposes_suggested_category(self):
+        Transaction.objects.create(
+            type=Transaction.TYPE_EXPENSE, wallet=self.account_a, category=self.category_a,
+            amount="10.00", date=dt.date(2026, 1, 1), description="SUPERMERCADO La Colonia",
+        )
+        log = self._pending()
+        resp = self.client.get(f"/api/v1/email-import-logs/{log.id}/")
+        self.assertEqual(resp.data["suggested_category"], str(self.category_a.id))
+        self.assertEqual(resp.data["suggested_category_name"], "Super")
+
+    def test_pending_log_suggests_nothing_without_history(self):
+        log = self._pending()
+        resp = self.client.get(f"/api/v1/email-import-logs/{log.id}/")
+        self.assertIsNone(resp.data["suggested_category"])
+        self.assertIsNone(resp.data["suggested_category_name"])
 
     def test_confirm_missing_extracted_amount_needs_override(self):
         log = self._pending(extracted_amount=None)
