@@ -369,6 +369,11 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
                     {
                         "date": due,
                         "kind": "recurring",
+                        # Un recurrente puede ser income/expense/transfer
+                        # (ver `RecurringExpense.type`) -- sin esto, un
+                        # sueldo recurrente se mostraba en "Programado" como
+                        # si fuera un gasto más (signo y color de salida).
+                        "type": rec.type,
                         "source_id": rec.id,
                         "description": (
                             f"Transferencia a {rec.to_wallet.name}" if is_transfer
@@ -403,6 +408,7 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
                 {
                     "date": due,
                     "kind": "installment",
+                    "type": "expense",
                     "source_id": pur.id,
                     "description": f"{pur.description} (cuota {line['n']}/{pur.installments_total})",
                     "amount": line["amount"],
@@ -436,6 +442,7 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
             {
                 "date": due,
                 "kind": "card_payment",
+                "type": "expense",
                 "source_id": card.id,
                 "description": f"Pago de tarjeta · {card.name}",
                 "amount": statement["total_due"],
@@ -464,6 +471,7 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
             {
                 "date": debt.due_date,
                 "kind": "debt_due",
+                "type": "expense",
                 "source_id": debt.id,
                 "description": f"Vencimiento · {debt.name}",
                 "amount": abs(debt.current_balance),

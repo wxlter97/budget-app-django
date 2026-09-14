@@ -218,9 +218,19 @@ def notify_due_items():
                 else NotificationLog.KIND_INSTALLMENT_DUE
             )
             dedupe_key = f"{item['source_id']}:{item['date'].isoformat()}"
+            # Un recurrente puede ser income/expense/transfer -- "Gasto
+            # recurrente mañana" quedaba mal para un sueldo o un aporte
+            # automático a otra cartera (ver `item["type"]`, `upcoming_scheduled`).
+            if is_recurring:
+                title = {
+                    "income": "Ingreso recurrente mañana",
+                    "transfer": "Transferencia recurrente mañana",
+                }.get(item["type"], "Gasto recurrente mañana")
+            else:
+                title = "Cuota mañana"
             _notify(
                 user, workspace, kind, dedupe_key,
-                title="Gasto recurrente mañana" if is_recurring else "Cuota mañana",
+                title=title,
                 body=f"{item['description']} · {_fmt_amount(item['amount'])} — {workspace.name}",
                 data={"type": kind, "workspace": str(workspace.id), "source_id": str(item["source_id"])},
                 devices=devices,

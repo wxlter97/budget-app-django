@@ -150,6 +150,51 @@ class ScheduledEndpointTests(APITestCase):
         )
         self.assertEqual([i for i in res.data if i["kind"] == "debt_due"], [])
 
+    def test_recurring_type_is_exposed(self, _localdate):
+        # Un recurrente puede ser income/expense/transfer -- antes el ítem no
+        # llevaba esa info y el frontend siempre lo mostraba como un gasto
+        # (signo y color de salida), aunque fuera, p. ej., un sueldo.
+        income_cat = Category.objects.create(
+            workspace=self.ws, name="Sueldo", type=Category.TYPE_INCOME
+        )
+        RecurringExpense.objects.create(
+            workspace=self.ws, category=income_cat, wallet=self.wallet,
+            type=RecurringExpense.TYPE_INCOME, amount=Decimal("1200.00"),
+            frequency=RecurringExpense.FREQUENCY_MONTHLY, next_due_date=dt.date(2026, 3, 5),
+        )
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        income_item = next(i for i in res.data if i["amount"] == "1200.00")
+        self.assertEqual(income_item["type"], "income")
+        # El recurrente de gasto de `setUpTestData` sigue viniendo como "expense".
+        expense_item = next(i for i in res.data if i["kind"] == "recurring" and i["amount"] == "4.00")
+        self.assertEqual(expense_item["type"], "expense")
+
+    def test_installment_card_payment_and_debt_due_are_always_expense(self, _localdate):
+        card = Wallet.objects.create(
+            workspace=self.ws, name="Visa", purpose=Wallet.PURPOSE_DEBT,
+            kind=Wallet.KIND_CREDIT, billing_cycle_day=5, payment_due_day=25,
+        )
+        Transaction.objects.create(
+            wallet=card, category=self.cat, amount=Decimal("50.00"),
+            date=dt.date(2026, 3, 6), type=Transaction.TYPE_EXPENSE,
+        )
+        Wallet.objects.create(
+            workspace=self.ws, name="Préstamo carro", purpose=Wallet.PURPOSE_DEBT,
+            opening_balance=Decimal("-800.00"), due_date=dt.date(2026, 3, 20),
+        )
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        for kind in ("installment", "card_payment", "debt_due"):
+            item = next(i for i in res.data if i["kind"] == kind)
+            self.assertEqual(item["type"], "expense", kind)
+
     def test_transfer_recurring_shows_destination_wallet_and_no_category(self, _localdate):
         savings = Wallet.objects.create(
             workspace=self.ws, name="Ahorro", purpose=Wallet.PURPOSE_SAVINGS
