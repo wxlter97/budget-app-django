@@ -10,7 +10,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.accounts.models import Wallet
-from apps.accounts.services import installment_status
+from apps.accounts.services import credit_card_statement, installment_status
 from apps.common import periods
 from apps.transactions.models import (
     Category,
@@ -333,10 +333,13 @@ def dashboard_summary(workspace, user, today=None):
 
 
 def upcoming_scheduled(workspace, user, until=None, since=None):
-    """Ocurrencias futuras de gastos recurrentes + cuotas, SIN crearlas.
+    """Ocurrencias futuras de gastos recurrentes + cuotas + vencimientos de
+    tarjeta/deuda, SIN crear nada.
 
-    Alimenta la tarjeta "PROGRAMADO" y los marcadores de la lista. `since`
-    por defecto hoy, `until` por defecto fin del mes en curso.
+    Alimenta la tarjeta "PROGRAMADO", los marcadores de la lista y el
+    calendario financiero. `since` por defecto hoy, `until` por defecto fin
+    del mes en curso -- ambos aceptan cualquier rango (el calendario los usa
+    con el mes que se esté mirando, no necesariamente el actual).
     """
     today = timezone.localdate()
     since = since or today
@@ -411,6 +414,67 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
                     "to_wallet_name": None,
                 }
             )
+
+    # Pago de tarjeta de crédito: sólo el vencimiento del ciclo YA cortado
+    # (o por cortar), nunca de ciclos futuros -- de esos no se puede saber
+    # el monto todavía (depende de gasto que no pasó). Un solo ítem por
+    # tarjeta, no una proyección mensual como los recurrentes.
+    cards = (
+        Wallet.objects.filter(
+            workspace=workspace, kind=Wallet.KIND_CREDIT, is_archived=False
+        )
+        .exclude(billing_cycle_day__isnull=True)
+    )
+    for card in cards:
+        if not _wallet_ok(card):
+            continue
+        statement = credit_card_statement(card, as_of=today)
+        due = statement["payment_due_date"] if statement else None
+        if due is None or due < since or due > until:
+            continue
+        items.append(
+            {
+                "date": due,
+                "kind": "card_payment",
+                "source_id": card.id,
+                "description": f"Pago de tarjeta · {card.name}",
+                "amount": statement["total_due"],
+                "category": None,
+                "category_name": None,
+                "wallet": card.id,
+                "wallet_name": card.name,
+                "to_wallet": None,
+                "to_wallet_name": None,
+            }
+        )
+
+    # Deudas con fecha de vencimiento fija (préstamos, no tarjetas -- esas ya
+    # se cubren arriba por su propio ciclo). Un solo vencimiento, no
+    # recurrente: `Wallet.due_date` es una fecha puntual, no un día del mes.
+    debts = Wallet.objects.filter(
+        workspace=workspace,
+        purpose=Wallet.PURPOSE_DEBT,
+        is_archived=False,
+        due_date__isnull=False,
+    )
+    for debt in debts:
+        if not _wallet_ok(debt) or debt.due_date < since or debt.due_date > until:
+            continue
+        items.append(
+            {
+                "date": debt.due_date,
+                "kind": "debt_due",
+                "source_id": debt.id,
+                "description": f"Vencimiento · {debt.name}",
+                "amount": abs(debt.current_balance),
+                "category": None,
+                "category_name": None,
+                "wallet": debt.id,
+                "wallet_name": debt.name,
+                "to_wallet": None,
+                "to_wallet_name": None,
+            }
+        )
 
     items.sort(key=lambda i: i["date"])
     return items

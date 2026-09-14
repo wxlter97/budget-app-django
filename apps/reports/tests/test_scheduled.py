@@ -93,6 +93,63 @@ class ScheduledEndpointTests(APITestCase):
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_card_payment_due_date_is_listed(self, _localdate):
+        # corte el 5 (ya pasó este mes respecto a TODAY=10 de marzo), pago el
+        # 25 -- cae en el mismo mes del corte (25 > 5), después de TODAY.
+        card = Wallet.objects.create(
+            workspace=self.ws, name="Visa", purpose=Wallet.PURPOSE_DEBT,
+            kind=Wallet.KIND_CREDIT, billing_cycle_day=5, payment_due_day=25,
+        )
+        Transaction.objects.create(
+            wallet=card, category=self.cat, amount=Decimal("50.00"),
+            date=dt.date(2026, 3, 6), type=Transaction.TYPE_EXPENSE,
+        )
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        item = next(i for i in res.data if i["kind"] == "card_payment")
+        self.assertEqual(item["date"], "2026-03-25")
+        self.assertEqual(item["amount"], "50.00")
+        self.assertIn("Visa", item["description"])
+
+    def test_card_without_payment_due_day_has_no_card_payment_item(self, _localdate):
+        # `cls.wallet` tiene billing_cycle_day pero no payment_due_day --
+        # `credit_card_statement` no puede calcular una fecha de pago.
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-01-01&until=2026-12-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        self.assertEqual([i for i in res.data if i["kind"] == "card_payment"], [])
+
+    def test_debt_due_date_is_listed(self, _localdate):
+        debt = Wallet.objects.create(
+            workspace=self.ws, name="Préstamo carro", purpose=Wallet.PURPOSE_DEBT,
+            opening_balance=Decimal("-800.00"), due_date=dt.date(2026, 3, 20),
+        )
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        item = next(i for i in res.data if i["kind"] == "debt_due")
+        self.assertEqual(item["date"], "2026-03-20")
+        self.assertEqual(item["amount"], "800.00")
+        self.assertIn("Préstamo carro", item["description"])
+        self.assertEqual(item["wallet"], str(debt.id))
+
+    def test_debt_due_date_outside_window_is_not_listed(self, _localdate):
+        Wallet.objects.create(
+            workspace=self.ws, name="Préstamo carro", purpose=Wallet.PURPOSE_DEBT,
+            opening_balance=Decimal("-800.00"), due_date=dt.date(2026, 6, 1),
+        )
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        self.assertEqual([i for i in res.data if i["kind"] == "debt_due"], [])
+
     def test_transfer_recurring_shows_destination_wallet_and_no_category(self, _localdate):
         savings = Wallet.objects.create(
             workspace=self.ws, name="Ahorro", purpose=Wallet.PURPOSE_SAVINGS
