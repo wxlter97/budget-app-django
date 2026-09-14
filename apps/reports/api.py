@@ -106,7 +106,7 @@ class BudgetReportSerializer(serializers.Serializer):
 
 class ScheduledItemSerializer(serializers.Serializer):
     date = serializers.DateField()
-    kind = serializers.ChoiceField(choices=["recurring", "installment"])
+    kind = serializers.ChoiceField(choices=["recurring", "installment", "card_payment", "debt_due"])
     source_id = serializers.UUIDField()
     description = serializers.CharField()
     amount = _Money()
@@ -253,10 +253,12 @@ class DashboardSummaryView(_BaseReportView):
 
 
 class ScheduledView(_BaseReportView):
-    """Transacciones programadas (recurrentes + cuotas) próximas, sin crearlas.
+    """Transacciones programadas (recurrentes, cuotas, pago de tarjeta,
+    vencimiento de deuda) en el rango pedido, sin crear nada.
 
     `?until=YYYY-MM-DD` (default: fin del mes actual), `?since=YYYY-MM-DD`
-    (default: hoy).
+    (default: hoy) -- cualquier rango, no sólo hacia adelante (lo usa
+    también el calendario financiero para navegar meses).
     """
 
     @extend_schema(
