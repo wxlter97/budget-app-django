@@ -115,7 +115,7 @@ class BudgetFlagTests(APITestCase):
             workspace=cls.ws, name="Comida", type=Category.TYPE_EXPENSE
         )
         CategoryBudget.objects.create(
-            workspace=cls.ws, category=cls.food, month=1, year=2026, amount=Decimal("100.00")
+            workspace=cls.ws, category=cls.food, period_start=dt.date(2026, 1, 1), amount=Decimal("100.00")
         )
 
     def test_out_of_budget_expense_affects_balance_but_not_budget(self):
@@ -131,7 +131,7 @@ class BudgetFlagTests(APITestCase):
         self.acc.refresh_from_db()
         self.assertEqual(self.acc.current_balance, money("-560.00"))  # ambas mueven el saldo
 
-        report = budget_vs_actual(self.ws, self.user, 2026, 1)
+        report = budget_vs_actual(self.ws, self.user, dt.date(2026, 1, 1))
         row = next(r for r in report["rows"] if r["category_name"] == "Comida")
         self.assertEqual(row["spent"], money("60.00"))  # la de 500 no cuenta
         self.assertEqual(row["remaining"], money("40.00"))

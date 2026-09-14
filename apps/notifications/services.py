@@ -17,6 +17,7 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.common import periods
 from apps.reports.services import budget_vs_actual, upcoming_scheduled
 from apps.workspaces.models import Membership
 
@@ -227,7 +228,8 @@ def notify_due_items():
 
 
 def notify_budget_thresholds():
-    """Categorías del mes en curso que ya cruzaron el % de aviso del usuario."""
+    """Categorías del período de presupuesto en curso (ver `workspace.
+    budget_period`) que ya cruzaron el % de aviso del usuario."""
     today = timezone.localdate()
 
     for membership in _active_memberships():
@@ -237,7 +239,8 @@ def notify_budget_thresholds():
             continue
         devices = _devices_for(user)
 
-        for row in budget_vs_actual(workspace, user, today.year, today.month)["rows"]:
+        period_start = periods.period_start(today, workspace.budget_period)
+        for row in budget_vs_actual(workspace, user, period_start)["rows"]:
             budgeted = row["budgeted"] + row["provision"]
             if budgeted <= 0:
                 continue
@@ -245,7 +248,7 @@ def notify_budget_thresholds():
             if pct < pref.budget_threshold_pct:
                 continue
 
-            dedupe_key = f"{row['category']}:{today.year}-{today.month:02d}"
+            dedupe_key = f"{row['category']}:{period_start.isoformat()}"
             title = "Presupuesto superado" if pct >= 100 else "Presupuesto casi agotado"
             _notify(
                 user, workspace, NotificationLog.KIND_BUDGET_THRESHOLD, dedupe_key,

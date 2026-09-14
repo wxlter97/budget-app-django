@@ -227,10 +227,10 @@ class CurrencyAwareReportsTests(APITestCase):
     def test_budget_vs_actual_converts_spent(self):
         CategoryBudget.objects.create(
             workspace=self.ws, category=self.category, amount=Decimal("100"),
-            month=self.today.month, year=self.today.year,
+            period_start=self.today.replace(day=1),
         )
         ExchangeRate.objects.create(workspace=self.ws, currency="EUR", rate_to_base=Decimal("2"))
-        report = budget_vs_actual(self.ws, self.user, self.today.year, self.today.month)
+        report = budget_vs_actual(self.ws, self.user, self.today.replace(day=1))
         self.assertEqual(report["base_currency"], "USD")
         row = report["rows"][0]
         self.assertEqual(row["spent"], Decimal("80"))

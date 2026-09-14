@@ -229,8 +229,7 @@ def export_backup(workspace):
                 "id": str(b.id),
                 "category": str(b.category_id),
                 "amount": _dec(b.amount),
-                "month": b.month,
-                "year": b.year,
+                "period_start": b.period_start.isoformat(),
             }
             for b in budgets
         ],
@@ -365,7 +364,7 @@ def _check_required_fields(data):
     require(
         data.get("category_budgets", []),
         "category_budgets",
-        ["id", "category", "amount", "month", "year"],
+        ["id", "category", "amount", "period_start"],
     )
     # `category` NO es requerido acá (a diferencia de antes): una fila de
     # tipo transfer legítimamente no la tiene, igual que ya pasaba con
@@ -558,8 +557,7 @@ def import_backup(workspace, data, requesting_user):
                     workspace=workspace,
                     category_id=row["category"],
                     amount=row["amount"],
-                    month=row["month"],
-                    year=row["year"],
+                    period_start=row["period_start"],
                 )
                 for row in budget_rows
             ],

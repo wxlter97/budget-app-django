@@ -45,7 +45,7 @@ def seed_financials(workspace, owner):
         created_by=owner,
     )
     budget = CategoryBudget.objects.create(
-        workspace=workspace, category=category, amount="500.00", month=1, year=2026
+        workspace=workspace, category=category, amount="500.00", period_start=dt.date(2026, 1, 1)
     )
     return {"wallet": wallet, "category": category, "txn": txn, "budget": budget}
 

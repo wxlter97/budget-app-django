@@ -4,6 +4,8 @@ from django.conf import settings
 from django.db import models
 
 from apps.common.models import BaseModel
+from apps.common.periods import CHOICES as BUDGET_PERIOD_CHOICES
+from apps.common.periods import MONTHLY as BUDGET_PERIOD_MONTHLY
 
 
 def generate_inbound_token():
@@ -31,6 +33,20 @@ class Workspace(BaseModel):
     inbound_token = models.CharField(
         max_length=32, unique=True, default=generate_inbound_token, editable=False
     )
+
+    # Cadencia de CategoryBudget (ver apps.common.periods): una sola
+    # preferencia para todo el workspace, no por categoría -- cambiar esto no
+    # reescribe los CategoryBudget.period_start ya guardados, sólo afecta a
+    # partir de qué fecha se calculan los períodos nuevos.
+    budget_period = models.CharField(
+        max_length=10, choices=BUDGET_PERIOD_CHOICES, default=BUDGET_PERIOD_MONTHLY
+    )
+    # Hasta qué `period_start` (inclusive) ya se le hizo rollover de
+    # provisión a este workspace -- ver `apps.reports.services.
+    # close_previous_budget_period`. Null = todavía no se cerró ninguno.
+    # Se resetea a mano cuando cambia `budget_period` (ver WorkspaceSerializer)
+    # para no arrastrar un rollover calculado bajo la grilla de períodos vieja.
+    budget_period_closed_through = models.DateField(null=True, blank=True)
 
     def __str__(self):
         return self.name
