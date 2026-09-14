@@ -160,6 +160,26 @@ class NotifyDueItemsTests(NotificationServicesTestCase):
         )
 
     @patch("apps.notifications.services.send_push")
+    def test_income_recurring_due_tomorrow_is_not_titled_as_expense(self, mock_send):
+        # `self.recurring` (de setUp) ya venció mañana como gasto -- se
+        # desactiva para que esta prueba sea sobre un solo ítem, el ingreso.
+        self.recurring.is_active = False
+        self.recurring.save()
+        income_cat = Category.objects.create(
+            workspace=self.workspace, name="Sueldo", type=Category.TYPE_INCOME
+        )
+        RecurringExpense.objects.create(
+            workspace=self.workspace, category=income_cat, wallet=self.wallet,
+            type=RecurringExpense.TYPE_INCOME, amount=Decimal("1200.00"),
+            frequency=RecurringExpense.FREQUENCY_MONTHLY, next_due_date=self.tomorrow,
+        )
+        services.notify_due_items()
+        mock_send.assert_called_once()
+        title = mock_send.call_args[1]["title"]
+        self.assertIn("Ingreso", title)
+        self.assertNotIn("Gasto", title)
+
+    @patch("apps.notifications.services.send_push")
     def test_does_not_resend_same_day(self, mock_send):
         services.notify_due_items()
         services.notify_due_items()

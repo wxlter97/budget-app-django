@@ -107,6 +107,10 @@ class BudgetReportSerializer(serializers.Serializer):
 class ScheduledItemSerializer(serializers.Serializer):
     date = serializers.DateField()
     kind = serializers.ChoiceField(choices=["recurring", "installment", "card_payment", "debt_due"])
+    # income/expense/transfer -- de un recurrente puede salir cualquiera de
+    # los 3 (ver `RecurringExpense.type`); las otras 3 `kind` siempre son
+    # salidas de dinero ("expense").
+    type = serializers.ChoiceField(choices=["income", "expense", "transfer"])
     source_id = serializers.UUIDField()
     description = serializers.CharField()
     amount = _Money()
