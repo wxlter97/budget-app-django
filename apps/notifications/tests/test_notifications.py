@@ -209,7 +209,7 @@ class NotifyBudgetThresholdsTests(NotificationServicesTestCase):
         today = timezone.localdate()
         CategoryBudget.objects.create(
             workspace=self.workspace, category=self.category, amount=Decimal(amount),
-            month=today.month, year=today.year,
+            period_start=today.replace(day=1),  # workspace.budget_period default: monthly
         )
 
     @patch("apps.notifications.services.send_push")

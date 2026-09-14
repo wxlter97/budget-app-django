@@ -56,7 +56,7 @@ class BackupExportTests(APITestCase):
         self.txn.tags.set([self.tag])
 
         CategoryBudget.objects.create(
-            workspace=self.ws, category=self.food, amount=Decimal("300"), month=9, year=2026,
+            workspace=self.ws, category=self.food, amount=Decimal("300"), period_start=dt.date(2026, 9, 1),
         )
         RecurringExpense.objects.create(
             workspace=self.ws, category=self.food, wallet=self.checking,

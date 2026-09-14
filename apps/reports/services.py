@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from apps.accounts.models import Wallet
 from apps.accounts.services import installment_status
+from apps.common import periods
 from apps.transactions.models import (
     Category,
     CategoryBudget,
@@ -121,13 +122,16 @@ def spending_by_category(workspace, user, year, month):
     return result
 
 
-def budget_vs_actual(workspace, user, year, month):
-    """Presupuesto vs. gasto real por categoría para un mes.
+def budget_vs_actual(workspace, user, period_start):
+    """Presupuesto vs. gasto real por categoría para el período (ver
+    `apps.common.periods`) que arranca en `period_start`, con la cadencia
+    de `workspace.budget_period`.
 
     ``budgeted`` se asume siempre en ``workspace.base_currency`` (el monto
     del presupuesto no está atado a ninguna cartera); ``spent`` se convierte
     desde la moneda de cada transacción -- ver ``apps.workspaces.currency``.
     """
+    period_end = periods.period_end(period_start, workspace.budget_period)
     rate_map = get_rate_map(workspace)
     # Un grupo CON subcategorías no debería tener presupuesto propio aparte
     # (ver `CategoryBudgetSerializer.validate_category`, que ya lo impide
@@ -142,13 +146,13 @@ def budget_vs_actual(workspace, user, year, month):
     )
     budgets = {
         b.category_id: b.amount
-        for b in CategoryBudget.objects.filter(workspace=workspace, year=year, month=month)
+        for b in CategoryBudget.objects.filter(workspace=workspace, period_start=period_start)
         if b.category_id not in groups_with_children
     }
     spent: dict = {}
     for row in (
         visible_transactions(workspace, user)
-        .filter(date__year=year, date__month=month, counts_toward_budget=True)
+        .filter(date__gte=period_start, date__lte=period_end, counts_toward_budget=True)
         .filter(_OUTFLOW_Q)
         .values("category", "amount", "currency")
     ):
@@ -191,8 +195,8 @@ def budget_vs_actual(workspace, user, year, month):
     }
     groups = _group_budget_rows(rows, cats)
     return {
-        "year": year,
-        "month": month,
+        "period_start": period_start,
+        "period_end": period_end,
         "base_currency": workspace.base_currency,
         "rows": rows,
         "groups": groups,
@@ -413,7 +417,11 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
 
 
 def close_month(year, month, workspace=None):
-    """Crea/actualiza el MonthlySnapshot de cada workspace y hace el rollover."""
+    """Crea/actualiza el MonthlySnapshot de cada workspace (histórico de
+    patrimonio neto, ver NetWorthHistoryScreen -- siempre mensual sin
+    importar `workspace.budget_period`, es un concepto aparte del
+    presupuesto). El rollover de provisión de presupuesto va por separado en
+    `close_previous_budget_period`, con su propia cadencia."""
     workspaces = [workspace] if workspace is not None else Workspace.objects.all()
     snapshots = []
 
@@ -437,24 +445,73 @@ def close_month(year, month, workspace=None):
             },
         )
         snapshots.append(snapshot)
-        _rollover_provisions(ws, year, month)
 
     return snapshots
 
 
-def _rollover_provisions(workspace, year, month):
-    """Suma el sobrante (presupuesto - gasto real) de cada categoría a su provisión."""
+# Tope de períodos atrasados que se ponen al día en una sola corrida (ver
+# `close_previous_budget_period`) -- cubre de sobra el peor caso realista
+# (cron caído varios días con `budget_period=daily`) sin arriesgar un bucle
+# larguísimo si `budget_period_closed_through` quedara desalineado.
+_MAX_CATCHUP_PERIODS = 400
+
+
+def close_previous_budget_period(workspace=None, as_of=None):
+    """Le hace rollover de provisión al último período de presupuesto ya
+    terminado de cada workspace (ver `apps.common.periods`), con la cadencia
+    de `workspace.budget_period`. Se guarda hasta dónde se cerró en
+    `workspace.budget_period_closed_through` para no volver a sumar el mismo
+    sobrante dos veces si esto corre más de una vez el mismo período (a
+    diferencia de `close_month`/`MonthlySnapshot`, que sólo sobreescribe, acá
+    el acumulado de `CategoryProvision` se incrementa -- correrlo de más sin
+    esta guarda lo iría duplicando).
+
+    `as_of` (default: hoy) es "desde qué fecha" se mira para decidir cuál es
+    el último período ya terminado -- parametrizable para poder probar esto
+    con fechas fijas en vez de la fecha real del sistema.
+    """
+    workspaces = [workspace] if workspace is not None else Workspace.objects.all()
+    today = as_of if as_of is not None else timezone.localdate()
+    closed = []
+
+    for ws in workspaces:
+        current_start = periods.period_start(today, ws.budget_period)
+        last_ended = periods.previous_period_start(current_start, ws.budget_period)
+
+        if ws.budget_period_closed_through is not None:
+            cursor = periods.next_period_start(ws.budget_period_closed_through, ws.budget_period)
+        else:
+            cursor = last_ended  # primera corrida: no reconstruye historial previo
+
+        n = 0
+        while cursor <= last_ended and n < _MAX_CATCHUP_PERIODS:
+            _rollover_budget_period(ws, cursor)
+            cursor = periods.next_period_start(cursor, ws.budget_period)
+            n += 1
+
+        if n > 0:
+            ws.budget_period_closed_through = last_ended
+            ws.save(update_fields=["budget_period_closed_through", "updated_at"])
+            closed.append(str(ws.id))
+
+    return closed
+
+
+def _rollover_budget_period(workspace, period_start):
+    """Suma el sobrante (presupuesto - gasto real) de cada categoría, para
+    ese período, a su provisión acumulada."""
+    period_end = periods.period_end(period_start, workspace.budget_period)
     rate_map = get_rate_map(workspace)
     budgets = CategoryBudget.objects.filter(
-        workspace=workspace, year=year, month=month
+        workspace=workspace, period_start=period_start
     ).select_related("category")
 
     for budget in budgets:
         spent = _sum_converted(
             Transaction.objects.filter(
                 category=budget.category,
-                date__year=year,
-                date__month=month,
+                date__gte=period_start,
+                date__lte=period_end,
                 counts_toward_budget=True,
             ),
             rate_map,

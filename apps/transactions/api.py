@@ -17,6 +17,7 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
 from apps.accounts.models import Wallet
+from apps.common import periods
 from apps.common.api import WorkspaceScopedSerializerMixin, WorkspaceScopedViewSet
 from apps.loyalty.models import LoyaltyEarning, LoyaltyProgram
 
@@ -766,7 +767,7 @@ class TransactionViewSet(WorkspaceScopedViewSet):
 class CategoryBudgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = CategoryBudget
-        fields = ("id", "category", "amount", "month", "year", "created_at", "updated_at")
+        fields = ("id", "category", "amount", "period_start", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
     def validate_category(self, category):
@@ -781,21 +782,22 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
             )
         return category
 
-    def validate_month(self, value):
-        if not 1 <= value <= 12:
-            raise serializers.ValidationError("El mes debe estar entre 1 y 12.")
-        return value
+    def validate_period_start(self, value):
+        # El cliente puede mandar cualquier fecha dentro del período que
+        # quiere (más simple que pedirle que calcule el inicio exacto) --
+        # acá se ajusta al inicio real según el `budget_period` vigente del
+        # workspace, igual que hace `set_forward`.
+        return periods.period_start(value, self.context["workspace"].budget_period)
 
     def validate(self, attrs):
         category = attrs.get("category") or getattr(self.instance, "category", None)
-        month = attrs.get("month", getattr(self.instance, "month", None))
-        year = attrs.get("year", getattr(self.instance, "year", None))
-        qs = CategoryBudget.objects.filter(category=category, month=month, year=year)
+        period_start = attrs.get("period_start", getattr(self.instance, "period_start", None))
+        qs = CategoryBudget.objects.filter(category=category, period_start=period_start)
         if self.instance is not None:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError(
-                "Ya existe un presupuesto para esa categoría en ese mes."
+                "Ya existe un presupuesto para esa categoría en ese período."
             )
         return attrs
 
@@ -807,29 +809,38 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
 class SetForwardBudgetSerializer(serializers.Serializer):
     category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
     amount = serializers.DecimalField(max_digits=14, decimal_places=2)
-    month = serializers.IntegerField(min_value=1, max_value=12)
-    year = serializers.IntegerField(min_value=2000, max_value=2100)
+    # Cualquier fecha dentro del período deseado -- se ajusta al inicio real
+    # server-side (ver `CategoryBudgetViewSet.set_forward`).
+    period_start = serializers.DateField()
+
+
+# Cuántos períodos hacia adelante puede materializar `set_forward` como
+# máximo en una sola llamada, para no crear filas indefinidamente si el
+# usuario nunca vuelve a tocar esa categoría -- aprox. 3 años de margen en
+# cada cadencia, no un número fijo de filas (36 meses son ~156 semanas).
+FORWARD_HORIZON_BY_PERIOD = {
+    periods.DAILY: 365 * 3,
+    periods.WEEKLY: 52 * 3,
+    periods.BIWEEKLY: 26 * 3,
+    periods.MONTHLY: 36,
+    periods.YEARLY: 3,
+}
 
 
 class CategoryBudgetViewSet(WorkspaceScopedViewSet):
     serializer_class = CategoryBudgetSerializer
     queryset = CategoryBudget.objects.select_related("workspace", "category").all()
-    filterset_fields = {"month": ["exact"], "year": ["exact"], "category": ["exact"]}
-
-    # Cuántos meses hacia adelante puede materializar `set_forward` como
-    # máximo en una sola llamada, para no crear filas indefinidamente si el
-    # usuario nunca vuelve a tocar esa categoría (3 años de margen).
-    FORWARD_HORIZON_MONTHS = 36
+    filterset_fields = {"period_start": ["exact"], "category": ["exact"]}
 
     @action(detail=False, methods=["post"], url_path="set-forward")
     def set_forward(self, request):
         """
-        Fija el presupuesto de una categoría para un mes y lo propaga a los
-        meses siguientes: cada mes futuro que no tenía presupuesto propio, o
-        que coincidía con el monto anterior de este mes, se actualiza al
-        nuevo monto -- hasta el primer mes que el usuario ya haya
-        personalizado con un valor distinto, donde se corta la propagación.
-        Los meses anteriores nunca se tocan, así se conserva el histórico.
+        Fija el presupuesto de una categoría para un período y lo propaga a
+        los siguientes: cada período futuro que no tenía presupuesto propio,
+        o que coincidía con el monto anterior de este, se actualiza al nuevo
+        monto -- hasta el primero que el usuario ya haya personalizado con
+        un valor distinto, donde se corta la propagación. Los períodos
+        anteriores nunca se tocan, así se conserva el histórico.
         """
         serializer = SetForwardBudgetSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -841,12 +852,10 @@ class CategoryBudgetViewSet(WorkspaceScopedViewSet):
                 {"category": "Este grupo tiene subcategorías; presupuéstalas a ellas en vez de al grupo."}
             )
         amount = serializer.validated_data["amount"]
-        month = serializer.validated_data["month"]
-        year = serializer.validated_data["year"]
+        budget_period = request.workspace.budget_period
+        start = periods.period_start(serializer.validated_data["period_start"], budget_period)
 
-        current = CategoryBudget.objects.filter(
-            category=category, month=month, year=year
-        ).first()
+        current = CategoryBudget.objects.filter(category=category, period_start=start).first()
         old_amount = current.amount if current else None
         if current:
             current.amount = amount
@@ -854,32 +863,29 @@ class CategoryBudgetViewSet(WorkspaceScopedViewSet):
         else:
             current = CategoryBudget.objects.create(
                 workspace=request.workspace, category=category,
-                month=month, year=year, amount=amount,
+                period_start=start, amount=amount,
             )
 
-        months_touched = 1
-        cm, cy = month, year
-        for _ in range(self.FORWARD_HORIZON_MONTHS):
-            cm += 1
-            if cm > 12:
-                cm = 1
-                cy += 1
-            future = CategoryBudget.objects.filter(category=category, month=cm, year=cy).first()
+        periods_touched = 1
+        cursor = start
+        for _ in range(FORWARD_HORIZON_BY_PERIOD[budget_period]):
+            cursor = periods.next_period_start(cursor, budget_period)
+            future = CategoryBudget.objects.filter(category=category, period_start=cursor).first()
             if future is None:
                 CategoryBudget.objects.create(
                     workspace=request.workspace, category=category,
-                    month=cm, year=cy, amount=amount,
+                    period_start=cursor, amount=amount,
                 )
-                months_touched += 1
+                periods_touched += 1
             elif old_amount is not None and future.amount == old_amount:
                 future.amount = amount
                 future.save(update_fields=["amount"])
-                months_touched += 1
+                periods_touched += 1
             else:
-                break  # mes ya personalizado por el usuario: no seguimos
+                break  # período ya personalizado por el usuario: no seguimos
 
         data = CategoryBudgetSerializer(current).data
-        data["months_touched"] = months_touched
+        data["periods_touched"] = periods_touched
         return Response(data)
 
 

@@ -200,22 +200,28 @@ class Transaction(BaseModel):
 
 
 class CategoryBudget(BaseModel):
-    """El monto presupuestado para una categoria en un mes especifico."""
+    """El monto presupuestado para una categoria en un período especifico.
+
+    `period_start` es el inicio del período (ver `apps.common.periods`),
+    cuya duración la fija `workspace.budget_period` -- no hay una columna
+    "tipo de período" acá porque un `CategoryBudget` ya guardado no cambia
+    de forma aunque el workspace cambie de preferencia más adelante: sigue
+    representando el período que representaba cuando se creó.
+    """
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="category_budgets")
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="budgets")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
-    month = models.PositiveSmallIntegerField()
-    year = models.PositiveSmallIntegerField()
+    period_start = models.DateField()
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["category", "month", "year"], name="unique_budget_per_category_month"
+                fields=["category", "period_start"], name="unique_budget_per_category_period"
             )
         ]
 
     def __str__(self):
-        return f"{self.category} {self.month}/{self.year}: {self.amount}"
+        return f"{self.category} {self.period_start.isoformat()}: {self.amount}"
 
 
 class CategoryProvision(BaseModel):

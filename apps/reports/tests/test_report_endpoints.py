@@ -58,7 +58,7 @@ class ReportEndpointTests(APITestCase):
 
         CategoryBudget.objects.create(
             workspace=cls.ws_a, category=cls.food, amount=Decimal("500.00"),
-            month=MONTH, year=YEAR,
+            period_start=_FIRST,
         )
         for cat, amount, d in [
             (cls.salary, "3000.00", 1),
@@ -89,7 +89,7 @@ class ReportEndpointTests(APITestCase):
         )
 
     def test_budget_report(self):
-        resp = self.client.get(f"/api/v1/reports/budget/?year={YEAR}&month={MONTH}")
+        resp = self.client.get(f"/api/v1/reports/budget/?period_start={_FIRST.isoformat()}")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         rows = {r["category_name"]: r for r in resp.data["rows"]}
         self.assertEqual(rows["Comida"]["budgeted"], "500.00")
@@ -99,13 +99,13 @@ class ReportEndpointTests(APITestCase):
         self.assertEqual(rows["Transporte"]["spent"], "80.00")
         self.assertEqual(resp.data["totals"]["spent"], "430.00")
 
-    def test_budget_report_defaults_to_current_month(self):
+    def test_budget_report_defaults_to_current_period(self):
         resp = self.client.get("/api/v1/reports/budget/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["month"], MONTH)
+        self.assertEqual(resp.data["period_start"], _FIRST.isoformat())
 
-    def test_budget_report_rejects_bad_month(self):
-        resp = self.client.get("/api/v1/reports/budget/?month=13")
+    def test_budget_report_rejects_bad_period_start(self):
+        resp = self.client.get("/api/v1/reports/budget/?period_start=not-a-date")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_net_worth_excludes_other_workspace(self):
@@ -178,7 +178,7 @@ class ReportEndpointTests(APITestCase):
         nw = self.client.get("/api/v1/reports/net-worth/").data
         self.assertEqual(nw["net"], "3570.00")
         budget = self.client.get(
-            f"/api/v1/reports/budget/?year={YEAR}&month={MONTH}"
+            f"/api/v1/reports/budget/?period_start={_FIRST.isoformat()}"
         ).data
         food_row = [r for r in budget["rows"] if r["category_name"] == "Comida"][0]
         self.assertEqual(food_row["spent"], "350.00")

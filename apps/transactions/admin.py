@@ -40,8 +40,8 @@ class TransactionAdmin(BaseModelAdmin):
 
 @admin.register(CategoryBudget)
 class CategoryBudgetAdmin(BaseModelAdmin):
-    list_display = ("category", "workspace", "year", "month", "amount")
-    list_filter = ("year", "month")
+    list_display = ("category", "workspace", "period_start", "amount")
+    list_filter = ("period_start",)
     search_fields = ("category__name", "workspace__name")
     raw_id_fields = ("workspace", "category")
 

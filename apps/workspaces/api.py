@@ -6,6 +6,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from apps.common import periods
 from apps.common.api import (
     HasWorkspaceMembership,
     IsWorkspaceOwner,
@@ -30,11 +31,28 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         model = Workspace
         fields = (
             "id", "name", "role", "member_count",
-            "base_currency",
+            "base_currency", "budget_period",
             "inbound_token", "inbound_email",
             "created_at", "updated_at",
         )
         read_only_fields = ("id", "inbound_token", "created_at", "updated_at")
+
+    def update(self, instance, validated_data):
+        # Cambiar la cadencia no reescribe los CategoryBudget.period_start ya
+        # guardados (siguen representando el período que representaban), pero
+        # si dejáramos `budget_period_closed_through` con el valor viejo, el
+        # próximo cierre (`close_previous_budget_period`) trataría de ponerse
+        # al día período por período bajo la grilla NUEVA desde una fecha
+        # pensada para la vieja -- casi seguro desalineada. Más simple y más
+        # seguro: arrancar de cero, sin reconstruir rollover retroactivo
+        # cruzando el cambio de cadencia.
+        if "budget_period" in validated_data and validated_data["budget_period"] != instance.budget_period:
+            today = timezone.localdate()
+            validated_data["budget_period_closed_through"] = periods.previous_period_start(
+                periods.period_start(today, validated_data["budget_period"]),
+                validated_data["budget_period"],
+            )
+        return super().update(instance, validated_data)
 
     def get_role(self, obj) -> str:
         user = self.context["request"].user

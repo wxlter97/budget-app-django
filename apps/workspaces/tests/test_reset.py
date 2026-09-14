@@ -1,4 +1,5 @@
 """POST /api/v1/workspaces/{id}/reset/ — reinicio de datos del workspace."""
+import datetime as dt
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -32,7 +33,7 @@ class WorkspaceResetTests(APITestCase):
             type=Transaction.TYPE_EXPENSE, date="2026-09-01", created_by=self.owner,
         )
         CategoryBudget.objects.create(
-            workspace=self.ws, category=self.cat, amount=Decimal("300"), month=9, year=2026,
+            workspace=self.ws, category=self.cat, amount=Decimal("300"), period_start=dt.date(2026, 9, 1),
         )
 
     def _url(self):

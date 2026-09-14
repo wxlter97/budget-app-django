@@ -316,7 +316,9 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
-# Orden en el día 1: recurrentes -> cierre de mes.
+# Orden: recurrentes -> cierres -> recordatorios (mismo orden que
+# `run_daily_tasks`, el comando que reemplaza esto en producción -- ver
+# DEPLOY.md §6, acá sin Celery corriendo).
 CELERY_BEAT_SCHEDULE = {
     "generate-recurring-transactions": {
         "task": "apps.transactions.tasks.generate_recurring_transactions",
@@ -325,6 +327,12 @@ CELERY_BEAT_SCHEDULE = {
     "close-previous-month": {
         "task": "apps.reports.tasks.close_previous_month",
         "schedule": crontab(hour=0, minute=5, day_of_month=1),
+    },
+    "close-previous-budget-period": {
+        "task": "apps.reports.tasks.close_previous_budget_period",
+        # Diaria, no sólo el día 1: la cadencia real (workspace.budget_period)
+        # puede ser diaria o semanal, y la tarea es idempotente sola.
+        "schedule": crontab(hour=0, minute=10),
     },
     "send-daily-reminders": {
         "task": "apps.notifications.tasks.send_daily_reminders",

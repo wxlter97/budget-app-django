@@ -1,3 +1,5 @@
+import datetime as dt
+
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import mixins, serializers, viewsets
@@ -6,9 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-_YEAR = OpenApiParameter("year", int, description="Año (default: actual)")
-_MONTH = OpenApiParameter("month", int, description="Mes 1-12 (default: actual)")
-
+from apps.common import periods
 from apps.common.api import HasWorkspaceMembership, WorkspaceScopedViewSet
 
 from . import services
@@ -64,6 +64,13 @@ class NetWorthSerializer(serializers.Serializer):
     base_currency = serializers.CharField()
 
 
+_PERIOD_START = OpenApiParameter(
+    "period_start", str,
+    description="YYYY-MM-DD dentro del período deseado (default: hoy). "
+    "Se ajusta server-side al inicio real según `workspace.budget_period`.",
+)
+
+
 class BudgetRowSerializer(serializers.Serializer):
     category = serializers.UUIDField()
     category_name = serializers.CharField(allow_null=True)
@@ -89,8 +96,8 @@ class BudgetGroupSerializer(serializers.Serializer):
 
 
 class BudgetReportSerializer(serializers.Serializer):
-    year = serializers.IntegerField()
-    month = serializers.IntegerField()
+    period_start = serializers.DateField()
+    period_end = serializers.DateField()
     base_currency = serializers.CharField()
     rows = BudgetRowSerializer(many=True)
     groups = BudgetGroupSerializer(many=True)
@@ -161,25 +168,29 @@ class CategoryTrendsSerializer(serializers.Serializer):
 class _BaseReportView(APIView):
     permission_classes = [IsAuthenticated, HasWorkspaceMembership]
 
-    def year_month(self, request):
-        today = timezone.localdate()
-        try:
-            year = int(request.query_params.get("year", today.year))
-            month = int(request.query_params.get("month", today.month))
-        except (TypeError, ValueError):
-            raise ValidationError("`year` y `month` deben ser enteros.")
-        if not 1 <= month <= 12:
-            raise ValidationError({"month": "Debe estar entre 1 y 12."})
-        return year, month
+    def budget_period_start(self, request):
+        """Cualquier fecha dentro del período deseado (default: hoy),
+        ajustada al inicio real del período según `workspace.budget_period`
+        -- mismo criterio que `CategoryBudgetSerializer.validate_period_start`."""
+        raw = request.query_params.get("period_start")
+        if raw is None:
+            d = timezone.localdate()
+        else:
+            try:
+                d = dt.date.fromisoformat(raw)
+            except ValueError:
+                raise ValidationError({"period_start": "Debe ser una fecha YYYY-MM-DD."})
+        return periods.period_start(d, request.workspace.budget_period)
 
 
 class BudgetReportView(_BaseReportView):
-    """Presupuesto vs. gasto real por categoría. `?year=&month=` (default: mes actual)."""
+    """Presupuesto vs. gasto real por categoría, para el período de
+    `workspace.budget_period` que contiene a `?period_start=` (default: hoy)."""
 
-    @extend_schema(parameters=[_YEAR, _MONTH], responses=BudgetReportSerializer)
+    @extend_schema(parameters=[_PERIOD_START], responses=BudgetReportSerializer)
     def get(self, request):
-        year, month = self.year_month(request)
-        data = services.budget_vs_actual(request.workspace, request.user, year, month)
+        period_start = self.budget_period_start(request)
+        data = services.budget_vs_actual(request.workspace, request.user, period_start)
         return Response(BudgetReportSerializer(data).data)
 
 

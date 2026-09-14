@@ -117,13 +117,13 @@ class CategoryGroupTests(APITestCase):
         # pero pudo quedar de antes -- no debe sumarse aparte del de la hija.
         CategoryBudget.objects.create(
             workspace=self.ws, category=self.group, amount=Decimal("999.00"),
-            month=6, year=2026,
+            period_start=dt.date(2026, 6, 1),
         )
         CategoryBudget.objects.create(
             workspace=self.ws, category=self.child, amount=Decimal("100.00"),
-            month=6, year=2026,
+            period_start=dt.date(2026, 6, 1),
         )
-        report = budget_vs_actual(self.ws, self.user, 2026, 6)
+        report = budget_vs_actual(self.ws, self.user, dt.date(2026, 6, 1))
         grp = next(g for g in report["groups"] if g["group_name"] == "Vivienda")
         self.assertEqual(grp["budgeted"], Decimal("100.00"))
 
@@ -146,7 +146,7 @@ class TransferWithCategoryBudgetTests(APITestCase):
         )
         CategoryBudget.objects.create(
             workspace=cls.ws, category=cls.ahorro_group, amount=Decimal("500.00"),
-            year=2026, month=3,
+            period_start=dt.date(2026, 3, 1),
         )
 
     def setUp(self):
@@ -169,7 +169,7 @@ class TransferWithCategoryBudgetTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
         self.assertEqual(str(res.data["category"]), str(self.ahorro_group.id))
 
-        report = budget_vs_actual(self.ws, self.user, 2026, 3)
+        report = budget_vs_actual(self.ws, self.user, dt.date(2026, 3, 1))
         row = next(r for r in report["rows"] if r["category_name"] == "Ahorro")
         self.assertEqual(row["spent"], Decimal("500.00"))
         self.assertEqual(row["remaining"], Decimal("0.00"))
@@ -183,7 +183,7 @@ class TransferWithCategoryBudgetTests(APITestCase):
             type="transfer", wallet=self.checking, to_wallet=self.savings,
             amount=Decimal("100.00"), date=dt.date(2026, 3, 6),
         )
-        report = budget_vs_actual(self.ws, self.user, 2026, 3)
+        report = budget_vs_actual(self.ws, self.user, dt.date(2026, 3, 1))
         rows = [r for r in report["rows"] if r["spent"] != Decimal("0")]
         self.assertEqual(rows, [])
 
