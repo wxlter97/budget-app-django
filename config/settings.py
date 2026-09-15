@@ -230,9 +230,15 @@ if RUNNING_TESTS:
         key: None for key in REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
     }
 
+# 60 días de refresh (antes 14, 14 sep 2026) -- "sesión de larga duración en
+# este dispositivo", pedido explícito: con ROTATE_REFRESH_TOKENS +
+# BLACKLIST_AFTER_ROTATION, mientras se siga abriendo la app dentro de esa
+# ventana el refresh automático del cliente (ver api/client.ts) la renueva
+# sola, sin volver a pedir login. El access de 30 min no cambia -- ahí no
+# está el problema si el refresh funciona.
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env.int("JWT_ACCESS_MINUTES", default=30)),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=env.int("JWT_REFRESH_DAYS", default=14)),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=env.int("JWT_REFRESH_DAYS", default=60)),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
