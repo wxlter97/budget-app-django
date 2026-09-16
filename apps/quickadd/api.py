@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 
 from apps.common.api import HasWorkspaceMembership
 from apps.transactions.models import Category, Transaction
-from apps.transactions.services import guess_category_by_merchant
+from apps.transactions.services import find_possible_duplicates, guess_category_by_merchant
 
 from .authentication import PersonalAccessTokenAuthentication
 from .models import PersonalAccessToken
@@ -201,6 +201,18 @@ class QuickAddView(APIView):
                 "categories": list(options),
             })
 
+        date = data.get("date") or timezone.localdate()
+        duplicate = find_possible_duplicates(wallet=wallet, amount=data["amount"], date=date).first()
+        if duplicate is not None:
+            return Response(
+                {
+                    "error": "duplicate",
+                    "detail": "Ya existe una transacción igual (misma cartera, monto y fecha cercana).",
+                    "transaction_id": duplicate.id,
+                },
+                status=409,
+            )
+
         txn = Transaction.objects.create(
             type=txn_type,
             wallet=wallet,
@@ -208,7 +220,7 @@ class QuickAddView(APIView):
             amount=data["amount"],
             currency=wallet.currency,
             description=data["merchant"],
-            date=data.get("date") or timezone.localdate(),
+            date=date,
             created_by=token.user,
             source=Transaction.SOURCE_QUICK_ADD,
         )

@@ -156,6 +156,21 @@ class Transaction(BaseModel):
         related_name="transactions",
     )
     is_recurring = models.BooleanField(default=False)
+    # Gasto que se espera recuperar (p. ej. un adelanto que reembolsa el
+    # trabajo, un trámite que reembolsa el seguro). `is_refunded` sólo tiene
+    # sentido si `is_refundable` está en True; el serializer no lo exige --
+    # marcar "reembolsado" algo que no se marcó "reembolsable" no rompe nada,
+    # simplemente no tiene mucho sentido de negocio.
+    is_refundable = models.BooleanField(default=False)
+    is_refunded = models.BooleanField(default=False)
+    # Quién puso el dinero de esta transacción, cuando se divide entre varias
+    # personas (ver Person/TransactionShare más abajo). `null` = no dividida
+    # entre personas (el caso normal). No confundir con `split_group`, que
+    # divide el MONTO entre categorías -- ambas divisiones son independientes
+    # y pueden coexistir.
+    paid_by = models.ForeignKey(
+        "Person", on_delete=models.SET_NULL, null=True, blank=True, related_name="paid_transactions"
+    )
     # Todas las partes de una misma transacción dividida comparten este UUID
     # (ver TransactionViewSet.split); null en una transacción normal. No es
     # una FK a otro modelo -- cada parte es una Transaction real e
@@ -197,6 +212,55 @@ class Transaction(BaseModel):
 
     def __str__(self):
         return f"{self.description} {self.amount}"
+
+
+class Person(BaseModel):
+    """Alguien con quien se divide una transacción (ver TransactionShare).
+    Puede ser un `member` real del workspace, o alguien externo identificado
+    sólo por nombre (un amigo que no usa la app) -- por eso `member` es
+    opcional y `name` siempre está, aunque para un member normalmente
+    coincide con su nombre de usuario."""
+
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="people")
+    name = models.CharField(max_length=100)
+    member = models.ForeignKey(
+        "workspaces.Membership", on_delete=models.SET_NULL, null=True, blank=True, related_name="person"
+    )
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "member"],
+                condition=models.Q(member__isnull=False),
+                name="unique_person_per_membership",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class TransactionShare(BaseModel):
+    """La parte de `transaction` que le corresponde a `person`, cuando se
+    divide entre varias personas (ver `TransactionViewSet.split_people`) --
+    distinto de `split_group`, que divide el MONTO entre categorías. Mientras
+    `is_settled` sea False, `person` le debe `amount` a `transaction.paid_by`
+    (ver `services.person_balances`)."""
+
+    transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name="shares")
+    person = models.ForeignKey(Person, on_delete=models.PROTECT, related_name="transaction_shares")
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    is_settled = models.BooleanField(default=False)
+    settled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["transaction", "person"], name="unique_share_per_person"),
+        ]
+
+    def __str__(self):
+        return f"{self.person} debe {self.amount} de {self.transaction_id}"
 
 
 class CategoryBudget(BaseModel):

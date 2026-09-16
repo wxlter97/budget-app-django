@@ -518,8 +518,12 @@ class BackupRestoreScaleTests(APITestCase):
 
         self.assertEqual(summary["transactions"], n)
         # Lo que importa no es el número exacto sino que no escale con `n`:
-        # muy por debajo de una consulta por movimiento.
-        self.assertLess(len(ctx.captured_queries), 100)
+        # muy por debajo de una consulta por movimiento. El techo tiene algo
+        # de margen porque cada columna nueva en Transaction reduce cuántas
+        # filas entran por lote de `bulk_create` bajo el límite de parámetros
+        # de SQLite -- más columnas, más lotes, sin que la cantidad de
+        # consultas pase a depender de `n`.
+        self.assertLess(len(ctx.captured_queries), 150)
         self.assertLess(elapsed, 10, "restaurar 3000 movimientos no debería tardar tanto")
 
         self.assertEqual(Transaction.objects.filter(wallet__workspace=self.ws).count(), n)

@@ -22,6 +22,8 @@ env = environ.Env(
     CORS_ALLOWED_ORIGINS=(list, []),
     DJANGO_TIME_ZONE=(str, "UTC"),
     DJANGO_LANGUAGE_CODE=(str, "es"),
+    MAINTENANCE_MODE=(bool, False),
+    MAINTENANCE_MESSAGE=(str, "En mantenimiento por unos minutos, ya volvemos."),
 )
 
 # Lee budget/.env si existe (no obligatorio en producción)
@@ -35,6 +37,10 @@ if env_file.exists():
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-insecure-change-me")
 DEBUG = env("DJANGO_DEBUG")
 ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS")
+
+# Ver apps.common.middleware.MaintenanceModeMiddleware / RUNBOOK.md.
+MAINTENANCE_MODE = env("MAINTENANCE_MODE")
+MAINTENANCE_MESSAGE = env("MAINTENANCE_MESSAGE")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
@@ -87,6 +93,7 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 # ---------------------------------------------------------------------------
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "apps.common.middleware.MaintenanceModeMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",

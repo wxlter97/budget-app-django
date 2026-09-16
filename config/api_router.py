@@ -19,6 +19,7 @@ from apps.transactions.api import (
     CategoryBudgetViewSet,
     CategoryViewSet,
     InstallmentPurchaseViewSet,
+    PersonViewSet,
     RecurringExpenseViewSet,
     TagViewSet,
     TransactionViewSet,
@@ -41,6 +42,7 @@ router.register("wallets", WalletViewSet, basename="wallet")
 router.register("categories", CategoryViewSet, basename="category")
 router.register("tags", TagViewSet, basename="tag")
 router.register("transactions", TransactionViewSet, basename="transaction")
+router.register("people", PersonViewSet, basename="person")
 router.register("category-budgets", CategoryBudgetViewSet, basename="categorybudget")
 router.register("recurring-expenses", RecurringExpenseViewSet, basename="recurringexpense")
 router.register("installment-purchases", InstallmentPurchaseViewSet, basename="installmentpurchase")
