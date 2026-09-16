@@ -7,14 +7,16 @@ nada. Las compras a plazo (`InstallmentPurchase`) ya no generan
 transacciones por cuota -- `installment_amounts` solo calcula montos para el
 estado de cuenta (ver `apps.accounts.services.installment_status`).
 """
+import datetime as dt
+from collections import defaultdict
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 from django.db import transaction as db_transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 
-from .models import Category, RecurringExpense, Transaction
+from .models import Category, Person, RecurringExpense, Transaction, TransactionShare
 
 
 def guess_category_by_merchant(*, workspace, txn_type, merchant):
@@ -340,3 +342,88 @@ def dismiss_recurring_suggestion(workspace, category, wallet, amount):
         workspace=workspace, category=category, wallet=wallet,
         approx_amount=_approx_amount(amount),
     )
+
+
+# ---------------------------------------------------------------------------
+# Duplicados (Apple Pay / correo / carga manual)
+# ---------------------------------------------------------------------------
+# Ventana de tolerancia: algunos bancos reportan la fecha del cargo con un
+# día de diferencia respecto a cuándo ocurrió de verdad, y una notificación
+# de Apple Pay o un correo bancario reenviado puede volver a dispararse un
+# rato después (mismo día casi siempre, pero no siempre).
+DUPLICATE_WINDOW_DAYS = 1
+
+
+def find_possible_duplicates(*, wallet, amount, date, exclude_id=None):
+    """Transacciones vivas en `wallet` con el mismo monto y una fecha dentro
+    de ±`DUPLICATE_WINDOW_DAYS` días -- candidatas a duplicado. No filtra por
+    `source`: un alta manual el mismo día que ya importó el correo del banco
+    también cuenta."""
+    start = date - dt.timedelta(days=DUPLICATE_WINDOW_DAYS)
+    end = date + dt.timedelta(days=DUPLICATE_WINDOW_DAYS)
+    qs = Transaction.objects.filter(wallet=wallet, amount=amount, date__gte=start, date__lte=end)
+    if exclude_id is not None:
+        qs = qs.exclude(id=exclude_id)
+    return qs.order_by("-date")
+
+
+# ---------------------------------------------------------------------------
+# División de transacciones entre personas
+# ---------------------------------------------------------------------------
+def get_or_create_self_person(workspace, membership):
+    """El `Person` que representa al usuario autenticado dentro de un split
+    -- se crea la primera vez que hace falta (al pagar o participar en una
+    división), no al crear el workspace."""
+    person, created = Person.objects.get_or_create(
+        workspace=workspace,
+        member=membership,
+        defaults={"name": membership.user.get_full_name() or membership.user.email},
+    )
+    return person
+
+
+def person_balances(workspace):
+    """Balance neto entre cada par de personas del workspace que tiene
+    divisiones sin liquidar: quién le debe cuánto a quién, ya neteado (si A
+    le debe 10 a B y B le debe 4 a A, el resultado es un solo renglón: A le
+    debe 6 a B). No incluye pares en 0."""
+    shares = (
+        TransactionShare.objects.filter(
+            transaction__wallet__workspace=workspace,
+            transaction__is_deleted=False,
+            is_deleted=False,
+            is_settled=False,
+            transaction__paid_by__isnull=False,
+        )
+        .exclude(person=F("transaction__paid_by"))
+        .select_related("person", "transaction__paid_by")
+    )
+
+    owed = defaultdict(Decimal)  # (debtor_id, creditor_id) -> monto
+    people_by_id = {}
+    for share in shares:
+        debtor = share.person
+        creditor = share.transaction.paid_by
+        people_by_id[debtor.id] = debtor
+        people_by_id[creditor.id] = creditor
+        owed[(debtor.id, creditor.id)] += share.amount
+
+    seen = set()
+    results = []
+    for (debtor_id, creditor_id), amount in owed.items():
+        pair = frozenset((debtor_id, creditor_id))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        reverse_amount = owed.get((creditor_id, debtor_id), Decimal("0"))
+        net = amount - reverse_amount
+        if net > 0:
+            results.append(
+                {"from_person": people_by_id[debtor_id], "to_person": people_by_id[creditor_id], "amount": net}
+            )
+        elif net < 0:
+            results.append(
+                {"from_person": people_by_id[creditor_id], "to_person": people_by_id[debtor_id], "amount": -net}
+            )
+    results.sort(key=lambda r: -r["amount"])
+    return results

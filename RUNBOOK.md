@@ -110,7 +110,28 @@ producción) -- mínimo indispensable mientras tanto:
    escribirles es lo mínimo correcto (y probablemente legalmente exigido
    según cómo termine la ley de protección de datos de El Salvador).
 
-## 8. Contactos / accesos que vas a necesitar en el momento
+## 8. Ventana de mantenimiento de emergencia
+
+Para bajar el API a propósito unos minutos (p. ej. antes de una migración
+riesgosa o una restauración de Neon): variable de entorno `MAINTENANCE_MODE`
+(ver `apps/common/middleware.py`), no un flag en base de datos ni un botón
+en el admin -- así sigue funcionando aunque la base esté justo en el medio
+del problema.
+
+1. En Cloud Run: `gcloud run services update budget-api --region us-east1
+   --update-env-vars MAINTENANCE_MODE=True` (redeploy casi instantáneo, sin
+   rebuild). Todo el API responde 503 con el mensaje de `MAINTENANCE_MESSAGE`,
+   salvo `/healthz/` (Cloud Run sigue viendo el servicio sano) y `/admin/`
+   (para poder seguir operando).
+2. Hacer el trabajo riesgoso.
+3. Quitarlo: `gcloud run services update budget-api --region us-east1
+   --update-env-vars MAINTENANCE_MODE=False`.
+
+El frontend (moneyapp) reconoce la respuesta 503 y muestra una pantalla de
+"en mantenimiento" en vez del error genérico -- no hace falta avisarle nada
+aparte.
+
+## 10. Contactos / accesos que vas a necesitar en el momento
 
 Completar antes de que haga falta, no durante el incidente:
 - Acceso a GCP (`gcloud auth login` con la cuenta dueña del proyecto).

@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from apps.accounts.models import Wallet
 from apps.common.api import HasWorkspaceMembership
 from apps.transactions.models import Category, Transaction
-from apps.transactions.services import guess_category_by_merchant
+from apps.transactions.services import find_possible_duplicates, guess_category_by_merchant
 
 from . import services
 from .models import BankEmailSchema, EmailImportLog
@@ -204,6 +204,17 @@ class EmailImportLogViewSet(
                 "category": "No pude adivinar la categoría — elegí una.",
                 "categories": list(options),
             })
+
+        duplicate = find_possible_duplicates(wallet=wallet, amount=amount, date=date).first()
+        if duplicate is not None:
+            return Response(
+                {
+                    "error": "duplicate",
+                    "detail": "Ya existe una transacción igual (misma cartera, monto y fecha cercana) -- probablemente este correo ya se había importado.",
+                    "transaction_id": duplicate.id,
+                },
+                status=409,
+            )
 
         with db_transaction.atomic():
             txn = Transaction.objects.create(

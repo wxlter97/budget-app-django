@@ -27,9 +27,11 @@ from .models import (
     Category,
     CategoryBudget,
     InstallmentPurchase,
+    Person,
     RecurringExpense,
     Tag,
     Transaction,
+    TransactionShare,
 )
 
 _MONEY = DecimalField(max_digits=14, decimal_places=2)
@@ -268,6 +270,94 @@ class TagViewSet(WorkspaceScopedViewSet):
 
 
 # ---------------------------------------------------------------------------
+# Person (para dividir transacciones entre varias personas)
+# ---------------------------------------------------------------------------
+class PersonSerializer(serializers.ModelSerializer):
+    is_me = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Person
+        fields = ("id", "name", "member", "is_me", "created_at")
+        read_only_fields = ("id", "member", "is_me", "created_at")
+
+    def get_is_me(self, obj) -> bool:
+        membership = self.context.get("membership")
+        return bool(membership and obj.member_id == membership.id)
+
+    def create(self, validated_data):
+        validated_data["workspace"] = self.context["workspace"]
+        return super().create(validated_data)
+
+
+class PersonViewSet(WorkspaceScopedViewSet):
+    """Gente con la que se dividen transacciones (ver TransactionShare). No
+    incluye `member`: los miembros del workspace se agregan solos como
+    Person la primera vez que participan de un split (ver
+    `services.get_or_create_self_person`) -- acá sólo se crean a mano las
+    personas externas (amigos sin cuenta)."""
+
+    serializer_class = PersonSerializer
+    queryset = Person.objects.select_related("member__user").all()
+
+    def perform_destroy(self, instance):
+        if instance.transaction_shares.exists() or instance.paid_transactions.exists():
+            raise ValidationError(
+                "Esta persona tiene transacciones divididas asociadas; no se puede borrar."
+            )
+        super().perform_destroy(instance)
+
+
+class TransactionShareSerializer(serializers.ModelSerializer):
+    person_name = serializers.CharField(source="person.name", read_only=True)
+
+    class Meta:
+        model = TransactionShare
+        fields = ("id", "person", "person_name", "amount", "is_settled", "settled_at")
+        read_only_fields = ("id", "person_name", "settled_at")
+
+
+class SplitPeoplePartSerializer(serializers.Serializer):
+    person = serializers.PrimaryKeyRelatedField(queryset=Person.objects.all())
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Tiene que ser mayor que 0.")
+        return value
+
+
+class SplitPeopleSerializer(serializers.Serializer):
+    """Body de la acción `split-people`: quién puso el dinero (por defecto,
+    el usuario autenticado) y cómo se reparte entre las demás personas. La
+    suma de `participants` no tiene que agotar el monto total -- lo normal
+    es que el pagador se quede con su propia parte sin una fila explícita
+    (ver `TransactionViewSet.split_people`)."""
+
+    paid_by = serializers.PrimaryKeyRelatedField(queryset=Person.objects.all(), required=False)
+    participants = SplitPeoplePartSerializer(many=True)
+
+    def validate_participants(self, participants):
+        if len(participants) < 1:
+            raise serializers.ValidationError("Hace falta al menos una persona.")
+        seen = set()
+        for p in participants:
+            if p["person"].id in seen:
+                raise serializers.ValidationError("Una misma persona no puede repetirse.")
+            seen.add(p["person"].id)
+        return participants
+
+
+class SettleShareSerializer(serializers.Serializer):
+    is_settled = serializers.BooleanField()
+
+
+class PersonBalanceSerializer(serializers.Serializer):
+    from_person = PersonSerializer()
+    to_person = PersonSerializer()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
+# ---------------------------------------------------------------------------
 # Transaction
 # ---------------------------------------------------------------------------
 class TransactionSerializer(serializers.ModelSerializer):
@@ -298,6 +388,8 @@ class TransactionSerializer(serializers.ModelSerializer):
         max_digits=14, decimal_places=2, write_only=True, required=False, allow_null=True,
     )
     loyalty_earnings = serializers.SerializerMethodField()
+    paid_by_name = serializers.CharField(source="paid_by.name", read_only=True, default=None)
+    shares = TransactionShareSerializer(many=True, read_only=True)
 
     class Meta:
         model = Transaction
@@ -315,7 +407,12 @@ class TransactionSerializer(serializers.ModelSerializer):
             "counts_toward_budget",
             "source",
             "is_recurring",
+            "is_refundable",
+            "is_refunded",
             "split_group",
+            "paid_by",
+            "paid_by_name",
+            "shares",
             "tags",
             "tag_names",
             "discount_program",
@@ -325,10 +422,11 @@ class TransactionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        # split_group no se manda nunca a mano: sólo lo asigna la acción
-        # `split` (ver más abajo) al partir una transacción en varias.
+        # split_group/paid_by/shares no se mandan nunca a mano: sólo los
+        # asigna la acción `split`/`split-people` (ver más abajo).
         read_only_fields = (
-            "id", "currency", "split_group", "created_by", "created_at", "updated_at",
+            "id", "currency", "split_group", "paid_by", "paid_by_name", "shares",
+            "created_by", "created_at", "updated_at",
         )
 
     def get_has_receipt(self, obj) -> bool:
@@ -559,6 +657,8 @@ class TransactionFilter(filters.FilterSet):
             "is_recurring": ["exact"],
             "counts_toward_budget": ["exact"],
             "split_group": ["exact"],
+            "is_refundable": ["exact"],
+            "is_refunded": ["exact"],
         }
 
 
@@ -569,8 +669,8 @@ class TransactionViewSet(WorkspaceScopedViewSet):
     workspace_field = "wallet__workspace"
     filterset_class = TransactionFilter
     queryset = Transaction.objects.select_related(
-        "wallet", "to_wallet", "category", "created_by"
-    ).prefetch_related("loyalty_earnings__program").all()
+        "wallet", "to_wallet", "category", "created_by", "paid_by"
+    ).prefetch_related("loyalty_earnings__program", "shares__person").all()
 
     def get_queryset(self):
         user = self.request.user
@@ -683,6 +783,114 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             txn.soft_delete()
 
         return Response(self.get_serializer(new_parts, many=True).data, status=201)
+
+    @action(detail=True, methods=["post"], url_path="split-people")
+    def split_people(self, request, pk=None):
+        """
+        Divide esta transacción (gasto, no transferencia) entre varias
+        personas -- p. ej. una cena pagada por mí que reparto con 2 amigos.
+        A diferencia de `split` (que reemplaza la transacción por varias),
+        acá la transacción original NO se toca en monto/categoría: sólo se
+        le agregan `paid_by` (quién puso el dinero, por defecto yo) y una
+        `TransactionShare` por cada participante indicado -- lo que no
+        alcanza a cubrir esas partes queda como la parte del pagador,
+        implícita (no hace falta una fila propia para "mi parte").
+
+        Reemplaza cualquier división anterior de esta misma transacción
+        (llamar de nuevo con una lista distinta corrige el reparto).
+        """
+        txn = self.get_object()
+        if txn.type == Transaction.TYPE_TRANSFER:
+            raise ValidationError("No se puede dividir una transferencia entre personas.")
+
+        serializer = SplitPeopleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        participants = serializer.validated_data["participants"]
+        paid_by = serializer.validated_data.get("paid_by") or services.get_or_create_self_person(
+            request.workspace, request.membership
+        )
+
+        workspace = request.workspace
+        if paid_by.workspace_id != workspace.id:
+            raise ValidationError({"paid_by": "Es de otro workspace."})
+        for p in participants:
+            if p["person"].workspace_id != workspace.id:
+                raise ValidationError({"participants": "Una persona es de otro workspace."})
+
+        total_shares = sum((p["amount"] for p in participants), Decimal("0"))
+        if total_shares > txn.amount:
+            raise ValidationError(
+                {"participants": f"Las partes suman {total_shares}, más que el monto de la transacción ({txn.amount})."}
+            )
+
+        with db_transaction.atomic():
+            txn.shares.all().delete()
+            txn.paid_by = paid_by
+            txn.save(update_fields=["paid_by", "updated_at"])
+            TransactionShare.objects.bulk_create(
+                [
+                    TransactionShare(transaction=txn, person=p["person"], amount=p["amount"])
+                    for p in participants
+                ]
+            )
+
+        # Refresca desde cero: `txn` todavía trae en caché el prefetch de
+        # `shares` de antes de borrarlas/crearlas (ver `get_object()`).
+        txn = self.get_queryset().get(pk=txn.pk)
+        return Response(self.get_serializer(txn).data)
+
+    @action(detail=True, methods=["post"], url_path="settle-share/(?P<share_id>[^/.]+)")
+    def settle_share(self, request, pk=None, share_id=None):
+        """Marca (o desmarca) como liquidada la parte de una persona en esta
+        transacción dividida -- para saber quién ya pagó su parte."""
+        txn = self.get_object()
+        share = txn.shares.filter(id=share_id).first()
+        if share is None:
+            raise NotFound("Esa persona no tiene una parte en esta transacción.")
+
+        serializer = SettleShareSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        share.is_settled = serializer.validated_data["is_settled"]
+        share.settled_at = timezone.now() if share.is_settled else None
+        share.save(update_fields=["is_settled", "settled_at", "updated_at"])
+
+        txn = self.get_queryset().get(pk=txn.pk)
+        return Response(self.get_serializer(txn).data)
+
+    @action(detail=False, methods=["get"])
+    def balances(self, request):
+        """Quién le debe cuánto a quién en el workspace activo, entre las
+        divisiones por persona sin liquidar (ver `services.person_balances`)."""
+        data = services.person_balances(request.workspace)
+        return Response(
+            PersonBalanceSerializer(data, many=True, context=self.get_serializer_context()).data
+        )
+
+    @action(detail=False, methods=["get"], url_path="check-duplicate")
+    def check_duplicate(self, request):
+        """Transacciones existentes que podrían ser la misma que se está por
+        cargar a mano (mismo monto y cartera, fecha cercana) -- para que el
+        formulario avise antes de guardar. No bloquea nada: sólo informa."""
+        wallet_id = request.query_params.get("wallet")
+        amount = request.query_params.get("amount")
+        date_str = request.query_params.get("date")
+        if not (wallet_id and amount and date_str):
+            raise ValidationError("Requiere wallet, amount y date.")
+
+        wallet = Wallet.objects.filter(id=wallet_id, workspace=request.workspace).first()
+        if wallet is None:
+            raise ValidationError({"wallet": "No encontrada."})
+        try:
+            amount = Decimal(amount)
+            date = dt.date.fromisoformat(date_str)
+        except (ValueError, ArithmeticError):
+            raise ValidationError("amount o date inválidos.")
+
+        exclude_id = request.query_params.get("exclude")
+        matches = services.find_possible_duplicates(
+            wallet=wallet, amount=amount, date=date, exclude_id=exclude_id
+        )
+        return Response(self.get_serializer(matches, many=True).data)
 
     @action(detail=False, methods=["get"], url_path="import-template")
     def import_template(self, request):
