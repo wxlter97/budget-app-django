@@ -51,6 +51,33 @@ class Wallet(BaseModel):
         (VISIBILITY_PRIVATE, "Privada"),
     ]
 
+    # Tasa de interés a ganar en carteras de ahorro (`purpose=savings`). Es un
+    # campo separado de `interest_rate` (que es la tasa de una deuda/tarjeta y
+    # se usa distinto en `services._months_to_payoff`) para no mezclar
+    # semánticas: acá la tasa siempre se guarda tal cual la da el banco, y
+    # `savings_interest_rate_period` dice si esa cifra ya es anual o mensual.
+    INTEREST_PERIOD_MONTHLY = "monthly"
+    INTEREST_PERIOD_ANNUAL = "annual"
+    INTEREST_PERIOD_CHOICES = [
+        (INTEREST_PERIOD_MONTHLY, "Mensual"),
+        (INTEREST_PERIOD_ANNUAL, "Anual"),
+    ]
+
+    # Frecuencia de capitalización: cada cuánto el interés ganado se suma a la
+    # base sobre la que se calcula el interés del día siguiente (interés
+    # compuesto). No es necesariamente cuándo el banco "deposita" el interés,
+    # solo afecta el cálculo de la proyección.
+    COMPOUNDING_DAILY = "daily"
+    COMPOUNDING_BIWEEKLY = "biweekly"
+    COMPOUNDING_MONTHLY = "monthly"
+    COMPOUNDING_ANNUAL = "annual"
+    COMPOUNDING_CHOICES = [
+        (COMPOUNDING_DAILY, "Diaria"),
+        (COMPOUNDING_BIWEEKLY, "Quincenal"),
+        (COMPOUNDING_MONTHLY, "Mensual"),
+        (COMPOUNDING_ANNUAL, "Anual"),
+    ]
+
     workspace = models.ForeignKey(
         Workspace, on_delete=models.CASCADE, related_name="wallets"
     )
@@ -99,6 +126,18 @@ class Wallet(BaseModel):
     goal_date = models.DateField(null=True, blank=True)
     monthly_contribution = models.DecimalField(
         max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    # Tasa de interés a ganar (editable). Ej: 3.500 = 3.5%, en el período que
+    # indica `savings_interest_rate_period`. `None` = esta cartera no gana
+    # interés / no se conoce la tasa.
+    savings_interest_rate = models.DecimalField(
+        max_digits=6, decimal_places=3, null=True, blank=True
+    )
+    savings_interest_rate_period = models.CharField(
+        max_length=10, choices=INTEREST_PERIOD_CHOICES, default=INTEREST_PERIOD_ANNUAL
+    )
+    savings_interest_compounding = models.CharField(
+        max_length=10, choices=COMPOUNDING_CHOICES, default=COMPOUNDING_MONTHLY
     )
 
     # Límite de crédito (solo tarjetas de crédito / líneas de crédito).
