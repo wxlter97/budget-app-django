@@ -10,6 +10,7 @@ from rest_framework_simplejwt.views import TokenVerifyView
 
 from apps.billing.api import CancelSubscriptionView, CheckoutView, MyPlanView, WompiWebhookView
 from apps.email_import.api import InboundEmailWebhookView
+from apps.gamification.api import GamificationSummaryView
 from apps.notifications.api import NotificationPreferenceView
 from apps.quickadd.api import QuickAddView
 from apps.reports.api import (
@@ -67,6 +68,7 @@ api_v1_patterns = [
     path("reports/category-trends/", CategoryTrendsView.as_view(), name="report-category-trends"),
     path("reports/summary/", DashboardSummaryView.as_view(), name="report-summary"),
     path("reports/scheduled/", ScheduledView.as_view(), name="report-scheduled"),
+    path("gamification/summary/", GamificationSummaryView.as_view(), name="gamification-summary"),
     path("dashboard/balance/", DashboardBalanceView.as_view(), name="dashboard-balance"),
     path(
         "email-import/inbound/",
