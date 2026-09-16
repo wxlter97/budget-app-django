@@ -15,6 +15,7 @@ from apps.loyalty.api import (
 from apps.notifications.api import NotificationViewSet, PushDeviceViewSet
 from apps.quickadd.api import PersonalAccessTokenViewSet
 from apps.reports.api import MonthlySnapshotViewSet
+from apps.support.api import SupportTicketViewSet
 from apps.transactions.api import (
     CategoryBudgetViewSet,
     CategoryViewSet,
@@ -65,5 +66,7 @@ router.register("push-devices", PushDeviceViewSet, basename="pushdevice")
 router.register("notifications", NotificationViewSet, basename="notification")
 
 router.register("plans", PlanViewSet, basename="plan")
+
+router.register("support-tickets", SupportTicketViewSet, basename="supportticket")
 
 urlpatterns = router.urls

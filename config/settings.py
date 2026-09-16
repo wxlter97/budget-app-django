@@ -24,6 +24,7 @@ env = environ.Env(
     DJANGO_LANGUAGE_CODE=(str, "es"),
     MAINTENANCE_MODE=(bool, False),
     MAINTENANCE_MESSAGE=(str, "En mantenimiento por unos minutos, ya volvemos."),
+    SUPPORT_WEBHOOK_URL=(str, ""),
 )
 
 # Lee budget/.env si existe (no obligatorio en producción)
@@ -41,6 +42,11 @@ ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS")
 # Ver apps.common.middleware.MaintenanceModeMiddleware / RUNBOOK.md.
 MAINTENANCE_MODE = env("MAINTENANCE_MODE")
 MAINTENANCE_MESSAGE = env("MAINTENANCE_MESSAGE")
+
+# Webhook de Discord al que se reenvía cada ticket de soporte nuevo (ver
+# apps.support.services.notify_new_ticket). Vacío = no se reenvía nada, el
+# ticket sólo queda guardado (visible en el admin).
+SUPPORT_WEBHOOK_URL = env("SUPPORT_WEBHOOK_URL")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
@@ -84,6 +90,7 @@ LOCAL_APPS = [
     "apps.quickadd",
     "apps.notifications",
     "apps.billing",
+    "apps.support",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
