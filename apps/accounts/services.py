@@ -15,7 +15,8 @@ import calendar
 import math
 from collections import defaultdict
 from datetime import date as date_cls
-from decimal import Decimal
+from datetime import timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from dateutil.relativedelta import relativedelta
 from django.db.models import Case, DecimalField, F, Q, Sum, When
@@ -93,6 +94,95 @@ def recompute_wallet_balance(wallet) -> Decimal:
     wallet.current_balance = _balance_as_of(wallet)
     wallet.save(update_fields=["current_balance", "updated_at"])
     return wallet.current_balance
+
+
+_CENTS = Decimal("0.01")
+
+
+def _savings_annual_rate(wallet) -> Decimal:
+    """Tasa anual (fracción, no %) que gana `wallet`, sea cual sea el período
+    en que el usuario la cargó."""
+    rate = wallet.savings_interest_rate or Decimal("0")
+    if wallet.savings_interest_rate_period == Wallet.INTEREST_PERIOD_MONTHLY:
+        rate = rate * 12
+    return rate / 100
+
+
+def _is_compounding_boundary(day: date_cls, compounding: str) -> bool:
+    """Si en `day` el interés acumulado desde la última vez se suma a la base
+    sobre la que se calcula el interés del día siguiente (interés
+    compuesto)."""
+    last_day_of_month = calendar.monthrange(day.year, day.month)[1]
+    if compounding == Wallet.COMPOUNDING_DAILY:
+        return True
+    if compounding == Wallet.COMPOUNDING_BIWEEKLY:
+        return day.day in (15, last_day_of_month)
+    if compounding == Wallet.COMPOUNDING_MONTHLY:
+        return day.day == last_day_of_month
+    if compounding == Wallet.COMPOUNDING_ANNUAL:
+        return day.month == 12 and day.day == 31
+    return False
+
+
+def savings_interest_projection(wallet, year: int, month: int) -> dict:
+    """Reporte de interés estimado para `wallet` (debe ser `purpose=savings`
+    y tener `savings_interest_rate` configurada) en el mes `year`-`month`.
+
+    Usa saldo diario ponderado: cada día del mes se calcula interés sobre el
+    saldo REAL de ese día (reconstruido de las transacciones vivas, igual que
+    `_balance_as_of`), más cualquier interés ya capitalizado en días
+    anteriores según `savings_interest_compounding`. Para los días del mes
+    que todavía no ocurrieron (mes en curso o futuro), se asume que el saldo
+    se mantiene igual al último saldo real conocido -- no proyectamos
+    depósitos/retiros que el usuario no hizo todavía.
+    """
+    if wallet.purpose != Wallet.PURPOSE_SAVINGS:
+        raise ValueError("Solo aplica a carteras de ahorro (purpose=savings).")
+
+    days_in_month = calendar.monthrange(year, month)[1]
+    first_day = date_cls(year, month, 1)
+    last_day = date_cls(year, month, days_in_month)
+    today = timezone.localdate()
+
+    opening_balance = _balance_as_of(wallet, first_day - timedelta(days=1))
+    annual_rate = _savings_annual_rate(wallet)
+    daily_rate = annual_rate / 365
+
+    compounded_base = Decimal("0")  # interés ya capitalizado, gana interés a su vez
+    pending = Decimal("0")  # interés de este período de capitalización, aún sin sumar a la base
+    total_interest = Decimal("0")
+    last_known_balance = opening_balance
+    closing_balance = opening_balance
+
+    cursor = first_day
+    while cursor <= last_day:
+        if cursor <= today:
+            last_known_balance = _balance_as_of(wallet, cursor)
+        balance = last_known_balance
+        closing_balance = balance
+
+        if daily_rate:
+            effective_balance = balance + compounded_base
+            day_interest = effective_balance * daily_rate
+            total_interest += day_interest
+            pending += day_interest
+            if _is_compounding_boundary(cursor, wallet.savings_interest_compounding):
+                compounded_base += pending
+                pending = Decimal("0")
+
+        cursor += timedelta(days=1)
+
+    return {
+        "wallet_id": wallet.id,
+        "year": year,
+        "month": month,
+        "opening_balance": opening_balance,
+        "closing_balance": closing_balance,
+        "annual_rate_pct": (annual_rate * 100).quantize(_CENTS, rounding=ROUND_HALF_UP),
+        "compounding": wallet.savings_interest_compounding,
+        "estimated_interest": total_interest.quantize(_CENTS, rounding=ROUND_HALF_UP),
+        "is_partial_month": today < last_day,
+    }
 
 
 def _months_to_payoff(principal: Decimal, monthly_payment: Decimal, annual_rate_pct: Decimal):

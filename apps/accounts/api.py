@@ -18,6 +18,7 @@ from .services import (
     credit_card_statements_summary,
     goal_projection,
     recompute_wallet_balance,
+    savings_interest_projection,
 )
 
 
@@ -74,6 +75,9 @@ class WalletSerializer(serializers.ModelSerializer):
             "goal_amount",
             "goal_date",
             "monthly_contribution",
+            "savings_interest_rate",
+            "savings_interest_rate_period",
+            "savings_interest_compounding",
             "progress_pct",
             "card_last4",
             "extra_cards",
@@ -160,6 +164,15 @@ class WalletSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"card_product": "Sólo aplica a tarjetas de crédito."}
             )
+
+        purpose = attrs.get("purpose", getattr(self.instance, "purpose", None))
+        savings_interest_rate = attrs.get(
+            "savings_interest_rate", getattr(self.instance, "savings_interest_rate", None)
+        )
+        if savings_interest_rate is not None and purpose != Wallet.PURPOSE_SAVINGS:
+            raise serializers.ValidationError(
+                {"savings_interest_rate": "Sólo aplica a carteras de ahorro."}
+            )
         return attrs
 
     def _sync_extra_cards(self, instance, extra_cards):
@@ -236,6 +249,15 @@ class CreditCardStatementSerializer(serializers.Serializer):
     installments_not_due = serializers.DecimalField(max_digits=16, decimal_places=2)
     total_due = serializers.DecimalField(max_digits=16, decimal_places=2)
     installment_lines = StatementInstallmentLineSerializer(many=True)
+
+
+class SavingsInterestProjectionSerializer(serializers.Serializer):
+    opening_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
+    closing_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
+    annual_rate_pct = serializers.DecimalField(max_digits=6, decimal_places=2)
+    compounding = serializers.CharField()
+    estimated_interest = serializers.DecimalField(max_digits=16, decimal_places=2)
+    is_partial_month = serializers.BooleanField()
 
 
 class CreditCardStatementSummarySerializer(CreditCardStatementSerializer):
@@ -408,6 +430,35 @@ class WalletViewSet(WorkspaceScopedViewSet):
                 status=404,
             )
         return Response(CreditCardStatementSerializer(data).data)
+
+    @action(detail=True, methods=["get"], url_path="interest-projection")
+    def interest_projection(self, request, pk=None):
+        """Reporte de interés estimado a ganar en un mes dado (`?year=&month=`,
+        el mes en curso por defecto) para una cartera de ahorro con
+        `savings_interest_rate` configurada -- ver
+        `services.savings_interest_projection`."""
+        wallet = self._owned_wallet(pk)
+        if wallet is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        if wallet.purpose != Wallet.PURPOSE_SAVINGS:
+            return Response(
+                {"detail": "Esta cartera no es de ahorro."}, status=404
+            )
+        if not wallet.savings_interest_rate:
+            return Response(
+                {"detail": "Esta cartera no tiene una tasa de interés configurada."},
+                status=404,
+            )
+        today = timezone.localdate()
+        try:
+            year = int(request.query_params.get("year", today.year))
+            month = int(request.query_params.get("month", today.month))
+        except ValueError:
+            return Response({"detail": "year/month inválidos."}, status=400)
+        if not 1 <= month <= 12:
+            return Response({"detail": "year/month inválidos."}, status=400)
+        data = savings_interest_projection(wallet, year, month)
+        return Response(SavingsInterestProjectionSerializer(data).data)
 
     @action(detail=False, methods=["get"])
     def statements(self, request):
