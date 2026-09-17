@@ -175,3 +175,76 @@ class Subscription(BaseModel):
         if self.current_period_end is None:
             return True
         return self.current_period_end >= timezone.now()
+
+
+class PromoCode(BaseModel):
+    """
+    Código de invitación: da acceso gratis a un plan sin pasar por ningún
+    proveedor de pago (crea una `Subscription` con ``provider=manual``,
+    igual que un alta manual del admin, pero autoservicio -- el usuario lo
+    canjea él mismo en vez de que un admin le cree la suscripción a mano).
+
+    Pensado para invitar a los primeros usuarios a probar sin pagar, no
+    para descuentos en el checkout real (que hoy no existe -- ver
+    `WompiProvider`, sin terminar).
+    """
+
+    code = models.CharField(
+        max_length=40, unique=True,
+        help_text="Sin distinguir mayúsculas/minúsculas al canjear -- se guarda en mayúsculas.",
+    )
+    plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="promo_codes")
+    duration_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Días de acceso desde que se canjea. Vacío = no vence (mientras dure la beta).",
+    )
+    max_redemptions = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Cuántas personas distintas pueden usarlo. Vacío = sin límite.",
+    )
+    redemption_count = models.PositiveIntegerField(default=0, editable=False)
+    expires_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Fecha límite para CANJEAR el código (no confundir con `duration_days`, "
+                   "que es cuánto dura el acceso ya canjeado). Vacío = sin fecha límite.",
+    )
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True, help_text="Uso interno -- p. ej. a quién se le mandó.")
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return self.code
+
+    def save(self, *args, **kwargs):
+        self.code = self.code.strip().upper()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_redeemable(self) -> bool:
+        if not self.is_active:
+            return False
+        if self.expires_at is not None and self.expires_at < timezone.now():
+            return False
+        if self.max_redemptions is not None and self.redemption_count >= self.max_redemptions:
+            return False
+        return True
+
+
+class PromoCodeRedemption(BaseModel):
+    """
+    Quién canjeó qué código. Un usuario sólo puede canjear un código en toda
+    su vida (no por código): así nadie encadena varias invitaciones para
+    extender el acceso gratis indefinidamente -- ver `services.redeem_promo_code`.
+    """
+
+    promo_code = models.ForeignKey(PromoCode, on_delete=models.PROTECT, related_name="redemptions")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="promo_code_redemption"
+    )
+    subscription = models.OneToOneField(
+        Subscription, on_delete=models.CASCADE, related_name="promo_code_redemption"
+    )
+
+    def __str__(self):
+        return f"{self.user} · {self.promo_code.code}"

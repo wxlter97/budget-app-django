@@ -6,10 +6,14 @@ necesita chequear un límite la lógica de "cuál suscripción cuenta".
 """
 from __future__ import annotations
 
-from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied
+from datetime import timedelta
 
-from .models import Plan, Subscription
+from django.db import transaction
+from django.db.models import F
+from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied, ValidationError
+
+from .models import PROVIDER_MANUAL, Plan, PromoCode, PromoCodeRedemption, Subscription
 from .providers import WebhookEvent
 
 
@@ -176,3 +180,51 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
         "external_subscription_id", "external_customer_id", "updated_at",
     ])
     return sub
+
+
+# ---------------------------------------------------------------------------
+# Códigos de invitación (acceso gratis, autoservicio)
+# ---------------------------------------------------------------------------
+def redeem_promo_code(user, code: str) -> Subscription:
+    """
+    Canjea un código de invitación: crea una `Subscription` activa al plan
+    del código (``provider=manual``, sin `plan_price` -- no hay cobro) y
+    registra el canje. Levanta `ValidationError` (400) si el código no
+    existe, no está vigente, ya se agotó, o el usuario ya canjeó uno antes.
+
+    `select_for_update` sobre la fila del código: sin esto, dos requests
+    concurrentes contra el último cupo de un código con `max_redemptions`
+    podrían leer el mismo `redemption_count` y ambas pasar el chequeo,
+    dejando el código con más canjes de los permitidos.
+    """
+    normalized = code.strip().upper()
+    if not normalized:
+        raise ValidationError({"code": "Ingresá un código."})
+
+    with transaction.atomic():
+        promo = (
+            PromoCode.objects.select_for_update()
+            .select_related("plan")
+            .filter(code=normalized)
+            .first()
+        )
+        if promo is None or not promo.is_redeemable:
+            raise ValidationError({"code": "Código inválido o vencido."})
+        if PromoCodeRedemption.objects.filter(user=user).exists():
+            raise ValidationError({"code": "Ya canjeaste un código de invitación antes."})
+
+        current_period_end = (
+            timezone.now() + timedelta(days=promo.duration_days)
+            if promo.duration_days is not None
+            else None
+        )
+        subscription = Subscription.objects.create(
+            user=user, plan=promo.plan, status=Subscription.STATUS_ACTIVE,
+            provider=PROVIDER_MANUAL, current_period_end=current_period_end,
+            notes=f"Código de invitación: {promo.code}",
+        )
+        PromoCodeRedemption.objects.create(promo_code=promo, user=user, subscription=subscription)
+        promo.redemption_count = F("redemption_count") + 1
+        promo.save(update_fields=["redemption_count", "updated_at"])
+
+    return subscription

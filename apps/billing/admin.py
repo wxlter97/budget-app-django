@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from apps.common.admin import BaseModelAdmin
 
-from .models import Plan, PlanPrice, Subscription
+from .models import Plan, PlanPrice, PromoCode, PromoCodeRedemption, Subscription
 
 
 class PlanPriceInline(admin.TabularInline):
@@ -42,3 +42,31 @@ class SubscriptionAdmin(BaseModelAdmin):
     search_fields = ("user__username", "user__email", "external_subscription_id")
     raw_id_fields = ("user", "plan", "plan_price")
     readonly_fields = BaseModelAdmin.readonly_fields + ("checkout_reference",)
+
+
+@admin.register(PromoCode)
+class PromoCodeAdmin(BaseModelAdmin):
+    """Códigos de invitación -- crear acá uno con el plan, cuántos días de
+    acceso da (vacío = no vence) y cuántas personas lo pueden usar (vacío =
+    sin límite), y compartir el `code` con quien querés invitar."""
+
+    list_display = (
+        "code", "plan", "duration_days", "max_redemptions", "redemption_count",
+        "is_active", "expires_at",
+    )
+    list_filter = ("is_active", "plan")
+    search_fields = ("code", "notes")
+    readonly_fields = BaseModelAdmin.readonly_fields + ("redemption_count",)
+
+
+@admin.register(PromoCodeRedemption)
+class PromoCodeRedemptionAdmin(BaseModelAdmin):
+    """Solo lectura -- el canje lo crea `services.redeem_promo_code`, nunca
+    a mano (para un alta manual sin código, usar `Subscription` directo)."""
+
+    list_display = ("user", "promo_code", "subscription", "created_at")
+    search_fields = ("user__username", "user__email", "promo_code__code")
+    raw_id_fields = ("user", "promo_code", "subscription")
+
+    def has_add_permission(self, request):
+        return False
