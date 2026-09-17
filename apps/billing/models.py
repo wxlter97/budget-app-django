@@ -32,7 +32,8 @@ PROVIDER_CHOICES = [
 
 class Plan(BaseModel):
     """
-    Un plan (gratis o pro). Vive en base de datos -- no hardcodeado en el
+    Un plan (gratis, plus o pro -- cualquier cantidad, no hay nada
+    hardcodeado a dos). Vive en base de datos -- no hardcodeado en el
     cliente ni en el backend -- para poder ajustar límites y features sin
     pasar por una nueva versión de la app / revisión de las stores.
     """

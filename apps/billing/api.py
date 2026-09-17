@@ -33,7 +33,7 @@ class PlanSerializer(serializers.ModelSerializer):
     class Meta:
         model = Plan
         fields = (
-            "id", "code", "name", "description",
+            "id", "code", "name", "description", "is_default",
             "max_workspaces_owned", "max_members_per_workspace", "max_active_recurring",
             "features", "prices",
         )
