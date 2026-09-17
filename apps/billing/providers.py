@@ -76,9 +76,20 @@ class ManualProvider(PaymentProvider):
     def cancel_subscription(self, subscription) -> None:
         from django.utils import timezone
 
-        subscription.status = subscription.STATUS_CANCELED
         subscription.canceled_at = timezone.now()
-        subscription.save(update_fields=["status", "canceled_at", "updated_at"])
+        # Con fecha de vencimiento, "cancelar" es "no renovar" -- el status
+        # queda como está (activa/en gracia) para que `is_in_force` siga
+        # dando acceso hasta esa fecha, tal como promete la pantalla de Pro
+        # ("seguís teniendo acceso hasta que termine el período ya pagado").
+        # Sin fecha (alta indefinida: grandfather, promo/trial sin
+        # duración) no hay período que esperar -- ahí sí corta ya mismo.
+        # HALLAZGO: antes esta rama no existía y SIEMPRE cortaba al toque,
+        # sin importar `current_period_end` -- contradecía ese mismo texto.
+        if subscription.current_period_end is None:
+            subscription.status = subscription.STATUS_CANCELED
+            subscription.save(update_fields=["status", "canceled_at", "updated_at"])
+        else:
+            subscription.save(update_fields=["canceled_at", "updated_at"])
 
 
 class WompiProvider(PaymentProvider):

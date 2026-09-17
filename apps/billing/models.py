@@ -59,6 +59,12 @@ class Plan(BaseModel):
         null=True, blank=True, help_text="Recurrentes activos por workspace de este plan."
     )
 
+    trial_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Días de prueba gratis de este plan sin pasar por el proveedor de pago "
+                   "(ver `services.start_trial`). Vacío o 0 = sin prueba gratis.",
+    )
+
     # --- feature flags a medida -- agregar una nueva es una key acá, sin
     # migración. Convención de claves usadas por el cliente/servicios:
     # import_email, import_excel, net_worth_history, advanced_reports,
@@ -143,6 +149,11 @@ class Subscription(BaseModel):
     )
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_PENDING)
     provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES, default=PROVIDER_MANUAL)
+    is_trial = models.BooleanField(
+        default=False,
+        help_text="Otorgada por `services.start_trial` (Plan.trial_days), no por pago ni "
+                   "código de invitación. Un usuario sólo puede tener una en toda su vida.",
+    )
 
     # Generado acá, ANTES de mandar al usuario al checkout del proveedor, y
     # pasado como referencia/metadata -- así el primer webhook que avisa
@@ -163,6 +174,16 @@ class Subscription(BaseModel):
     class Meta:
         ordering = ("-created_at",)
         indexes = [models.Index(fields=["user", "status"])]
+        constraints = [
+            # Un usuario sólo puede tener UNA prueba gratis en toda su
+            # vida -- respaldo a nivel de base de datos del chequeo de
+            # `services.start_trial`, por si dos requests concurrentes
+            # (doble tap) pasan el chequeo de la app a la vez.
+            models.UniqueConstraint(
+                fields=["user"], condition=models.Q(is_trial=True),
+                name="one_trial_subscription_per_user",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user} · {self.plan.code} · {self.get_status_display()}"

@@ -16,7 +16,7 @@ class PlanAdmin(BaseModelAdmin):
     (el cliente los lee de `/api/v1/plans/`, nunca los hardcodea)."""
 
     list_display = (
-        "name", "code", "is_default",
+        "name", "code", "is_default", "trial_days",
         "max_workspaces_owned", "max_members_per_workspace", "max_active_recurring",
     )
     search_fields = ("name", "code")
@@ -36,9 +36,9 @@ class SubscriptionAdmin(BaseModelAdmin):
     ``current_period_end`` -- vacío = no vence."""
 
     list_display = (
-        "user", "plan", "status", "provider", "current_period_end", "created_at",
+        "user", "plan", "status", "provider", "is_trial", "current_period_end", "created_at",
     )
-    list_filter = ("status", "provider", "plan")
+    list_filter = ("status", "provider", "is_trial", "plan")
     search_fields = ("user__username", "user__email", "external_subscription_id")
     raw_id_fields = ("user", "plan", "plan_price")
     readonly_fields = BaseModelAdmin.readonly_fields + ("checkout_reference",)

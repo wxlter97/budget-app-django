@@ -13,6 +13,7 @@ from apps.billing.api import (
     CheckoutView,
     MyPlanView,
     RedeemPromoCodeView,
+    StartTrialView,
     WompiWebhookView,
 )
 from apps.email_import.api import InboundEmailWebhookView
@@ -91,6 +92,7 @@ api_v1_patterns = [
     path("billing/checkout/", CheckoutView.as_view(), name="billing-checkout"),
     path("billing/cancel/", CancelSubscriptionView.as_view(), name="billing-cancel"),
     path("billing/redeem/", RedeemPromoCodeView.as_view(), name="billing-redeem"),
+    path("billing/trial/", StartTrialView.as_view(), name="billing-trial"),
     path("billing/webhooks/wompi/", WompiWebhookView.as_view(), name="billing-webhook-wompi"),
     *api_v1_router,
 ]

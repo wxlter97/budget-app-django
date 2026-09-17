@@ -1,4 +1,7 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -120,7 +123,8 @@ class CancelSubscriptionViewTests(APITestCase):
         resp = self.client.post(CANCEL)
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_manual_subscription_can_be_canceled(self):
+    def test_manual_subscription_without_a_period_end_is_canceled_right_away(self):
+        # Sin `current_period_end` no hay "período ya pagado" que esperar.
         Subscription.objects.create(
             user=self.user, plan=self.pro, provider=Subscription._meta.get_field("provider").default,
             status=Subscription.STATUS_ACTIVE,
@@ -128,6 +132,23 @@ class CancelSubscriptionViewTests(APITestCase):
         resp = self.client.post(CANCEL)
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
         self.assertEqual(resp.data["status"], "canceled")
+
+    def test_manual_subscription_with_a_period_end_stays_active_until_then(self):
+        # Hallazgo real: antes esto cortaba el acceso al toque pese a que la
+        # pantalla de Pro promete "seguís teniendo acceso hasta que termine
+        # el período ya pagado".
+        period_end = timezone.now() + timedelta(days=10)
+        sub = Subscription.objects.create(
+            user=self.user, plan=self.pro, provider=Subscription._meta.get_field("provider").default,
+            status=Subscription.STATUS_ACTIVE, current_period_end=period_end,
+        )
+        resp = self.client.post(CANCEL)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(resp.data["status"], "active")
+        self.assertIsNotNone(resp.data["canceled_at"])
+
+        sub.refresh_from_db()
+        self.assertTrue(sub.is_in_force)  # sigue contando como Pro hasta la fecha
 
     def test_wompi_subscription_cancel_fails_loudly_while_unimplemented(self):
         Subscription.objects.create(
