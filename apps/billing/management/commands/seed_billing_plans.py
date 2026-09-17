@@ -1,6 +1,7 @@
 """
-Carga (o actualiza) los planes Free/Pro con los límites, features y precios
-acordados. Idempotente -- correr de nuevo actualiza en vez de duplicar.
+Carga (o actualiza) los planes Free/Plus/Pro con los límites, features y
+precios acordados. Idempotente -- correr de nuevo actualiza en vez de
+duplicar.
 
     python manage.py seed_billing_plans
 """
@@ -10,7 +11,7 @@ from apps.billing.models import Plan, PlanPrice
 
 
 class Command(BaseCommand):
-    help = "Crea/actualiza los planes Free y Pro con sus límites, features y precios por defecto."
+    help = "Crea/actualiza los planes Free, Plus y Pro con sus límites, features y precios por defecto."
 
     def handle(self, *args, **options):
         free, _ = Plan.objects.update_or_create(
@@ -31,6 +32,29 @@ class Command(BaseCommand):
                     "backup": False,
                     "loyalty": False,
                     "multi_currency": False,
+                    "quick_add": False,
+                },
+            ),
+        )
+        plus, _ = Plan.objects.update_or_create(
+            code="plus",
+            defaults=dict(
+                name="Plus",
+                description="Más lugar para crecer: workspaces y recurrentes extra, "
+                             "exportar tus datos, multi-moneda e historial de patrimonio.",
+                is_default=False,
+                max_workspaces_owned=2,
+                max_members_per_workspace=5,
+                max_active_recurring=15,
+                features={
+                    "import_email": False,
+                    "import_excel": False,
+                    "net_worth_history": True,
+                    "advanced_reports": False,
+                    "export": True,
+                    "backup": False,
+                    "loyalty": False,
+                    "multi_currency": True,
                     "quick_add": False,
                 },
             ),
@@ -60,8 +84,12 @@ class Command(BaseCommand):
         )
 
         prices = [
+            (plus, PlanPrice.BILLING_MONTHLY, 99),
+            (plus, PlanPrice.BILLING_ANNUAL, 999),
             (pro, PlanPrice.BILLING_MONTHLY, 199),
-            (pro, PlanPrice.BILLING_ANNUAL, 1999),
+            # Antes 1999 (19.99): descuento más agresivo en el anual para
+            # empujar la conversión desde mensual (~4 meses gratis en vez de ~2).
+            (pro, PlanPrice.BILLING_ANNUAL, 1499),
             (pro, PlanPrice.BILLING_LIFETIME, 1999),
         ]
         for plan, period, cents in prices:
@@ -71,5 +99,5 @@ class Command(BaseCommand):
             )
 
         self.stdout.write(self.style.SUCCESS(
-            f"Listo: '{free.code}' (default) y '{pro.code}' con {len(prices)} precio(s)."
+            f"Listo: '{free.code}' (default), '{plus.code}' y '{pro.code}' con {len(prices)} precio(s)."
         ))
