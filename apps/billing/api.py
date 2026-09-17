@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from .models import Plan, PlanPrice, Subscription
 from .providers import get_provider
-from .services import active_subscription_for, apply_webhook_event, plan_for_user
+from .services import active_subscription_for, apply_webhook_event, plan_for_user, redeem_promo_code
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +141,27 @@ class CheckoutView(APIView):
             subscription.save(update_fields=["external_customer_id", "updated_at"])
 
         return Response({"checkout_url": session.checkout_url, "subscription_id": subscription.id})
+
+
+class RedeemPromoCodeSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=40)
+
+
+@extend_schema(tags=["billing"], request=RedeemPromoCodeSerializer, responses={201: SubscriptionSerializer})
+class RedeemPromoCodeView(APIView):
+    """POST: canjea un código de invitación -- acceso gratis a un plan sin
+    proveedor de pago (ver `services.redeem_promo_code`). Un solo canje por
+    usuario en toda su vida."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        input_serializer = RedeemPromoCodeSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        subscription = redeem_promo_code(request.user, input_serializer.validated_data["code"])
+        return Response(SubscriptionSerializer(subscription).data, status=201)
 
 
 @extend_schema(tags=["billing"])
