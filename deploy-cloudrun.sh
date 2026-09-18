@@ -8,6 +8,14 @@
 #
 # Variables ajustables por entorno:
 #   REGION (us-east1)   SERVICE (budget-api)   TZ (America/El_Salvador)
+#
+# --max-instances 5 con --concurrency 8 = techo de 40 requests en vuelo. No
+# cuesta más tener margen (Cloud Run cobra por uso, no por instancia
+# disponible), pero con más de una instancia hacen falta dos cosas de
+# configuración: el endpoint *pooled* de Neon en DATABASE_URL y CACHE_URL
+# apuntando a un Redis, o el throttling cuenta por separado en cada instancia
+# (ver CONFIG-PENDIENTE.md). `manage.py check --deploy` avisa de las dos al
+# arrancar el contenedor.
 set -euo pipefail
 
 REGION="${REGION:-us-east1}"
@@ -50,7 +58,7 @@ gcloud run deploy "$SERVICE" \
   --source . \
   --region "$REGION" \
   --allow-unauthenticated \
-  --max-instances 1 \
+  --max-instances 5 \
   --cpu 1 \
   --memory 1Gi \
   --cpu-boost \

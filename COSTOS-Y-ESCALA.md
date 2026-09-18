@@ -23,36 +23,64 @@ está en la lista de abajo y ninguno es una reescritura.
 
 ## Lo que hay que arreglar antes de tener usuarios de verdad
 
-Ordenado por lo que rompe primero.
+Ordenado por lo que rompe primero. Lo marcado `[x]` ya está hecho en el repo; lo que sigue en
+`[ ]` es acción de configuración tuya (ver también `CONFIG-PENDIENTE.md`).
 
-- [ ] **`--max-instances 1` en `deploy-cloudrun.sh`.** Con `--concurrency 8`, el backend entero
-      tiene un techo de **8 requests en vuelo** y una sola instancia; la novena espera. Y cada
-      deploy es caída para todos, no para una fracción. Subirlo a 3–5 no cambia el costo (se
-      paga por uso, no por instancia disponible) y saca el techo.
-- [ ] **`CACHE_URL` vacío.** El throttling de DRF cuenta en la memoria de cada instancia. Con una
-      sola instancia "funciona" por accidente; con 3 instancias los límites valen el triple y se
-      reinician en cada deploy. Memorystore son ~$35/mes por algo que no los vale acá: usar
-      Redis de Upstash (cobra por request, gratis en volumen bajo) o incluso la tabla de cache de
-      Django en Postgres.
-- [ ] **Conexiones a Neon.** `DJANGO_DB_CONN_MAX_AGE=0` abre una conexión por request. Con varias
-      instancias, el límite de conexiones de Neon se alcanza antes que el CPU. Usar el endpoint
-      **pooled** (`-pooler` en el host) y `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True` — está en
-      `DEPLOY.md`, falta confirmar que el `DATABASE_URL` de producción es el pooled.
-- [ ] **El job diario es O(usuarios) y hace 7× el trabajo que necesita.** `notify_insights()`
-      recorre las membresías activas y llama a `behavior_insights()` **todos los días**, aunque
-      el aviso sea semanal: la `dedupe_key` evita la notificación repetida, no el cómputo. Son
-      ~10–15 queries por membresía por día, así que con 1 000 usuarios son ~12 000 queries
-      diarias que se tiran a la basura 6 de cada 7 días. Arreglo barato: calcular sólo el día
-      objetivo de la semana, o consultar `NotificationLog` **antes** de calcular.
-- [ ] **N+1 en el mismo job:** `_get_preference(user)` y `_devices_for(user)` se consultan una vez
-      por membresía, no una vez por usuario. Quien esté en 3 workspaces las paga 3 veces.
-- [ ] **Vercel Hobby no permite uso comercial.** Desde el momento en que cobrás una suscripción,
-      el front en Hobby está fuera de los términos. Dos salidas: Vercel Pro ($20/mes) o mover el
-      build web a **Cloudflare Pages**, cuyo plan gratis sí permite uso comercial. Es un build
-      estático (`web.output: "single"`), así que mudarlo es casi sólo apuntar el DNS.
+- [x] **`--max-instances 1` en `deploy-cloudrun.sh`.** Con `--concurrency 8`, el backend entero
+      tenía un techo de **8 requests en vuelo** y una sola instancia; la novena esperaba. Y cada
+      deploy era caída para todos, no para una fracción. **Ahora `--max-instances 5`** (techo de
+      40 en vuelo), que no cambia el costo: Cloud Run cobra por uso, no por instancia
+      disponible.
+      *Contrapartida anotada en `entrypoint.sh`:* las migraciones corren al arrancar cada
+      contenedor, así que con varias instancias un release con migraciones puede dar unos 502
+      mientras la que perdió la carrera reintenta. El Job `budget-migrate` + `RUN_MIGRATIONS=0`
+      lo elimina y además acelera el arranque en frío (`DEPLOY.md` §2.2).
+- [x] **Avisos de arranque en vez de fallas silenciosas.** `apps/common/checks.py` agrega dos
+      checks de `--deploy` que `entrypoint.sh` corre al iniciar el contenedor, así que el aviso
+      queda en los logs de Cloud Run con las variables reales: `common.W001` si el cache es de
+      proceso (throttling no compartido) y `common.W002` si `DATABASE_URL` apunta al endpoint
+      directo de Neon en vez del pooled. Nunca bloquean el arranque.
+- [ ] **`CACHE_URL` vacío** (config tuya). El throttling de DRF cuenta en la memoria de cada
+      instancia. Con una sola instancia "funcionaba" por accidente; con 5 los límites valen 5
+      veces y se reinician en cada deploy. Memorystore son ~$35/mes por algo que no los vale
+      acá: Redis de Upstash (cobra por request, gratis en volumen bajo) o la tabla de cache de
+      Django en Postgres. `common.W001` te lo va a recordar en cada arranque.
+- [ ] **Endpoint pooled de Neon** (config tuya). `DJANGO_DB_CONN_MAX_AGE=0` abre una conexión por
+      request; contra el endpoint directo, el límite de conexiones se alcanza antes que el CPU
+      en cuanto hay más de una instancia. Usar el host con `-pooler` y
+      `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True`. `common.W002` te lo avisa.
+- [x] **El job diario hacía 7× el trabajo que necesita.** `notify_insights()` llamaba a
+      `behavior_insights()` (~12 queries por membresía) **todos los días**, aunque el aviso sea
+      semanal: la `dedupe_key` evitaba la notificación repetida, no el cómputo. Ahora se calcula
+      un solo día de la semana (`services.INSIGHTS_WEEKDAY`, lunes). Con 1 000 usuarios son
+      ~72 000 queries menos por semana.
+- [x] **N+1 en el mismo job.** `_get_preference(user)` y `_devices_for(user)` se consultaban una
+      vez por membresía. Ahora se consultan una vez por usuario: quien esté en 3 workspaces las
+      paga una sola vez.
+- [ ] **Mover el front fuera de Vercel Hobby** (acción tuya, ver abajo). Hobby no permite uso
+      comercial: desde que cobrás una suscripción estás fuera de los términos.
 - [ ] **Backups.** Neon free retiene ~24 h de historial. Con usuarios reales eso no alcanza: un
       `pg_dump` a un bucket de GCS desde el mismo job diario cuesta centavos.
-- [ ] **`DEPLOY.md` §7 está desactualizado:** dice "Neon free: ~190 h cómputo/mes"; hoy son 100 h.
+- [x] **`DEPLOY.md` §7 decía "Neon free: ~190 h cómputo/mes";** hoy son 100 h.
+
+## Hosting del front: qué conviene
+
+El front es un build **estático** (`expo export -p web`, `web.output: "single"`, sin SSR ni
+funciones de servidor), así que cualquier CDN sirve y la decisión es sólo de precio y términos.
+
+| Opción | Costo | Banda | Uso comercial | Nota |
+|---|---|---|---|---|
+| **Cloudflare Pages** | $0 | **ilimitada** (assets estáticos) | **sí** | 500 builds/mes. La recomendada. |
+| Vercel Pro | $20/mes | 1 TB, después $0.15/GB | sí | Sólo si querés quedarte con la DX de Vercel. |
+| Vercel Hobby | $0 | 100 GB | **no** | Lo que hay hoy. Fuera de términos al cobrar. |
+| Netlify Free | $0 | 100 GB | sí | Techo bajo de banda. |
+| GCS + Cloud CDN | ~$0.12/GB de egreso | pago por uso | sí | Mismo proyecto GCP, pero es la más cara de la lista. |
+
+**Cloudflare Pages es la mejor opción y por bastante:** es la única con banda ilimitada, no tiene
+la restricción comercial, y para un SPA estático no perdés absolutamente nada de lo que da Vercel
+(preview deployments por PR y deploy en cada push a `main` los tiene igual). Los pasos concretos
+están en `DEPLOY.md` §3, Opción C — lo único a replicar a mano es el rewrite de SPA de
+`vercel.json`, que en Pages es un `public/_redirects` con `/* /index.html 200`.
 
 ## Arranque en frío (lo que el usuario sí va a notar)
 

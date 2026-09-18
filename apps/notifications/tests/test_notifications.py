@@ -412,7 +412,13 @@ class NotifyInsightsTests(NotificationServicesTestCase):
     "pegamento": que `notify_insights` respete la preferencia, no repita el
     mismo patrón, y arme la notificación con lo que ese detector devuelve.
     Por eso se mockea `behavior_insights` en vez de armar transacciones
-    reales."""
+    reales.
+
+    Los patrones se calculan un solo día de la semana (ver
+    `services.INSIGHTS_WEEKDAY`), así que las pruebas pasan un lunes
+    explícito en vez de depender del día en que se corra la suite."""
+
+    MONDAY = dt.date(2026, 3, 30)
 
     ONE_INSIGHT = [
         {"dedupe_key": "ws:weekend:2026-W10", "title": "Gastás más los fines de semana", "body": "..."},
@@ -425,7 +431,7 @@ class NotifyInsightsTests(NotificationServicesTestCase):
     @patch("apps.notifications.services.behavior_insights")
     def test_creates_a_notification_per_insight_and_sends_push(self, mock_insights, mock_send):
         mock_insights.return_value = self.TWO_INSIGHTS
-        services.notify_insights()
+        services.notify_insights(today=self.MONDAY)
         self.assertEqual(mock_send.call_count, 2)
         self.assertEqual(
             Notification.objects.filter(user=self.user, kind=Notification.KIND_INSIGHT).count(), 2
@@ -439,7 +445,7 @@ class NotifyInsightsTests(NotificationServicesTestCase):
     def test_respects_preference_off(self, mock_insights, mock_send):
         NotificationPreference.objects.create(user=self.user, warn_insights=False)
         mock_insights.return_value = self.ONE_INSIGHT
-        services.notify_insights()
+        services.notify_insights(today=self.MONDAY)
         mock_send.assert_not_called()
         self.assertFalse(Notification.objects.filter(kind=Notification.KIND_INSIGHT).exists())
         mock_insights.assert_not_called()
@@ -448,8 +454,8 @@ class NotifyInsightsTests(NotificationServicesTestCase):
     @patch("apps.notifications.services.behavior_insights")
     def test_does_not_repeat_the_same_dedupe_key(self, mock_insights, mock_send):
         mock_insights.return_value = self.ONE_INSIGHT
-        services.notify_insights()
-        services.notify_insights()
+        services.notify_insights(today=self.MONDAY)
+        services.notify_insights(today=self.MONDAY)
         self.assertEqual(mock_send.call_count, 1)
         self.assertEqual(Notification.objects.filter(kind=Notification.KIND_INSIGHT).count(), 1)
 
@@ -458,9 +464,14 @@ class NotifyInsightsTests(NotificationServicesTestCase):
     def test_still_creates_in_app_notification_without_a_device(self, mock_insights, mock_send):
         self.device.delete()
         mock_insights.return_value = self.ONE_INSIGHT
-        services.notify_insights()
+        services.notify_insights(today=self.MONDAY)
         mock_send.assert_not_called()
         self.assertTrue(Notification.objects.filter(kind=Notification.KIND_INSIGHT).exists())
+
+    @patch("apps.notifications.services.behavior_insights")
+    def test_does_not_compute_anything_outside_the_weekly_slot(self, mock_insights):
+        services.notify_insights(today=self.MONDAY + timedelta(days=1))
+        mock_insights.assert_not_called()
 
 
 class SendPushTests(TestCase):

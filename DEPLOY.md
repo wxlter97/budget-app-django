@@ -96,6 +96,27 @@ Comprobá:
 > La revisión rota que quedó del intento fallido no molesta: el próximo deploy
 > exitoso se lleva el tráfico.
 
+El servicio queda con `--max-instances 5`. Las migraciones corren al arrancar
+cada contenedor (`entrypoint.sh`), así que con varias instancias un deploy que
+trae migraciones puede dar unos 502 mientras la instancia que perdió la carrera
+reintenta. Para sacárselo de encima (y de paso acelerar el arranque en frío),
+migrar aparte y dejar al servicio sin migrar:
+
+```bash
+gcloud run jobs deploy budget-migrate \
+  --source . --region us-east1 \
+  --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
+  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
+  --command python --args "manage.py,migrate,--noinput"
+
+# En cada release que traiga migraciones, antes del deploy:
+gcloud run jobs execute budget-migrate --region us-east1 --wait
+
+# Y una vez, para que las instancias no vuelvan a migrar al arrancar:
+gcloud run services update budget-api --region us-east1 \
+  --update-env-vars "RUN_MIGRATIONS=0"
+```
+
 ### 2.3 Superusuario (solo para `/admin/`)
 
 Para uso normal no hace falta: registrate desde la web. Para el admin de Django:
@@ -138,7 +159,13 @@ gcloud run jobs execute budget-admin --region us-east1 --wait
 
 ---
 
-## 3. Frontend — Vercel
+## 3. Frontend — Vercel o Cloudflare Pages
+
+> **Ojo con el plan Hobby de Vercel: no permite uso comercial.** Desde el momento
+> en que se cobra una suscripción hay que pasar a Pro ($20/mes) o mover el front a
+> otro lado. El build es estático (`expo export -p web`, sin SSR ni funciones), así
+> que **Cloudflare Pages** hace exactamente lo mismo gratis, con banda ilimitada y
+> uso comercial permitido — ver Opción C y `COSTOS-Y-ESCALA.md`.
 
 ### Opción A — conectar el repo (recomendada)
 
@@ -161,6 +188,23 @@ npx vercel link
 npx vercel env add EXPO_PUBLIC_API_URL production   # pegás la URL .../api/v1
 npm run deploy:web                                   # = npx vercel deploy --prod
 ```
+
+### Opción C — Cloudflare Pages (gratis y sí permite uso comercial)
+
+Cloudflare → **Workers & Pages → Create → Pages → Connect to Git** → `wxlter97/moneyapp`:
+
+| Campo | Valor |
+|---|---|
+| Build command | `npm ci && npx expo export -p web && node scripts/pwa-postbuild.js` |
+| Build output directory | `dist` |
+| Variable de entorno | `EXPO_PUBLIC_API_URL = https://budget-api-XXXX.a.run.app/api/v1` |
+
+Lo único que hay que replicar a mano es el rewrite de SPA que hoy está en
+`vercel.json` (todas las rutas a `index.html`): en Pages se hace con un archivo
+`public/_redirects` con `/* /index.html 200`.
+
+Después, en el §4, `CORS_ALLOWED_ORIGINS` apunta al dominio de Pages en vez del
+de Vercel. El resto del deploy no cambia.
 
 ---
 
@@ -270,6 +314,32 @@ gcloud run jobs executions list --job budget-cron --region us-east1   # ver que 
 Todavía entra en el tier gratis (3 jobs de Scheduler, 2M invocaciones de
 Cloud Run al mes).
 
+### 6.3 Mantener caliente el arranque (opcional, recomendado con usuarios)
+
+Cloud Run en 0 instancias y Neon auto-suspendido a los 5 minutos hacen que la
+primera visita después de un rato pague el arranque de Django **más** el
+despertar de la base. `--min-instances 1` lo arregla a medias y cuesta del
+orden de $50-70/mes; un ping cada 5 minutos en horario activo cuesta centavos
+y despierta a los dos:
+
+```bash
+gcloud scheduler jobs create http budget-keepalive \
+  --location us-east1 \
+  --schedule "*/5 11-23 * * *" \
+  --time-zone "Etc/UTC" \
+  --uri "https://budget-api-XXXX.a.run.app/healthz/" \
+  --http-method GET
+```
+
+`11-23` UTC es 5am-5pm en El Salvador. Es el tercer job de Scheduler: sigue
+entrando en los 3 gratis.
+
+Ojo: `/healthz/` **no toca la base** (es un `JsonResponse` fijo, ver
+`config/urls.py`), así que esto mantiene caliente Cloud Run pero no Neon --
+que es la mitad más grande del arranque en frío, igual. Para despertar también
+a Neon, apuntá el ping a un endpoint que consulte, por ejemplo
+`/api/v1/dashboard/balance/` con su `DASHBOARD_API_TOKEN` en un header.
+
 ---
 
 ## 7. Limpieza y costos
@@ -280,7 +350,7 @@ Cloud Run al mes).
   gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy \
     --location us-east1 --policy-file /tmp/cleanup.json
   ```
-- **Neon free**: 0.5 GB, ~190 h cómputo/mes, auto-suspende a los 5 min.
+- **Neon free**: 0.5 GB, 100 h cómputo/mes, auto-suspende a los 5 min.
 - **Cloud Run free**: 2 M req, 360 000 GiB-s, 180 000 vCPU-s al mes.
 - **Vercel Hobby**: gratis uso no comercial, ~100 GB banda/mes.
 - **Backups**: Neon free retiene ~24 h. Un `pg_dump` periódico si querés más.

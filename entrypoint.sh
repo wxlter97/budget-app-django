@@ -2,15 +2,24 @@
 # Arranque del contenedor en Cloud Run.
 #
 # Cloud Run no tiene "release phase", así que las migraciones se corren aquí al
-# iniciar. A escala personal (--max-instances 1) no hay carrera entre instancias;
-# si algún día molesta, poné RUN_MIGRATIONS=0 y corré las migraciones con un
-# Cloud Run Job aparte.
+# iniciar. Con --max-instances > 1, dos instancias que arrancan a la vez pueden
+# intentar migrar en paralelo: Postgres hace el DDL en transacción, así que no
+# corrompe nada, pero la instancia que pierde falla el arranque y Cloud Run la
+# reintenta (unos 502 justo después de un deploy que trae migraciones). Para
+# sacarse eso de encima: RUN_MIGRATIONS=0 en el servicio y migrar con el Job
+# `budget-migrate` antes de deployar (ver DEPLOY.md §2.2).
 set -e
 
 if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
   echo "==> migrate"
   python manage.py migrate --noinput
 fi
+
+# Avisos de configuración de producción (cache compartido, endpoint pooled de
+# Neon, chequeos de seguridad de Django). Los tags dejan fuera el ruido de
+# drf-spectacular, que sólo importa en desarrollo. Nunca bloquea el arranque:
+# sólo deja el aviso en los logs de Cloud Run.
+python manage.py check --deploy --tag caches --tag database --tag security || true
 
 # Cloud Run inyecta $PORT (8080). En local cae a 8000.
 exec gunicorn config.wsgi:application \

@@ -21,8 +21,14 @@
       (`DEPLOY.md` §6.1 y §6.2). Si el Job/Scheduler no está creado, **nada de lo diario
       corre nunca** y no hay ningún error visible que te avise. **(verificar)**
 - [ ] **`CACHE_URL` (Redis) en producción.** Vacío = el throttling de DRF cuenta en la memoria
-      de cada instancia: con dos instancias los límites valen el doble y se reinician en cada
-      deploy. **(verificar)**
+      de cada instancia: con las 5 instancias que permite el servicio, los límites valen 5 veces
+      y se reinician en cada deploy. Al arrancar el contenedor, el check `common.W001` lo avisa
+      en los logs. Memorystore son ~$35/mes de más: alcanza Redis de Upstash o la tabla de cache
+      de Django en Postgres.
+- [ ] **Endpoint *pooled* de Neon en `DATABASE_URL`.** Con `DJANGO_DB_CONN_MAX_AGE=0` se abre una
+      conexión por request; contra el endpoint directo, las conexiones topan antes que el CPU en
+      cuanto hay más de una instancia. Host con `-pooler` +
+      `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True`; el check `common.W002` lo avisa. **(verificar)**
 
 ## Prioridad 2 — funciones completas que hoy no se pueden usar
 
