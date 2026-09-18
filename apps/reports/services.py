@@ -3,6 +3,8 @@
 Lo dispara la tarea de Celery Beat el día 1 (para el mes anterior), pero se
 puede llamar a mano para cualquier (año, mes).
 """
+import datetime as dt
+from collections import defaultdict
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
@@ -597,3 +599,373 @@ def _rollover_budget_period(workspace, period_start):
             accumulated_amount=F("accumulated_amount") + leftover,
             last_updated=timezone.localdate(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Insights de comportamiento ("behavioral finance"): patrones de gasto, no
+# números fríos -- los convierte en notificaciones
+# `apps.notifications.services.notify_insights` (llamada diaria, ver
+# `NotificationPreference.warn_insights`). Nada de datos nuevos: todo sale
+# de `Transaction` (fecha, monto, categoría, tipo).
+#
+# Cada detector devuelve `None` si no aplica (poca data, o el patrón no cruza
+# el umbral) o un dict {dedupe_key, title, body}. Los que miden un patrón
+# EN CURSO (fin de semana, día pico, post-cobro) dedupean por semana ISO --
+# `notify_insights` corre todos los días, pero `NotificationLog` sólo deja
+# pasar un aviso por semana por patrón. Los que miden un TOTAL/COMPARACIÓN
+# del mes (hormiga, categoría/frecuencia disparada) dedupean por mes, porque
+# repetir el mismo aviso cada semana sobre el mismo mes sería ruido.
+INSIGHTS_MIN_HISTORY_DAYS = 30
+
+_WEEKEND_LOOKBACK_DAYS = 60
+_WEEKEND_DIFF_PCT = 20
+_WEEKEND_MIN_WEEKEND_DAYS = 6
+_WEEKEND_MIN_WEEKDAY_DAYS = 10
+
+_POST_INCOME_LOOKBACK_DAYS = 90
+_POST_INCOME_WINDOW_DAYS = 3
+_POST_INCOME_DIFF_PCT = 20
+_POST_INCOME_MIN_EVENTS = 2
+
+_SMALL_PURCHASE_THRESHOLD = Decimal("15")
+_SMALL_PURCHASE_MIN_TOTAL = Decimal("50")
+_SMALL_PURCHASE_MIN_COUNT = 5
+
+_PEAK_DAY_LOOKBACK_DAYS = 60
+_PEAK_DAY_DIFF_PCT = 50
+_PEAK_DAY_MIN_CALENDAR_DAYS = 4
+
+_SPIKE_LOOKBACK_MONTHS = 3
+_CATEGORY_SPIKE_DIFF_PCT = 40
+_CATEGORY_SPIKE_MIN_AMOUNT = Decimal("20")
+_FREQUENCY_SPIKE_DIFF_PCT = 50
+_FREQUENCY_SPIKE_MIN_COUNT = 4
+
+_WEEKDAY_NAMES = [
+    "los lunes", "los martes", "los miércoles", "los jueves",
+    "los viernes", "los sábados", "los domingos",
+]
+
+
+def _insight_weekend(workspace, qs, rate_map, today, first_date, week_label):
+    """"Gastás más los fines de semana" -- promedio de gasto por día
+    calendario (sábado/domingo) vs. por día calendario (lunes a viernes) en
+    la ventana, contando también los días sin ningún gasto."""
+    since = max(today - dt.timedelta(days=_WEEKEND_LOOKBACK_DAYS), first_date)
+    rows = qs.filter(_OUTFLOW_Q, date__gte=since, date__lte=today).values(
+        "date", "amount", "currency"
+    )
+    weekend_total = weekday_total = Decimal("0")
+    for r in rows:
+        converted = convert(r["amount"], r["currency"], rate_map)
+        if converted is None:
+            continue
+        if r["date"].weekday() >= 5:
+            weekend_total += converted
+        else:
+            weekday_total += converted
+
+    weekend_days = weekday_days = 0
+    d = since
+    while d <= today:
+        if d.weekday() >= 5:
+            weekend_days += 1
+        else:
+            weekday_days += 1
+        d += dt.timedelta(days=1)
+    if weekend_days < _WEEKEND_MIN_WEEKEND_DAYS or weekday_days < _WEEKEND_MIN_WEEKDAY_DAYS:
+        return None
+
+    weekday_avg = weekday_total / weekday_days
+    if weekday_avg <= 0:
+        return None
+    weekend_avg = weekend_total / weekend_days
+    diff_pct = (weekend_avg - weekday_avg) / weekday_avg * 100
+    if diff_pct < _WEEKEND_DIFF_PCT:
+        return None
+
+    return {
+        "dedupe_key": f"{workspace.id}:weekend:{week_label}",
+        "title": "Gastás más los fines de semana",
+        "body": f"En promedio gastás {diff_pct:.0f}% más por día los sábados y domingos que entre semana.",
+    }
+
+
+def _insight_post_income(workspace, qs, rate_map, today, first_date, week_label):
+    """"Gastás más después de cobrar" -- promedio de gasto en los días
+    siguientes a un ingreso (`Transaction.TYPE_INCOME`) vs. el resto de la
+    ventana."""
+    since = max(today - dt.timedelta(days=_POST_INCOME_LOOKBACK_DAYS), first_date)
+    income_dates = set(
+        qs.filter(type=Transaction.TYPE_INCOME, date__gte=since, date__lte=today).values_list(
+            "date", flat=True
+        )
+    )
+    if len(income_dates) < _POST_INCOME_MIN_EVENTS:
+        return None
+
+    post_income_dates = set()
+    for income_date in income_dates:
+        for offset in range(1, _POST_INCOME_WINDOW_DAYS + 1):
+            d = income_date + dt.timedelta(days=offset)
+            if since <= d <= today:
+                post_income_dates.add(d)
+    if not post_income_dates:
+        return None
+
+    rows = qs.filter(_OUTFLOW_Q, date__gte=since, date__lte=today).values(
+        "date", "amount", "currency"
+    )
+    post_total = other_total = Decimal("0")
+    for r in rows:
+        converted = convert(r["amount"], r["currency"], rate_map)
+        if converted is None:
+            continue
+        if r["date"] in post_income_dates:
+            post_total += converted
+        else:
+            other_total += converted
+
+    total_days = (today - since).days + 1
+    other_days = total_days - len(post_income_dates)
+    if other_days <= 0:
+        return None
+    other_avg = other_total / other_days
+    if other_avg <= 0:
+        return None
+    post_avg = post_total / len(post_income_dates)
+    diff_pct = (post_avg - other_avg) / other_avg * 100
+    if diff_pct < _POST_INCOME_DIFF_PCT:
+        return None
+
+    return {
+        "dedupe_key": f"{workspace.id}:post_income:{week_label}",
+        "title": "Gastás más justo después de cobrar",
+        "body": (
+            f"En los {_POST_INCOME_WINDOW_DAYS} días después de un ingreso gastás en "
+            f"promedio {diff_pct:.0f}% más por día que el resto del tiempo."
+        ),
+    }
+
+
+def _insight_small_purchases(workspace, qs, rate_map, today, first_date, week_label):
+    """"Gasto hormiga" -- cuánto suman este mes las compras chicas
+    (menores a `_SMALL_PURCHASE_THRESHOLD`, en la moneda base)."""
+    month_start = today.replace(day=1)
+    rows = qs.filter(_OUTFLOW_Q, date__gte=month_start, date__lte=today).values(
+        "amount", "currency"
+    )
+    total = Decimal("0")
+    count = 0
+    for r in rows:
+        converted = convert(r["amount"], r["currency"], rate_map)
+        if converted is None or converted >= _SMALL_PURCHASE_THRESHOLD:
+            continue
+        total += converted
+        count += 1
+    if count < _SMALL_PURCHASE_MIN_COUNT or total < _SMALL_PURCHASE_MIN_TOTAL:
+        return None
+
+    return {
+        "dedupe_key": f"{workspace.id}:small_purchases:{today.year}-{today.month:02d}",
+        "title": "Tus compras chicas suman más de lo que parece",
+        "body": (
+            f"Ya llevás {count} compras de menos de {_SMALL_PURCHASE_THRESHOLD} "
+            f"{workspace.base_currency} este mes, que suman {total:.2f} {workspace.base_currency}."
+        ),
+    }
+
+
+def _insight_peak_day(workspace, qs, rate_map, today, first_date, week_label):
+    """"Tenés un día pico" -- el día de la semana con mayor gasto promedio
+    por día calendario, comparado contra el promedio del resto de los
+    días."""
+    since = max(today - dt.timedelta(days=_PEAK_DAY_LOOKBACK_DAYS), first_date)
+    rows = qs.filter(_OUTFLOW_Q, date__gte=since, date__lte=today).values(
+        "date", "amount", "currency"
+    )
+    totals_by_weekday = defaultdict(Decimal)
+    for r in rows:
+        converted = convert(r["amount"], r["currency"], rate_map)
+        if converted is None:
+            continue
+        totals_by_weekday[r["date"].weekday()] += converted
+
+    day_counts = defaultdict(int)
+    d = since
+    while d <= today:
+        day_counts[d.weekday()] += 1
+        d += dt.timedelta(days=1)
+
+    averages = {
+        wd: totals_by_weekday[wd] / day_counts[wd]
+        for wd in range(7)
+        if day_counts[wd] >= _PEAK_DAY_MIN_CALENDAR_DAYS
+    }
+    if len(averages) < 5:
+        return None
+
+    peak_wd = max(averages, key=averages.get)
+    others = [avg for wd, avg in averages.items() if wd != peak_wd]
+    others_avg = sum(others) / len(others)
+    if others_avg <= 0:
+        return None
+    diff_pct = (averages[peak_wd] - others_avg) / others_avg * 100
+    if diff_pct < _PEAK_DAY_DIFF_PCT:
+        return None
+
+    return {
+        "dedupe_key": f"{workspace.id}:peak_day:{week_label}",
+        "title": "Tenés un día de la semana pico",
+        "body": f"{_WEEKDAY_NAMES[peak_wd]} gastás en promedio {diff_pct:.0f}% más que el resto de los días.",
+    }
+
+
+def _category_month_stats(qs, rate_map, today):
+    """Totales y conteos por categoría del mes en curso, y de la línea de
+    base (promedio de los `_SPIKE_LOOKBACK_MONTHS` meses anteriores
+    completos) -- compartido por `_insight_category_spike` y
+    `_insight_frequency_spike` para no repetir las mismas queries."""
+    month_start = today.replace(day=1)
+    days_elapsed = (today - month_start).days + 1
+
+    current_totals = defaultdict(Decimal)
+    current_counts = defaultdict(int)
+    names = {}
+    rows = qs.filter(
+        _OUTFLOW_Q, category__isnull=False, date__gte=month_start, date__lte=today
+    ).values("category_id", "category__name", "amount", "currency")
+    for r in rows:
+        cat_id = r["category_id"]
+        names[cat_id] = r["category__name"]
+        current_counts[cat_id] += 1
+        converted = convert(r["amount"], r["currency"], rate_map)
+        if converted is not None:
+            current_totals[cat_id] += converted
+
+    baseline_totals = defaultdict(Decimal)
+    baseline_counts = defaultdict(int)
+    baseline_days = 0
+    cursor = month_start
+    for _ in range(_SPIKE_LOOKBACK_MONTHS):
+        prev_start = cursor - relativedelta(months=1)
+        prev_end = cursor - dt.timedelta(days=1)
+        baseline_days += (prev_end - prev_start).days + 1
+        rows = qs.filter(
+            _OUTFLOW_Q, category__isnull=False, date__gte=prev_start, date__lte=prev_end
+        ).values("category_id", "amount", "currency")
+        for r in rows:
+            baseline_counts[r["category_id"]] += 1
+            converted = convert(r["amount"], r["currency"], rate_map)
+            if converted is not None:
+                baseline_totals[r["category_id"]] += converted
+        cursor = prev_start
+
+    return {
+        "days_elapsed": days_elapsed,
+        "baseline_days": baseline_days,
+        "current_totals": current_totals,
+        "current_counts": current_counts,
+        "baseline_totals": baseline_totals,
+        "baseline_counts": baseline_counts,
+        "names": names,
+    }
+
+
+def _insight_category_spike(workspace, today, stats):
+    """"Categoría en alza" -- el ritmo diario de gasto de una categoría este
+    mes vs. su ritmo diario promedio de los meses anteriores."""
+    if stats["baseline_days"] == 0:
+        return None
+
+    best = None
+    for cat_id, total in stats["current_totals"].items():
+        baseline_total = stats["baseline_totals"].get(cat_id, Decimal("0"))
+        if baseline_total <= 0 or total < _CATEGORY_SPIKE_MIN_AMOUNT:
+            continue
+        current_rate = total / stats["days_elapsed"]
+        baseline_rate = baseline_total / stats["baseline_days"]
+        if baseline_rate <= 0:
+            continue
+        diff_pct = (current_rate - baseline_rate) / baseline_rate * 100
+        if diff_pct < _CATEGORY_SPIKE_DIFF_PCT:
+            continue
+        if best is None or diff_pct > best[0]:
+            best = (diff_pct, cat_id)
+
+    if best is None:
+        return None
+    diff_pct, cat_id = best
+    return {
+        "dedupe_key": f"{workspace.id}:category_spike:{cat_id}:{today.year}-{today.month:02d}",
+        "title": "Un gasto que se disparó este mes",
+        "body": (
+            f"Vas gastando en {stats['names'][cat_id]} a un ritmo {diff_pct:.0f}% más alto "
+            f"que tu promedio de los últimos {_SPIKE_LOOKBACK_MONTHS} meses."
+        ),
+    }
+
+
+def _insight_frequency_spike(workspace, today, stats):
+    """"Comprás más seguido" -- cuántas veces compraste en una categoría
+    este mes vs. tu frecuencia promedio, más allá de cuánta plata fue (el
+    monto puede esconder un cambio de hábito -- ver `_insight_category_spike`
+    para el monto)."""
+    if stats["baseline_days"] == 0:
+        return None
+
+    best = None
+    for cat_id, count in stats["current_counts"].items():
+        if count < _FREQUENCY_SPIKE_MIN_COUNT:
+            continue
+        baseline_count = stats["baseline_counts"].get(cat_id, 0)
+        if baseline_count == 0:
+            continue
+        current_rate = count / stats["days_elapsed"]
+        baseline_rate = baseline_count / stats["baseline_days"]
+        if baseline_rate <= 0:
+            continue
+        diff_pct = (current_rate - baseline_rate) / baseline_rate * 100
+        if diff_pct < _FREQUENCY_SPIKE_DIFF_PCT:
+            continue
+        if best is None or diff_pct > best[0]:
+            best = (diff_pct, cat_id, count)
+
+    if best is None:
+        return None
+    diff_pct, cat_id, count = best
+    return {
+        "dedupe_key": f"{workspace.id}:frequency_spike:{cat_id}:{today.year}-{today.month:02d}",
+        "title": "Estás comprando más seguido en una categoría",
+        "body": (
+            f"Hiciste {count} compras en {stats['names'][cat_id]} este mes, {diff_pct:.0f}% "
+            f"más seguido que tu promedio de los últimos {_SPIKE_LOOKBACK_MONTHS} meses."
+        ),
+    }
+
+
+def behavior_insights(workspace, user, today=None):
+    """Detecta patrones de comportamiento de gasto para `workspace` (ver
+    comentario de sección más arriba). No corre con menos de
+    `INSIGHTS_MIN_HISTORY_DAYS` días de historial -- evita "patrones"
+    armados con 3 transacciones."""
+    today = today or timezone.localdate()
+    qs = visible_transactions(workspace, user)
+    first_date = qs.order_by("date").values_list("date", flat=True).first()
+    if first_date is None or (today - first_date).days < INSIGHTS_MIN_HISTORY_DAYS:
+        return []
+
+    rate_map = get_rate_map(workspace)
+    iso_year, iso_week, _ = today.isocalendar()
+    week_label = f"{iso_year}-W{iso_week:02d}"
+    stats = _category_month_stats(qs, rate_map, today)
+
+    results = [
+        _insight_weekend(workspace, qs, rate_map, today, first_date, week_label),
+        _insight_post_income(workspace, qs, rate_map, today, first_date, week_label),
+        _insight_small_purchases(workspace, qs, rate_map, today, first_date, week_label),
+        _insight_peak_day(workspace, qs, rate_map, today, first_date, week_label),
+        _insight_category_spike(workspace, today, stats),
+        _insight_frequency_spike(workspace, today, stats),
+    ]
+    return [r for r in results if r is not None]

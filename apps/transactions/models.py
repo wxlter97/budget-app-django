@@ -95,6 +95,7 @@ class Transaction(BaseModel):
     SOURCE_INSTALLMENT = "installment"
     SOURCE_QUICK_ADD = "quick_add"
     SOURCE_EXCEL_IMPORT = "excel_import"
+    SOURCE_REFUND = "refund"
     SOURCE_CHOICES = [
         (SOURCE_MANUAL, "Manual"),
         (SOURCE_EMAIL_IMPORT, "Importada por correo"),
@@ -102,6 +103,7 @@ class Transaction(BaseModel):
         (SOURCE_INSTALLMENT, "Cuota de compra a plazo"),
         (SOURCE_QUICK_ADD, "Alta rápida (Atajo)"),
         (SOURCE_EXCEL_IMPORT, "Importada de Excel"),
+        (SOURCE_REFUND, "Reembolso registrado"),
     ]
 
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
@@ -157,12 +159,25 @@ class Transaction(BaseModel):
     )
     is_recurring = models.BooleanField(default=False)
     # Gasto que se espera recuperar (p. ej. un adelanto que reembolsa el
-    # trabajo, un trámite que reembolsa el seguro). `is_refunded` sólo tiene
-    # sentido si `is_refundable` está en True; el serializer no lo exige --
-    # marcar "reembolsado" algo que no se marcó "reembolsable" no rompe nada,
-    # simplemente no tiene mucho sentido de negocio.
+    # trabajo, un trámite que reembolsa el seguro). Es la única de las dos
+    # que el cliente puede marcar a mano -- sirve para filtrar/llevar
+    # control ("¿qué gastos estoy esperando que me devuelvan?").
     is_refundable = models.BooleanField(default=False)
+    # De sólo lectura para el cliente (ver `TransactionSerializer`):
+    # HALLAZGO real -- hasta acá era un boolean que cualquiera podía
+    # prender/apagar sin que se moviera un centavo, así que "reembolsado"
+    # no quería decir que el dinero hubiera vuelto. Ahora sólo lo pone
+    # `services.register_refund`, junto con la Transaction de ingreso real
+    # que sí devuelve la plata (ver `refund_of` más abajo), y sólo se
+    # vuelve a apagar si esa transacción se borra (`TransactionViewSet.
+    # perform_destroy`) -- nunca queda desincronizado del movimiento real.
     is_refunded = models.BooleanField(default=False)
+    # Sólo en la transacción de INGRESO que devuelve la plata: a qué gasto
+    # reembolsa. `related_name="refund_transactions"` es cómo el gasto
+    # original encuentra "su" reembolso (a lo sumo una, hoy) para mostrarlo.
+    refund_of = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="refund_transactions"
+    )
     # Quién puso el dinero de esta transacción, cuando se divide entre varias
     # personas (ver Person/TransactionShare más abajo). `null` = no dividida
     # entre personas (el caso normal). No confundir con `split_group`, que

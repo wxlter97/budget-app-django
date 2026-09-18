@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -228,3 +228,35 @@ def redeem_promo_code(user, code: str) -> Subscription:
         promo.save(update_fields=["redemption_count", "updated_at"])
 
     return subscription
+
+
+# ---------------------------------------------------------------------------
+# Período de prueba (acceso gratis autoservicio, sin código)
+# ---------------------------------------------------------------------------
+def start_trial(user, plan: Plan) -> Subscription:
+    """
+    Arranca la prueba gratis configurada en ``plan.trial_days``, sin pasar
+    por ningún proveedor de pago ni código -- se elige el plan directo
+    desde el catálogo. Un usuario sólo puede empezar una prueba en toda su
+    vida (sin importar qué plan haya elegido, ni si la dejó vencer o la
+    canceló) -- lo garantiza también la constraint única de
+    ``Subscription.Meta`` (``one_trial_subscription_per_user``), por si dos
+    requests concurrentes (doble tap) pasan el chequeo de acá a la vez.
+    """
+    if not plan.trial_days:
+        raise ValidationError({"plan": "Este plan no tiene período de prueba."})
+    if Subscription.objects.filter(user=user, is_trial=True).exists():
+        raise ValidationError({"plan": "Ya usaste tu período de prueba gratis."})
+    if active_subscription_for(user) is not None:
+        raise ValidationError({"plan": "Ya tenés una suscripción activa."})
+
+    try:
+        with transaction.atomic():
+            return Subscription.objects.create(
+                user=user, plan=plan, status=Subscription.STATUS_ACTIVE,
+                provider=PROVIDER_MANUAL, is_trial=True,
+                current_period_end=timezone.now() + timedelta(days=plan.trial_days),
+                notes=f"Prueba gratis de {plan.trial_days} días.",
+            )
+    except IntegrityError:
+        raise ValidationError({"plan": "Ya usaste tu período de prueba gratis."})

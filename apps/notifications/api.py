@@ -94,6 +94,7 @@ class NotificationPreferenceSerializer(serializers.ModelSerializer):
             "remind_low_balance",
             "warn_statement_due",
             "statement_due_days_before",
+            "warn_insights",
         )
 
     def validate_budget_threshold_pct(self, value):

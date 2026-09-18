@@ -159,3 +159,62 @@ class SplitPeopleTests(APITestCase):
         )
         resp = self.client.get("/api/v1/transactions/balances/")
         self.assertEqual(resp.data, [])
+
+    def test_settle_balance_clears_all_shares_between_a_pair(self):
+        # Dos cenas distintas que Beto me debe -- "saldar" el par tiene que
+        # liquidar las dos de una, no sólo una.
+        other_txn = Transaction.objects.create(
+            wallet=self.wallet, category=self.food, amount=Decimal("50.00"),
+            date="2026-02-04", type=Transaction.TYPE_EXPENSE,
+        )
+        self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/split-people/",
+            {"participants": [{"person": str(self.friend.id), "amount": "30.00"}]},
+            format="json",
+        )
+        self.client.post(
+            f"/api/v1/transactions/{other_txn.id}/split-people/",
+            {"participants": [{"person": str(self.friend.id), "amount": "10.00"}]},
+            format="json",
+        )
+        me = Person.objects.get(workspace=self.ws, member=self.membership)
+
+        resp = self.client.post(
+            "/api/v1/transactions/settle-balance/",
+            {"from_person": str(self.friend.id), "to_person": str(me.id)},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(resp.data, [])
+
+        balances_resp = self.client.get("/api/v1/transactions/balances/")
+        self.assertEqual(balances_resp.data, [])
+
+    def test_settle_balance_rejects_person_from_another_workspace(self):
+        other_ws = Workspace.objects.create(name="Otro")
+        foreign_person = Person.objects.create(workspace=other_ws, name="Ajeno")
+        me = Person.objects.get_or_create(
+            workspace=self.ws, member=self.membership, defaults={"name": "Yo"}
+        )[0]
+        resp = self.client.post(
+            "/api/v1/transactions/settle-balance/",
+            {"from_person": str(foreign_person.id), "to_person": str(me.id)},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_delete_person_blocked_when_they_have_shares(self):
+        self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/split-people/",
+            {"participants": [{"person": str(self.friend.id), "amount": "30.00"}]},
+            format="json",
+        )
+        resp = self.client.delete(f"/api/v1/people/{self.friend.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Person.objects.filter(id=self.friend.id).exists())
+
+    def test_delete_person_allowed_when_unused(self):
+        unused = Person.objects.create(workspace=self.ws, name="Sin transacciones")
+        resp = self.client.delete(f"/api/v1/people/{unused.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Person.objects.filter(id=unused.id).exists())

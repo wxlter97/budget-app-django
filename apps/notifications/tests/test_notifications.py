@@ -406,6 +406,63 @@ class NotifyStatementDueTests(NotificationServicesTestCase):
         self.assertEqual(mock_send.call_count, 1)
 
 
+class NotifyInsightsTests(NotificationServicesTestCase):
+    """`behavior_insights` (los 6 detectores) ya se prueba a fondo en
+    `apps.reports.tests.test_behavior_insights` -- acá sólo importa el
+    "pegamento": que `notify_insights` respete la preferencia, no repita el
+    mismo patrón, y arme la notificación con lo que ese detector devuelve.
+    Por eso se mockea `behavior_insights` en vez de armar transacciones
+    reales."""
+
+    ONE_INSIGHT = [
+        {"dedupe_key": "ws:weekend:2026-W10", "title": "Gastás más los fines de semana", "body": "..."},
+    ]
+    TWO_INSIGHTS = ONE_INSIGHT + [
+        {"dedupe_key": "ws:peak_day:2026-W10", "title": "Tenés un día pico", "body": "..."},
+    ]
+
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_creates_a_notification_per_insight_and_sends_push(self, mock_insights, mock_send):
+        mock_insights.return_value = self.TWO_INSIGHTS
+        services.notify_insights()
+        self.assertEqual(mock_send.call_count, 2)
+        self.assertEqual(
+            Notification.objects.filter(user=self.user, kind=Notification.KIND_INSIGHT).count(), 2
+        )
+        self.assertEqual(
+            NotificationLog.objects.filter(user=self.user, kind=NotificationLog.KIND_INSIGHT).count(), 2
+        )
+
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_respects_preference_off(self, mock_insights, mock_send):
+        NotificationPreference.objects.create(user=self.user, warn_insights=False)
+        mock_insights.return_value = self.ONE_INSIGHT
+        services.notify_insights()
+        mock_send.assert_not_called()
+        self.assertFalse(Notification.objects.filter(kind=Notification.KIND_INSIGHT).exists())
+        mock_insights.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_does_not_repeat_the_same_dedupe_key(self, mock_insights, mock_send):
+        mock_insights.return_value = self.ONE_INSIGHT
+        services.notify_insights()
+        services.notify_insights()
+        self.assertEqual(mock_send.call_count, 1)
+        self.assertEqual(Notification.objects.filter(kind=Notification.KIND_INSIGHT).count(), 1)
+
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_still_creates_in_app_notification_without_a_device(self, mock_insights, mock_send):
+        self.device.delete()
+        mock_insights.return_value = self.ONE_INSIGHT
+        services.notify_insights()
+        mock_send.assert_not_called()
+        self.assertTrue(Notification.objects.filter(kind=Notification.KIND_INSIGHT).exists())
+
+
 class SendPushTests(TestCase):
     @patch("apps.notifications.services.urllib_request.urlopen")
     def test_posts_to_expo_with_batched_messages(self, mock_urlopen):

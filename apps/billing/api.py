@@ -9,7 +9,13 @@ from rest_framework.views import APIView
 
 from .models import Plan, PlanPrice, Subscription
 from .providers import get_provider
-from .services import active_subscription_for, apply_webhook_event, plan_for_user, redeem_promo_code
+from .services import (
+    active_subscription_for,
+    apply_webhook_event,
+    plan_for_user,
+    redeem_promo_code,
+    start_trial,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +39,7 @@ class PlanSerializer(serializers.ModelSerializer):
     class Meta:
         model = Plan
         fields = (
-            "id", "code", "name", "description", "is_default",
+            "id", "code", "name", "description", "is_default", "trial_days",
             "max_workspaces_owned", "max_members_per_workspace", "max_active_recurring",
             "features", "prices",
         )
@@ -61,7 +67,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subscription
         fields = (
-            "id", "plan", "billing_period", "status", "provider",
+            "id", "plan", "billing_period", "status", "provider", "is_trial",
             "current_period_end", "canceled_at", "created_at",
         )
 
@@ -161,6 +167,27 @@ class RedeemPromoCodeView(APIView):
         input_serializer = RedeemPromoCodeSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         subscription = redeem_promo_code(request.user, input_serializer.validated_data["code"])
+        return Response(SubscriptionSerializer(subscription).data, status=201)
+
+
+class StartTrialSerializer(serializers.Serializer):
+    plan = serializers.PrimaryKeyRelatedField(queryset=Plan.objects.all())
+
+
+@extend_schema(tags=["billing"], request=StartTrialSerializer, responses={201: SubscriptionSerializer})
+class StartTrialView(APIView):
+    """POST: arranca la prueba gratis de ``plan.trial_days`` (ver
+    `services.start_trial`) -- sin proveedor de pago ni código, un solo
+    plan elegido del catálogo. Una prueba por usuario en toda su vida."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        input_serializer = StartTrialSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        subscription = start_trial(request.user, input_serializer.validated_data["plan"])
         return Response(SubscriptionSerializer(subscription).data, status=201)
 
 

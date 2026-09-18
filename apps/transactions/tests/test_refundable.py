@@ -48,14 +48,20 @@ class RefundableFlagsTests(APITestCase):
         self.txn.refresh_from_db()
         self.assertTrue(self.txn.is_refundable)
 
-    def test_can_mark_as_refunded(self):
+    def test_is_refunded_is_read_only_now(self):
+        # HALLAZGO: antes se podía prender este flag a mano sin que se
+        # moviera un centavo. Ahora sólo lo pone `register_refund` -- un
+        # PATCH directo se ignora en silencio (DRF, campo read-only), no
+        # tira error, pero tampoco cambia nada.
         self.txn.is_refundable = True
         self.txn.save(update_fields=["is_refundable"])
         resp = self.client.patch(
             f"/api/v1/transactions/{self.txn.id}/", {"is_refunded": True}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
-        self.assertTrue(resp.data["is_refunded"])
+        self.assertFalse(resp.data["is_refunded"])
+        self.txn.refresh_from_db()
+        self.assertFalse(self.txn.is_refunded)
 
     def test_filter_by_is_refundable(self):
         self.txn.is_refundable = True

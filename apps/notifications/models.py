@@ -69,6 +69,10 @@ class NotificationPreference(BaseModel):
     # aviso de cuota por cuota, que ya cubre `remind_installments`).
     warn_statement_due = models.BooleanField(default=True)
     statement_due_days_before = models.PositiveSmallIntegerField(default=3)
+    # Patrones de comportamiento de gasto (ver `apps.reports.services.
+    # behavior_insights`) -- un solo toggle para los seis, no uno por
+    # patrón.
+    warn_insights = models.BooleanField(default=True)
 
     def __str__(self):
         return f"Preferencias de {self.user}"
@@ -80,12 +84,17 @@ class NotificationLog(BaseModel):
     KIND_BUDGET_THRESHOLD = "budget_threshold"
     KIND_LOW_BALANCE = "low_balance"
     KIND_STATEMENT_DUE = "statement_due"
+    # Patrón de comportamiento de gasto detectado (ver `apps.reports.
+    # services.behavior_insights`) -- un solo kind para los seis patrones,
+    # el detalle va en `title`/`body`.
+    KIND_INSIGHT = "insight"
     KIND_CHOICES = [
         (KIND_RECURRING_DUE, "Recurrente por vencer"),
         (KIND_INSTALLMENT_DUE, "Cuota por vencer"),
         (KIND_BUDGET_THRESHOLD, "Presupuesto por agotarse"),
         (KIND_LOW_BALANCE, "Saldo bajo"),
         (KIND_STATEMENT_DUE, "Estado de cuenta por vencer"),
+        (KIND_INSIGHT, "Patrón de gasto detectado"),
     ]
 
     user = models.ForeignKey(
@@ -144,6 +153,7 @@ class Notification(BaseModel):
     KIND_BUDGET_THRESHOLD = NotificationLog.KIND_BUDGET_THRESHOLD
     KIND_LOW_BALANCE = NotificationLog.KIND_LOW_BALANCE
     KIND_STATEMENT_DUE = NotificationLog.KIND_STATEMENT_DUE
+    KIND_INSIGHT = NotificationLog.KIND_INSIGHT
     KIND_CHOICES = [
         (KIND_INVITATION, "Invitación a un presupuesto"),
         (KIND_EMAIL_IMPORT_PENDING, "Correo bancario por revisar"),

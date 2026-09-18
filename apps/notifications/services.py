@@ -18,7 +18,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.common import periods
-from apps.reports.services import budget_vs_actual, upcoming_scheduled
+from apps.reports.services import behavior_insights, budget_vs_actual, upcoming_scheduled
 from apps.workspaces.models import Membership
 
 from .models import Notification, NotificationLog, NotificationPreference, PushDevice
@@ -355,5 +355,28 @@ def notify_statement_due():
                     "workspace": str(workspace.id),
                     "wallet": str(wallet.id),
                 },
+                devices=devices,
+            )
+
+
+def notify_insights():
+    """Patrones de comportamiento de gasto (ver `apps.reports.services.
+    behavior_insights`). Se llama todos los días junto con el resto de
+    `send_daily_reminders`, pero cada patrón trae su propio `dedupe_key`
+    (por semana o por mes -- ver esa función), así que `NotificationLog`
+    limita cuántas veces de verdad se avisa lo mismo."""
+    for membership in _active_memberships():
+        user, workspace = membership.user, membership.workspace
+        pref = _get_preference(user)
+        if not pref.warn_insights:
+            continue
+        devices = _devices_for(user)
+
+        for insight in behavior_insights(workspace, user):
+            _notify(
+                user, workspace, NotificationLog.KIND_INSIGHT, insight["dedupe_key"],
+                title=insight["title"],
+                body=f"{insight['body']} — {workspace.name}",
+                data={"type": NotificationLog.KIND_INSIGHT, "workspace": str(workspace.id)},
                 devices=devices,
             )
