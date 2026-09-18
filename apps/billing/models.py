@@ -69,6 +69,10 @@ class Plan(BaseModel):
     # migración. Convención de claves usadas por el cliente/servicios:
     # import_email, import_excel, net_worth_history, advanced_reports,
     # export, backup, loyalty, multi_currency, quick_add.
+    # Además, las cuotas mensuales de IA, que son números y no booleanos:
+    # ai_receipts_per_month, ai_parses_per_month, ai_chats_per_month
+    # (ver `apps.ai.quotas`; ausente = se aplica el número del plan gratis,
+    # null explícito = sin tope).
     features = models.JSONField(default=dict, blank=True)
 
     class Meta:

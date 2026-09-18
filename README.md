@@ -22,6 +22,7 @@ budget/
 ├── .env.example
 ├── config/            # proyecto Django (settings, urls, wsgi/asgi, celery)
 └── apps/
+    ├── ai/            # Gemini: cliente, cuota mensual por plan y log de consumo
     ├── users/         # AUTH_USER_MODEL personalizado (users.User)
     ├── common/        # BaseModel: UUID PK, soft delete, auditoría, scoping
     ├── workspaces/    # Workspace (presupuesto compartido) + Membership
@@ -126,6 +127,7 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 | `/email-import-logs/` | Scoped, solo lectura + `?status=`. Acciones: `POST .../{id}/confirm/` (body: `category` obligatorio; `wallet`/`amount`/`date`/`description` opcionales, caen a los valores extraídos del correo — crea la `Transaction`) y `POST .../{id}/reject/`. Solo sobre logs en estado `pending`. |
 | `POST /email-import/inbound/` | **Webhook** de correo entrante. Auth: header `X-Inbound-Secret: <INBOUND_WEBHOOK_SECRET>` **o** firma HMAC nativa de Mailgun si se configura `INBOUND_MAILGUN_SIGNING_KEY`. Body JSON/form: `{to, from, subject, text}` (también acepta los nombres de Mailgun/SendGrid/Postmark). Responde `202 {log_id, status}`. |
 | `POST /workspaces/{id}/rotate-inbound-token/` | Rota el token de importación (solo owner). |
+| `GET /ai/status/` | No usa el header (la cuota es por usuario). `{enabled, quotas: {receipt, parse, chat}, resets_at}` — `enabled: false` cuando no hay `GEMINI_API_KEY`. Ver `apps/ai/`. |
 
 ### Importación por correo — cómo funciona
 
@@ -176,6 +178,32 @@ login/registro y el webhook. Rates configurables por entorno
 (`THROTTLE_ANON`, `THROTTLE_USER`, `THROTTLE_AUTH`, `THROTTLE_INBOUND`).
 Backend: `CACHE_URL` (Redis) en producción, en memoria si no se define.
 Desactivado automáticamente durante los tests.
+
+## IA (Gemini)
+
+`apps/ai` es el único lugar que conoce `GEMINI_API_KEY` y el único que habla
+con Google; la app nunca le pega directo (todo lo `EXPO_PUBLIC_*` queda
+embebido en el bundle). **Sin la key, la IA queda apagada entera** y el front
+no muestra sus entradas.
+
+Todo pasa por `services.run()`, que hace siempre lo mismo y en este orden:
+
+1. **Chequea la cuota** (`quotas.check`) antes de gastar la llamada. Los topes
+   mensuales viven en `Plan.features` (`ai_receipts_per_month`,
+   `ai_parses_per_month`, `ai_chats_per_month`), así que se ajustan desde
+   `/admin/` sin deploy. A diferencia del resto de los feature flags de
+   `apps.billing`, esto es **fail-closed**: un plan sin esas claves aplica los
+   números del gratis — acá el costo de equivocarse es una factura.
+2. **Llama a Gemini** (`client.generate`), con un solo reintento y traduciendo
+   cualquier fallo a `AIUnavailable`. Que la IA se caiga nunca debe tumbar
+   nada: el alta manual de una transacción tiene que seguir andando.
+3. **Registra el consumo** en `AIUsage` — operación, modelo, tokens, costo
+   estimado y latencia, **sin nada de lo que el usuario escribió ni de lo que
+   la IA respondió**. Esa misma tabla es el contador de la cuota, así que no
+   hay dos fuentes que puedan discrepar. Una llamada que falla del lado de
+   Google se registra pero no le come la cuota al usuario.
+
+Qué modelo atiende cada operación y cuánto cuesta: `apps/ai/pricing.py`.
 
 ## Tests
 

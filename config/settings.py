@@ -78,6 +78,7 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS = [
+    "apps.ai",
     "apps.users",
     "apps.common",
     "apps.workspaces",
@@ -196,6 +197,27 @@ if GS_BUCKET_NAME:
     GS_QUERYSTRING_AUTH = False  # nunca se expone la URL de GCS al cliente
 
 # ---------------------------------------------------------------------------
+# IA (Gemini) — ver apps/ai/
+# ---------------------------------------------------------------------------
+# La key vive SÓLO acá, nunca en el bundle de Expo: todo lo que es
+# EXPO_PUBLIC_* queda embebido y a la vista de cualquiera que abra el bundle.
+# La app le habla a nuestro backend y el backend a Gemini.
+#
+# **Vacía = todas las funciones de IA quedan apagadas** y el endpoint de estado
+# se lo dice al front, que entonces no muestra sus entradas (mismo patrón que
+# VAPID, Sentry y el botón de Google).
+#
+# Ojo con la capa gratis de Gemini: Google usa esos datos para entrenar. Sirve
+# para probar con datos propios, nunca con datos de un usuario.
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+GEMINI_API_BASE = env(
+    "GEMINI_API_BASE", default="https://generativelanguage.googleapis.com/v1beta"
+)
+# Una llamada de IA es interactiva: si tarda más que esto, al usuario le sirve
+# más un error rápido y el camino manual que una pantalla colgada.
+AI_TIMEOUT_SECONDS = env.int("AI_TIMEOUT_SECONDS", default=25)
+
+# ---------------------------------------------------------------------------
 # Backup de la base (manage.py backup_database, ver RUNBOOK.md)
 # ---------------------------------------------------------------------------
 # Neon en plan free retiene ~24 h de historial, que con usuarios de verdad no
@@ -255,6 +277,10 @@ REST_FRAMEWORK = {
         "quick_add": env("THROTTLE_QUICK_ADD", default="60/min"),  # Atajo de Apple Shortcuts
         "billing_webhook": env("THROTTLE_BILLING_WEBHOOK", default="120/min"),
         "dashboard": env("THROTTLE_DASHBOARD", default="30/min"),  # Villa Wxlter (saldo)
+        # Cada llamada de IA cuesta plata y tarda segundos: el límite es bajo a
+        # propósito. La cuota mensual del plan es el tope real (apps/ai/quotas.py);
+        # esto sólo evita la ráfaga de un cliente con un bucle mal escrito.
+        "ai": env("THROTTLE_AI", default="12/min"),
     },
 }
 if RUNNING_TESTS:
