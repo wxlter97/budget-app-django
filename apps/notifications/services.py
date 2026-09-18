@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 # Límite documentado de Expo por request.
 _BATCH_SIZE = 100
+# Día en que se calculan los patrones de gasto (0 = lunes), ver `notify_insights`.
+INSIGHTS_WEEKDAY = 0
 
 
 def send_push(devices, *, title, body, data=None):
@@ -359,20 +361,36 @@ def notify_statement_due():
             )
 
 
-def notify_insights():
+def notify_insights(today=None):
     """Patrones de comportamiento de gasto (ver `apps.reports.services.
-    behavior_insights`). Se llama todos los días junto con el resto de
-    `send_daily_reminders`, pero cada patrón trae su propio `dedupe_key`
-    (por semana o por mes -- ver esa función), así que `NotificationLog`
-    limita cuántas veces de verdad se avisa lo mismo."""
-    for membership in _active_memberships():
+    behavior_insights`). La cadencia de aviso es semanal (o mensual) por
+    `dedupe_key`, y `behavior_insights` cuesta ~12 queries por membresía, así
+    que se calcula sólo un día de la semana en vez de todos: a diario, 6 de
+    cada 7 cálculos terminaban descartados por el `dedupe_key`.
+
+    El precio de esto es que si el job no corre ese día (Scheduler caído), la
+    semana se salta. Es aceptable para un aviso de patrón; si dejara de serlo,
+    el reemplazo es un marcador semanal por membresía en vez del día fijo."""
+    today = today or timezone.localdate()
+    if today.weekday() != INSIGHTS_WEEKDAY:
+        return
+
+    # Una persona en varios workspaces tiene una sola preferencia y un solo
+    # juego de dispositivos: se consultan una vez por usuario, no por membresía.
+    prefs, devices_by_user = {}, {}
+
+    for membership in _active_memberships().order_by("user_id"):
         user, workspace = membership.user, membership.workspace
-        pref = _get_preference(user)
+        if user.pk not in prefs:
+            prefs[user.pk] = _get_preference(user)
+        pref = prefs[user.pk]
         if not pref.warn_insights:
             continue
-        devices = _devices_for(user)
+        if user.pk not in devices_by_user:
+            devices_by_user[user.pk] = _devices_for(user)
+        devices = devices_by_user[user.pk]
 
-        for insight in behavior_insights(workspace, user):
+        for insight in behavior_insights(workspace, user, today=today):
             _notify(
                 user, workspace, NotificationLog.KIND_INSIGHT, insight["dedupe_key"],
                 title=insight["title"],

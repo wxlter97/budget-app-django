@@ -192,3 +192,11 @@ El test crítico de aislamiento multi-tenant está en
 Toda la config sensible se lee de variables de entorno o de `budget/.env`
 (ver `.env.example`). En producción usar `DJANGO_DEBUG=False`, que activa
 HSTS, cookies seguras y redirección SSL.
+
+Qué funciones ya están programadas pero no hacen nada hasta que se les
+configure una key, un DNS o unas filas en `/admin/`: ver `CONFIG-PENDIENTE.md`.
+
+Qué aguanta el stack en producción y cuánto cuesta por usuario:
+ver `COSTOS-Y-ESCALA.md`.
+
+**Qué sigue y en qué orden (índice maestro): `ROADMAP.md`.**
