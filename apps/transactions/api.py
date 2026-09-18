@@ -357,6 +357,11 @@ class PersonBalanceSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=14, decimal_places=2)
 
 
+class SettleBalanceSerializer(serializers.Serializer):
+    from_person = serializers.PrimaryKeyRelatedField(queryset=Person.objects.all())
+    to_person = serializers.PrimaryKeyRelatedField(queryset=Person.objects.all())
+
+
 # ---------------------------------------------------------------------------
 # Transaction
 # ---------------------------------------------------------------------------
@@ -930,6 +935,26 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         """Quién le debe cuánto a quién en el workspace activo, entre las
         divisiones por persona sin liquidar (ver `services.person_balances`)."""
         data = services.person_balances(request.workspace)
+        return Response(
+            PersonBalanceSerializer(data, many=True, context=self.get_serializer_context()).data
+        )
+
+    @action(detail=False, methods=["post"], url_path="settle-balance")
+    def settle_balance(self, request):
+        """Salda de una sola vez la deuda neta entre dos personas (una fila
+        de `balances`) -- marca como liquidadas todas las `TransactionShare`
+        sin liquidar entre ellas, en cualquier dirección (ver
+        `services.settle_balance`). Devuelve la lista de saldos actualizada."""
+        serializer = SettleBalanceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        a = serializer.validated_data["from_person"]
+        b = serializer.validated_data["to_person"]
+        workspace = request.workspace
+        if a.workspace_id != workspace.id or b.workspace_id != workspace.id:
+            raise ValidationError("Alguna de las personas es de otro workspace.")
+
+        services.settle_balance(workspace, a, b)
+        data = services.person_balances(workspace)
         return Response(
             PersonBalanceSerializer(data, many=True, context=self.get_serializer_context()).data
         )

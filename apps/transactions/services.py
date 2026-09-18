@@ -496,3 +496,24 @@ def person_balances(workspace):
             )
     results.sort(key=lambda r: -r["amount"])
     return results
+
+
+def settle_balance(workspace, person_a, person_b):
+    """Marca como liquidadas TODAS las partes sin liquidar entre `person_a`
+    y `person_b`, en cualquier dirección -- equivale a "saldar" la fila neta
+    que devuelve `person_balances` para ese par (que puede estar compuesta
+    por varias `TransactionShare` de distintas transacciones). Devuelve
+    cuántas se actualizaron."""
+    return (
+        TransactionShare.objects.filter(
+            transaction__wallet__workspace=workspace,
+            transaction__is_deleted=False,
+            is_deleted=False,
+            is_settled=False,
+        )
+        .filter(
+            Q(person=person_a, transaction__paid_by=person_b)
+            | Q(person=person_b, transaction__paid_by=person_a)
+        )
+        .update(is_settled=True, settled_at=timezone.now())
+    )
