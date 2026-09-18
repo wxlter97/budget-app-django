@@ -198,3 +198,5 @@ configure una key, un DNS o unas filas en `/admin/`: ver `CONFIG-PENDIENTE.md`.
 
 Qué aguanta el stack en producción y cuánto cuesta por usuario:
 ver `COSTOS-Y-ESCALA.md`.
+
+**Qué sigue y en qué orden (índice maestro): `ROADMAP.md`.**
