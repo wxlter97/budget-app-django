@@ -195,3 +195,6 @@ HSTS, cookies seguras y redirección SSL.
 
 Qué funciones ya están programadas pero no hacen nada hasta que se les
 configure una key, un DNS o unas filas en `/admin/`: ver `CONFIG-PENDIENTE.md`.
+
+Qué aguanta el stack en producción y cuánto cuesta por usuario:
+ver `COSTOS-Y-ESCALA.md`.
