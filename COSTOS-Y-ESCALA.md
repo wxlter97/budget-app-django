@@ -76,11 +76,39 @@ funciones de servidor), así que cualquier CDN sirve y la decisión es sólo de 
 | Netlify Free | $0 | 100 GB | sí | Techo bajo de banda. |
 | GCS + Cloud CDN | ~$0.12/GB de egreso | pago por uso | sí | Mismo proyecto GCP, pero es la más cara de la lista. |
 
-**Cloudflare Pages es la mejor opción y por bastante:** es la única con banda ilimitada, no tiene
-la restricción comercial, y para un SPA estático no perdés absolutamente nada de lo que da Vercel
-(preview deployments por PR y deploy en cada push a `main` los tiene igual). Los pasos concretos
-están en `DEPLOY.md` §3, Opción C — lo único a replicar a mano es el rewrite de SPA de
-`vercel.json`, que en Pages es un `public/_redirects` con `/* /index.html 200`.
+**Cloudflare Pages es la mejor opción:** es la única con banda ilimitada, no tiene la restricción
+comercial, y da preview deployments por PR y deploy en cada push a `main` igual que Vercel. Los
+pasos están en `DEPLOY.md` §3, Opción C.
+
+Dos cosas que además se ganan, no sólo el precio: Cloudflare tiene 300+ puntos de presencia
+contra ~30 regiones de Vercel, lo que en Centroamérica se nota; y **Cloudflare Web Analytics es
+gratis y sin cookies**, así que sirve donde GA4 y Clarity chocan con la política de privacidad
+(ver el punto 4 del backlog de funciones nuevas).
+
+### Los peros, para que la decisión sea con los ojos abiertos
+
+- **DX más austera.** Logs de build, rollback y preview son más pulidos en Vercel. No cambia lo
+  que ve el usuario, pero se siente al operar.
+- **Puerta de un solo sentido si algún día hace falta código en el servidor.** Las Pages
+  Functions corren en el runtime de Workers, que no es Node: hay paquetes de npm que no andan.
+  Hoy da igual (el backend es Django y el front no necesita nada de servidor), pero es el
+  único riesgo estructural de la mudanza.
+- **DNS.** Lo más cómodo es tener la zona `wxlter.dev` en Cloudflare. Se puede apuntar con un
+  CNAME desde otro proveedor, pero es menos directo — **confirmar dónde está la zona hoy antes
+  de arrancar.**
+- **Un build concurrente y 500 builds/mes en el plan gratis** (Vercel Hobby también da uno
+  concurrente). A este ritmo de push no molesta; con muchas ramas a la vez se forma cola.
+- **La banda ilimitada no es un cheque en blanco:** los términos del plan gratis apuntan contra
+  usar el CDN para servir mucho contenido que no sea del sitio (video, archivos). Un SPA de
+  ~2 MB con 7 assets es exactamente el caso para el que está pensado.
+- **Concentración de proveedor.** Si terminás con DNS + hosting + analítica en Cloudflare, una
+  caída de ellos te toca todo junto.
+- **`_headers` no aplica a respuestas de Functions** (irrelevante mientras no haya Functions) y
+  admite hasta 100 reglas, de sobra para cache-control y CSP.
+
+**Si la mudanza no vale el rato:** Vercel Pro a $20/mes es defendible y es cero riesgo. Son ~20
+suscriptores de Plus al mes, así que a partir de unos cientos de usuarios deja de ser un rubro
+que importe.
 
 ## Arranque en frío (lo que el usuario sí va a notar)
 

@@ -195,13 +195,23 @@ Cloudflare → **Workers & Pages → Create → Pages → Connect to Git** → `
 
 | Campo | Valor |
 |---|---|
-| Build command | `npm ci && npx expo export -p web && node scripts/pwa-postbuild.js` |
+| Build command | `npx expo export -p web && node scripts/pwa-postbuild.js` |
 | Build output directory | `dist` |
 | Variable de entorno | `EXPO_PUBLIC_API_URL = https://budget-api-XXXX.a.run.app/api/v1` |
 
+Pages instala las dependencias solo a partir del lockfile, así que el build
+command no lleva `npm ci`. La imagen de build trae Node 22 por defecto, que es
+lo que usa el repo; si algún día no coincide, se fija con la variable
+`NODE_VERSION`.
+
 Lo único que hay que replicar a mano es el rewrite de SPA que hoy está en
-`vercel.json` (todas las rutas a `index.html`): en Pages se hace con un archivo
-`public/_redirects` con `/* /index.html 200`.
+`vercel.json` (todas las rutas a `index.html`): en Pages es un archivo
+`public/_redirects` con `/* /index.html 200`. Va en `public/` porque `expo
+export` copia ese directorio tal cual a `dist/` — igual que `sw.js` y
+`manifest.webmanifest`.
+
+También hay que cambiar el script `deploy:web` de `package.json`, que hoy es
+`npx vercel deploy --prod`, por `npx wrangler pages deploy dist`.
 
 Después, en el §4, `CORS_ALLOWED_ORIGINS` apunta al dominio de Pages en vez del
 de Vercel. El resto del deploy no cambia.
