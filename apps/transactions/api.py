@@ -390,6 +390,12 @@ class TransactionSerializer(serializers.ModelSerializer):
     loyalty_earnings = serializers.SerializerMethodField()
     paid_by_name = serializers.CharField(source="paid_by.name", read_only=True, default=None)
     shares = TransactionShareSerializer(many=True, read_only=True)
+    # Sólo poblado en la transacción de INGRESO que reembolsa a otra (ver
+    # `services.register_refund`) -- el id del gasto original.
+    refund_of = serializers.PrimaryKeyRelatedField(read_only=True)
+    # Sólo poblado en el GASTO ya reembolsado -- el id de esa transacción de
+    # ingreso, para poder mostrarla/enlazarla ("reembolsado el 3 sep, $50").
+    refund_transaction_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Transaction
@@ -409,6 +415,8 @@ class TransactionSerializer(serializers.ModelSerializer):
             "is_recurring",
             "is_refundable",
             "is_refunded",
+            "refund_of",
+            "refund_transaction_id",
             "split_group",
             "paid_by",
             "paid_by_name",
@@ -427,10 +435,18 @@ class TransactionSerializer(serializers.ModelSerializer):
         read_only_fields = (
             "id", "currency", "split_group", "paid_by", "paid_by_name", "shares",
             "created_by", "created_at", "updated_at",
+            # `is_refunded` sólo lo pone `services.register_refund` -- ver el
+            # hallazgo en `Transaction.is_refunded` (models.py). Antes era
+            # editable a mano acá, sin que eso moviera un centavo.
+            "is_refunded", "refund_of",
         )
 
     def get_has_receipt(self, obj) -> bool:
         return bool(obj.receipt)
+
+    def get_refund_transaction_id(self, obj) -> str | None:
+        refund = obj.refund_transactions.first()
+        return str(refund.id) if refund else None
 
     def get_loyalty_earnings(self, obj) -> list[dict]:
         """Puntos/cashback/descuento que generó esta transacción -- de sólo
@@ -617,6 +633,20 @@ class TransactionSplitSerializer(serializers.Serializer):
         return parts
 
 
+class RegisterRefundSerializer(serializers.Serializer):
+    """Body de la acción `register-refund`. `wallet` es opcional -- por
+    default acredita a la misma cartera del gasto original (ver la vista)."""
+
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    date = serializers.DateField()
+    wallet = serializers.PrimaryKeyRelatedField(queryset=Wallet.objects.all(), required=False)
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Tiene que ser mayor a cero.")
+        return value
+
+
 class TransactionFilter(filters.FilterSet):
     """Filtros de querystring para la lista de transacciones.
 
@@ -719,6 +749,44 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             txn.receipt = None
             txn.save(update_fields=["receipt", "updated_at"])
         return Response(status=204)
+
+    @action(detail=True, methods=["post"], url_path="register-refund")
+    def register_refund(self, request, pk=None):
+        """
+        Crea la transacción de ingreso que devuelve la plata de este gasto
+        y lo marca `is_refunded` (ver `services.register_refund`). Antes de
+        esto, "reembolsado" era sólo un flag sin ningún movimiento de
+        dinero real detrás.
+        """
+        txn = self.get_object()
+        serializer = RegisterRefundSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        wallet = data.get("wallet") or txn.wallet
+        if wallet.workspace_id != self.request.workspace.id:
+            raise ValidationError({"wallet": "La cartera es de otro workspace."})
+        if wallet.visibility == Wallet.VISIBILITY_PRIVATE and wallet.owner_id != request.user.id:
+            raise ValidationError({"wallet": "No puedes usar una cartera privada ajena."})
+        _reject_if_group_wallet(wallet, "wallet")
+
+        refund = services.register_refund(
+            original=txn, amount=data["amount"], date=data["date"],
+            wallet=wallet, created_by=request.user,
+        )
+        return Response(self.get_serializer(refund).data, status=201)
+
+    def perform_destroy(self, instance):
+        # Si esto ES una transacción de reembolso (`refund_of` puesto), el
+        # gasto que reembolsaba deja de estar "reembolsado" -- sin esto,
+        # borrar el ingreso dejaría el flag prendido con el dinero de vuelta
+        # ya no representado por ninguna transacción real (el mismo
+        # problema que esta feature vino a arreglar).
+        original = instance.refund_of
+        instance.soft_delete()
+        if original is not None and not original.refund_transactions.exists():
+            original.is_refunded = False
+            original.save(update_fields=["is_refunded", "updated_at"])
 
     @action(detail=True, methods=["post"])
     def split(self, request, pk=None):

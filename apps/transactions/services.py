@@ -15,6 +15,7 @@ from django.db import transaction as db_transaction
 from django.db.models import Count, F, Q
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
+from rest_framework.exceptions import ValidationError
 
 from .models import Category, Person, RecurringExpense, Transaction, TransactionShare
 
@@ -159,6 +160,74 @@ def seed_default_categories(workspace) -> int:
                 order += 1
                 created += int(made)
     return created
+
+
+# ---------------------------------------------------------------------------
+# Registrar un reembolso (crea la Transaction que devuelve la plata de verdad)
+# ---------------------------------------------------------------------------
+def get_or_create_refund_category(workspace) -> Category:
+    """
+    La categoría "Reembolsos" (ingreso) que usa `register_refund`. Ya viene
+    en `DEFAULT_INCOME_CATEGORY_GROUPS` -- esto sólo cubre el caso de un
+    workspace de antes de que existiera esa fila en el seed, o donde el
+    usuario la borró: la vuelve a crear bajo el grupo "Ingresos" (también
+    get-or-create, por si ni ese existe) en vez de fallar.
+    """
+    existing = Category.objects.filter(
+        workspace=workspace, type=Category.TYPE_INCOME, name__iexact="Reembolsos",
+    ).first()
+    if existing:
+        return existing
+    group, _ = Category.objects.get_or_create(
+        workspace=workspace, name="Ingresos", type=Category.TYPE_INCOME, parent=None,
+        defaults={"icon": "💰", "color": "#22C55E"},
+    )
+    return Category.objects.create(
+        workspace=workspace, name="Reembolsos", type=Category.TYPE_INCOME, parent=group,
+        icon="↩️", color="#22C55E",
+    )
+
+
+def register_refund(*, original: Transaction, amount: Decimal, date, wallet, created_by) -> Transaction:
+    """
+    Crea la Transaction de INGRESO que devuelve la plata de ``original`` (un
+    gasto) y marca ``original.is_refunded = True`` -- antes de esto,
+    "reembolsado" era sólo un flag sin ningún movimiento de dinero real
+    detrás (ver docstring de `Transaction.is_refunded`).
+
+    ``wallet`` ya viene resuelto por el llamador (default: la misma de
+    ``original``) -- acá sólo se asume del mismo workspace, ya validado
+    antes de llegar (ver `TransactionViewSet.register_refund`).
+    """
+    if original.type != Transaction.TYPE_EXPENSE:
+        raise ValidationError({"detail": "Sólo se puede registrar un reembolso de un gasto."})
+    if original.is_refunded:
+        raise ValidationError({"detail": "Esta transacción ya tiene un reembolso registrado."})
+    if amount <= 0:
+        raise ValidationError({"amount": "Tiene que ser mayor a cero."})
+    if amount > original.amount:
+        raise ValidationError(
+            {"amount": f"No puede ser mayor al monto original de la transacción ({original.amount})."}
+        )
+
+    category = get_or_create_refund_category(original.wallet.workspace)
+
+    with db_transaction.atomic():
+        refund = Transaction.objects.create(
+            type=Transaction.TYPE_INCOME,
+            wallet=wallet,
+            category=category,
+            amount=amount,
+            description=f"Reembolso: {original.description}" if original.description else "Reembolso",
+            date=date,
+            created_by=created_by,
+            source=Transaction.SOURCE_REFUND,
+            refund_of=original,
+        )
+        original.is_refunded = True
+        original.save(update_fields=["is_refunded", "updated_at"])
+
+    return refund
 
 
 def _advance(date, frequency):
