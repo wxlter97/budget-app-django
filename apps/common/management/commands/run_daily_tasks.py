@@ -12,8 +12,13 @@ idempotente por su cuenta (una corrida de más el mismo día no duplica nada
 acumulada), así que no pasa nada si el Cloud Scheduler dispara esto más de
 una vez, o a una hora que no es la ideal.
 
+Al final corre `backup_database`, que es el único paso que no es idempotente en
+el sentido estricto: cada corrida deja un volcado más en el bucket. No molesta
+(los caduca la retención), pero es la razón de que vaya último.
+
     python manage.py run_daily_tasks
 """
+from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
 from apps.notifications.tasks import send_daily_reminders
@@ -38,5 +43,12 @@ class Command(BaseCommand):
             # `.apply_async()` necesitarían uno.
             task()
             self.stdout.write(self.style.SUCCESS(f"  listo: {label}"))
+
+        # El backup va al final, después de lo que el usuario nota: si pg_dump
+        # falla o el bucket rechaza la subida, el error sube y marca el job como
+        # fallido en Cloud Run (que es como uno se entera), pero para entonces
+        # los recurrentes y los recordatorios ya salieron.
+        self.stdout.write("→ Backup de la base...")
+        call_command("backup_database")
 
         self.stdout.write(self.style.SUCCESS("Listo: tareas del día completas."))

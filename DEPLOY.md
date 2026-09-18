@@ -204,11 +204,13 @@ command no lleva `npm ci`. La imagen de build trae Node 22 por defecto, que es
 lo que usa el repo; si algún día no coincide, se fija con la variable
 `NODE_VERSION`.
 
-Lo único que hay que replicar a mano es el rewrite de SPA que hoy está en
-`vercel.json` (todas las rutas a `index.html`): en Pages es un archivo
-`public/_redirects` con `/* /index.html 200`. Va en `public/` porque `expo
-export` copia ese directorio tal cual a `dist/` — igual que `sw.js` y
-`manifest.webmanifest`.
+El rewrite de SPA que en Vercel vive en `vercel.json` (todas las rutas a
+`index.html`) **ya está en el repo**: `moneyapp/public/_redirects`. Va en
+`public/` porque `expo export` copia ese directorio tal cual a `dist/` — igual
+que `sw.js` y `manifest.webmanifest` — y Pages lo lee desde la raíz del output
+sin servirlo como contenido. Los dos archivos conviven: Vercel ignora
+`_redirects` y Pages ignora `vercel.json`, así que mover el hosting no toca el
+build.
 
 También hay que cambiar el script `deploy:web` de `package.json`, que hoy es
 `npx vercel deploy --prod`, por `npx wrangler pages deploy dist`.
@@ -265,11 +267,17 @@ La **primera** request del día tarda ~2-4 s (Cloud Run + Neon despiertan).
 
 ## 6. Tareas sin Celery
 
-`manage.py run_daily_tasks` corre las tres tareas periódicas en el orden
-correcto (recurrentes → cierre de mes → recordatorios, ver
+`manage.py run_daily_tasks` corre las tareas periódicas en el orden correcto
+(recurrentes → cierres → recordatorios → backup de la base, ver
 `apps/common/management/commands/run_daily_tasks.py`) sincrónicamente, sin
 broker. Todas son idempotentes: no pasa nada si el job corre dos veces el
 mismo día, o a una hora que no es la ideal.
+
+El backup va último a propósito: si `pg_dump` falla o el bucket rechaza la
+subida, el job queda marcado como fallido en Cloud Run — que es como uno se
+entera — pero para entonces los recordatorios ya salieron. Necesita
+`GS_BUCKET_NAME` (o `DB_BACKUP_BUCKET`) en el Job, si no avisa y no hace nada.
+Restaurar desde un volcado: `RUNBOOK.md` §9.
 
 ### 6.1 Cloud Run Job (una sola vez)
 
@@ -277,9 +285,15 @@ mismo día, o a una hora que no es la ideal.
 gcloud run jobs deploy budget-cron \
   --source . --region us-east1 \
   --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
-  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
+  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0,GS_BUCKET_NAME=budget-recibos-prod" \
   --command python \
   --args "manage.py,run_daily_tasks"
+
+# La service account del job necesita escribir en el bucket (para el backup):
+gcloud storage buckets add-iam-policy-binding gs://budget-recibos-prod \
+  --member "serviceAccount:$(gcloud projects describe $(gcloud config get-value project) \
+      --format='value(projectNumber)')-compute@developer.gserviceaccount.com" \
+  --role roles/storage.objectAdmin
 
 gcloud run jobs execute budget-cron --region us-east1 --wait   # probarlo a mano una vez
 ```

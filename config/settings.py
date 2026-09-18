@@ -195,6 +195,24 @@ if GS_BUCKET_NAME:
     GS_FILE_OVERWRITE = False
     GS_QUERYSTRING_AUTH = False  # nunca se expone la URL de GCS al cliente
 
+# ---------------------------------------------------------------------------
+# Backup de la base (manage.py backup_database, ver RUNBOOK.md)
+# ---------------------------------------------------------------------------
+# Neon en plan free retiene ~24 h de historial, que con usuarios de verdad no
+# alcanza para recuperarse de un borrado que se note al tercer día. El volcado
+# diario a GCS cubre esa ventana por centavos.
+#
+# Por defecto va al mismo bucket de los recibos (una variable menos que
+# configurar), en el prefijo de abajo. Si preferís separarlo — por ejemplo para
+# darle al bucket de backups otra política de retención o de acceso — seteá
+# DB_BACKUP_BUCKET aparte.
+DB_BACKUP_BUCKET = env("DB_BACKUP_BUCKET", default="") or GS_BUCKET_NAME
+DB_BACKUP_PREFIX = env("DB_BACKUP_PREFIX", default="backups/db/")
+# Cuántos días de volcados conservar. El comando borra los más viejos al
+# terminar, pero nunca deja el prefijo vacío: si todos caducaron, el último
+# sobrevive. 0 desactiva el borrado.
+DB_BACKUP_RETENTION_DAYS = env.int("DB_BACKUP_RETENTION_DAYS", default=30)
+
 # Default de Django (2.5 MB) se queda corto para una foto de recibo tomada
 # con la cámara del teléfono. El límite real de tamaño lo aplica la vista
 # (ver RECEIPT_MAX_SIZE en apps/transactions/api.py); este sólo evita que

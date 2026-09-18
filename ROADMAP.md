@@ -37,10 +37,10 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 | 0.2 | **Cloud Scheduler + Job `budget-cron`** — sin esto no corre nada diario (recordatorios, recurrentes, insights) y no hay error que avise | 🧑 | 30 min |
 | 0.3 | **Endpoint *pooled* de Neon** en `DATABASE_URL` (`common.W002` lo avisa al arrancar) | 🧑 | 10 min |
 | 0.4 | **`CACHE_URL`** con Redis de Upstash — el throttling ya no es correcto con 5 instancias (`common.W001`) | 🧑 | 30 min |
-| 0.5 | **Mover el front a Cloudflare Pages** — Hobby no permite uso comercial. Confirmar primero dónde está la zona DNS (`DEPLOY.md` §3-C) | 🧑 | 1–2 h |
+| 0.5 | **Mover el front a Cloudflare Pages** — Hobby no permite uso comercial. Confirmar primero dónde está la zona DNS (`DEPLOY.md` §3-C). El `public/_redirects` del rewrite SPA **ya está en el repo**, así que del lado del código no queda nada | 🧑 | 1–2 h |
 | 0.6 | **Job `budget-migrate` + `RUN_MIGRATIONS=0`** — saca la carrera de migraciones entre instancias y acelera el arranque en frío (`DEPLOY.md` §2.2) | 🧑 | 30 min |
 | 0.7 | **Sentry** en los dos repos — hasta que esté, los errores de producción sólo se ven si alguien los cuenta | 🧑 | 30 min |
-| 0.8 | **Backups**: `pg_dump` a GCS desde el job diario (Neon free retiene 24 h) | 🤖 + 🧑 | 1 h |
+| 0.8 | ~~**Backups**: `pg_dump` a GCS desde el job diario~~ — **hecho**: `manage.py backup_database` corre al final de `run_daily_tasks` y `RUNBOOK.md` §9 tiene la restauración. Se activa solo cuando exista el bucket de 0.1 | 🤖 ✅ | — |
 | 0.9 | **Ping de keepalive** del Scheduler, opcional pero se nota (`DEPLOY.md` §6.3) | 🧑 | 15 min |
 | 0.10 | **Correo saliente (Mailgun)** — sin esto las invitaciones a workspace no llegan; incluye DNS y esperar propagación | 🧑 | 2–3 h |
 | 0.11 | **Push web (VAPID)**: `manage.py generate_vapid_keys` | 🧑 | 15 min |

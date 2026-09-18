@@ -11,10 +11,17 @@
 
 ## Prioridad 1 — pérdida de datos o función caída
 
-- [ ] **`GS_BUCKET_NAME` — adjuntos de recibos.** Vacío = los recibos se guardan en el disco
-      local del contenedor. En Cloud Run eso significa que **se borran en cada deploy**. La
-      función de adjuntar foto/PDF a una transacción (`Transaction.receipt`) ya está completa,
-      cámara incluida. Crear un bucket privado en GCS y setear la variable. **(verificar)**
+- [ ] **`GS_BUCKET_NAME` — adjuntos de recibos *y* backups de la base.** Vacío = los recibos se
+      guardan en el disco local del contenedor. En Cloud Run eso significa que **se borran en
+      cada deploy**. La función de adjuntar foto/PDF a una transacción (`Transaction.receipt`)
+      ya está completa, cámara incluida. Crear un bucket privado en GCS y setear la variable.
+      **(verificar)**
+      La misma variable habilita el volcado diario de la base (`manage.py backup_database`, que
+      corre solo al final del job diario y guarda en `backups/db/` del mismo bucket): sin ella
+      el comando avisa y no hace nada, y el único respaldo son las ~24 h de historial de Neon.
+      Lo avisa `common.W003` en cada arranque. Si preferís un bucket aparte para los backups
+      — otra política de retención, otro acceso — está `DB_BACKUP_BUCKET`. Restaurar:
+      `RUNBOOK.md` §9.
 - [ ] **Tareas diarias en producción.** No hay Celery en prod: los recordatorios, las
       transacciones recurrentes y los insights de comportamiento nuevos corren por
       `manage.py run_daily_tasks` desde un Cloud Run Job disparado por Cloud Scheduler

@@ -59,8 +59,12 @@ Ordenado por lo que rompe primero. Lo marcado `[x]` ya está hecho en el repo; l
       paga una sola vez.
 - [ ] **Mover el front fuera de Vercel Hobby** (acción tuya, ver abajo). Hobby no permite uso
       comercial: desde que cobrás una suscripción estás fuera de los términos.
-- [ ] **Backups.** Neon free retiene ~24 h de historial. Con usuarios reales eso no alcanza: un
-      `pg_dump` a un bucket de GCS desde el mismo job diario cuesta centavos.
+- [x] **Backups.** Neon free retiene ~24 h de historial, que con usuarios reales no alcanza.
+      `manage.py backup_database` vuelca con `pg_dump --format=custom` y sube a
+      `gs://<bucket>/backups/db/`, con retención de 30 días que nunca borra el último volcado
+      que queda. Corre solo al final de `run_daily_tasks`. Restaurar está paso a paso en
+      `RUNBOOK.md` §9. **Falta la config tuya:** sin `GS_BUCKET_NAME` (o `DB_BACKUP_BUCKET`) el
+      comando avisa y no hace nada, y `common.W003` lo repite en cada arranque.
 - [x] **`DEPLOY.md` §7 decía "Neon free: ~190 h cómputo/mes";** hoy son 100 h.
 
 ## Hosting del front: qué conviene
