@@ -128,6 +128,7 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 | `POST /email-import/inbound/` | **Webhook** de correo entrante. Auth: header `X-Inbound-Secret: <INBOUND_WEBHOOK_SECRET>` **o** firma HMAC nativa de Mailgun si se configura `INBOUND_MAILGUN_SIGNING_KEY`. Body JSON/form: `{to, from, subject, text}` (también acepta los nombres de Mailgun/SendGrid/Postmark). Responde `202 {log_id, status}`. |
 | `POST /workspaces/{id}/rotate-inbound-token/` | Rota el token de importación (solo owner). |
 | `GET /ai/status/` | No usa el header (la cuota es por usuario). `{enabled, quotas: {receipt, parse, chat}, resets_at}` — `enabled: false` cuando no hay `GEMINI_API_KEY`. Ver `apps/ai/`. |
+| `POST /ai/receipt/` | Scoped. `multipart` con `file` (JPG/PNG/WEBP/HEIC/PDF, ≤8 MB) y `wallet` opcional. Devuelve una **candidata** editable con confianza por campo y posibles duplicados. **No crea la transacción ni guarda el archivo.** 429 si se acabó la cuota del plan, 503 si Gemini no contestó. |
 
 ### Importación por correo — cómo funciona
 
@@ -204,6 +205,26 @@ Todo pasa por `services.run()`, que hace siempre lo mismo y en este orden:
    Google se registra pero no le come la cuota al usuario.
 
 Qué modelo atiende cada operación y cuánto cuesta: `apps/ai/pricing.py`.
+
+### Escaneo de recibos
+
+`POST /ai/receipt/` (ver `apps/ai/receipts.py`) devuelve una **candidata**, nunca
+una transacción: el usuario siempre confirma, y el archivo se guarda como
+`Transaction.receipt` recién cuando aprieta guardar — un escaneo descartado no
+deja nada en el bucket.
+
+Dos cosas que ordenan ese archivo:
+
+- **La categoría se resuelve primero con el historial** del workspace
+  (`guess_category_by_merchant`: gratis, determinista, y sabe cómo categorizó
+  *esta* gente *este* comercio antes) y sólo después con la sugerencia del
+  modelo, que además tiene que matchear una categoría **asignable** — sugerir
+  un grupo daría una transacción que no se puede guardar.
+- **Nada de lo que devuelve el modelo se cree sin normalizar.** Un monto que no
+  parsea, negativo o absurdo queda vacío y marcado `low` en vez de inventado; una
+  fecha futura, o de hace más de dos años (el año mal leído de un ticket térmico),
+  cae a hoy. Vale más un campo vacío que el usuario llena que uno inventado que
+  no mira.
 
 ## Tests
 

@@ -19,12 +19,12 @@
 - Los PRs #55 y #56 (backend) y #74 y #75 (front) **están mergeados a `main`**. El código de
   producto está al día: reembolsos, división entre personas, Personas, ahorro con interés,
   gamificación, insights de comportamiento, y los arreglos de escala del backend.
-- Además ya están **el backup diario a GCS (0.8)**, **el `_redirects` para Cloudflare (0.5)** y
-  **la base de IA con su cuota por plan (2.1)**. Las tres esperan configuración tuya: el bucket,
-  el DNS y la key de Gemini.
+- Además ya están **el backup diario a GCS (0.8)**, **el `_redirects` para Cloudflare (0.5)**,
+  **la base de IA con su cuota por plan (2.1)** y **el escaneo de recibos (2.2)**. Todas esperan
+  configuración tuya: el bucket, el DNS y la key de Gemini.
 - La app corre en web (Vercel Hobby). **No hay build nativo publicado** y no hay
   `extra.eas.projectId`.
-- 783 tests en el backend, 242 en el front, todos pasando.
+- 818 tests en el backend, 250 en el front, todos pasando.
 - Lo que falta no es código de producto: es configuración, cobrar, y las funciones nuevas.
 
 ---
@@ -77,7 +77,7 @@ Orden pensado para que cada pieza apoye la siguiente.
 | # | Qué | Quién | Tiempo |
 |---|---|---|---|
 | 2.1 | ~~**Base de IA** (`apps/ai`)~~ — **hecha**: cliente de Gemini, throttle `ai`, cuota mensual por plan (`Plan.features`, fail-closed), `AIUsage` como log y contador a la vez, `GET /ai/status/` y `useAIStatus()` en el front. **Falta tuyo:** crear la key de Gemini (tier de pago, no el gratis) y ponerla en `GEMINI_API_KEY` | 🤖 ✅ + 🧑 30 min | — |
-| 2.2 | **Leer y clasificar recibos** — el que más se nota; reusa `Transaction.receipt` y `expo-image-picker`, que ya están | 🤖 | 1.5 jornadas |
+| 2.2 | ~~**Leer y clasificar recibos**~~ — **hecho**: `POST /ai/receipt/` devuelve una candidata editable (monto, fecha, comercio, ítems, confianza por campo), con la categoría resuelta primero por historial y después por IA, y los posibles duplicados. En la app, botón "Escanear recibo" en el alta de gasto | 🤖 ✅ | — |
 | 2.3 | **Entrada por texto libre (NLP)** — reusa `apps/quickadd` y `guess_category_by_merchant` | 🤖 | 1 jornada |
 | 2.4 | **Canal de Telegram** — bot, webhook, vinculación de cuenta con token de un uso | 🤖 + 🧑 | 1 jornada |
 | 2.5 | **Voz / dictado** — `expo-audio` + audio directo a Gemini, mismo parser que 2.3 | 🤖 | 1 jornada |
@@ -87,7 +87,7 @@ Orden pensado para que cada pieza apoye la siguiente.
 | 2.9 | **Resumen y consejos mensuales** — encima de `behavior_insights()`, que ya existe | 🤖 | 0.5–1 jornada |
 | 2.10 | **Chat sobre tus finanzas** — el de mayor superficie de riesgo (aislamiento por workspace), va al final | 🤖 | 2 jornadas |
 
-**Subtotal: ~9–11 jornadas** (eran 11–13; 2.1 ya está).
+**Subtotal: ~7.5–9.5 jornadas** (eran 11–13; 2.1 y 2.2 ya están).
 
 ---
 
@@ -132,9 +132,9 @@ documentar), no un día de calendario.
 |---|---|---|
 | 0 — Producción sólida | ~1.5 jornadas | casi todo |
 | 1 — Antes de cobrar | ~1.5–2 jornadas | la mitad |
-| 2 — Funciones nuevas | ~9–11 jornadas | poco |
+| 2 — Funciones nuevas | ~7.5–9.5 jornadas | poco |
 | 3 — Nativo y tiendas | ~3–4 jornadas | la mitad |
-| **Total** | **~15–19 jornadas** | |
+| **Total** | **~13.5–17.5 jornadas** | |
 
 **Traducido a calendario:** a 2–3 jornadas por semana son **7 a 10 semanas** para todo. Pero el
 recorte que importa es otro: **las Fases 0 y 1 son ~3–3.5 jornadas y son lo único que necesitás

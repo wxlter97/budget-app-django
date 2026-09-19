@@ -713,10 +713,10 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             Q(wallet__visibility=Wallet.VISIBILITY_SHARED) | Q(wallet__owner=user)
         )
 
-    RECEIPT_MAX_SIZE = 8 * 1024 * 1024  # 8 MB
-    RECEIPT_CONTENT_TYPES = {
-        "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf",
-    }
+    # Definidas en `services` porque el mismo archivo entra también por
+    # `/ai/receipt/` y las dos puertas tienen que aceptar lo mismo.
+    RECEIPT_MAX_SIZE = services.RECEIPT_MAX_SIZE
+    RECEIPT_CONTENT_TYPES = services.RECEIPT_CONTENT_TYPES
     IMPORT_MAX_SIZE = 5 * 1024 * 1024  # 5 MB -- de sobra para miles de filas de texto
 
     # Una sola URL (`/transactions/{id}/receipt/`), tres métodos: subir
