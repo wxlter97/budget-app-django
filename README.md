@@ -21,6 +21,7 @@ budget/
 ├── requirements.txt
 ├── .env.example
 ├── config/            # proyecto Django (settings, urls, wsgi/asgi, celery)
+├── infra/             # config de infraestructura versionada (ciclo de vida del bucket)
 └── apps/
     ├── ai/            # Gemini: cliente, cuota mensual por plan y log de consumo
     ├── users/         # AUTH_USER_MODEL personalizado (users.User)

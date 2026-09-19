@@ -14,7 +14,9 @@
 - [ ] **`GS_BUCKET_NAME` — adjuntos de recibos *y* backups de la base.** Vacío = los recibos se
       guardan en el disco local del contenedor. En Cloud Run eso significa que **se borran en
       cada deploy**. La función de adjuntar foto/PDF a una transacción (`Transaction.receipt`)
-      ya está completa, cámara incluida. Crear un bucket privado en GCS y setear la variable.
+      ya está completa, cámara incluida. **Los pasos, con las banderas que hacen que el
+      bucket salga barato y privado desde el día cero, están en `DEPLOY.md` §2.5**
+      (región = la de Cloud Run, y esa es irreversible; Autoclass; sin acceso público).
       **(verificar)**
       La misma variable habilita el volcado diario de la base (`manage.py backup_database`, que
       corre solo al final del job diario y guarda en `backups/db/` del mismo bucket): sin ella

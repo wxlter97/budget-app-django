@@ -64,7 +64,21 @@ Ordenado por lo que rompe primero. Lo marcado `[x]` ya está hecho en el repo; l
       `gs://<bucket>/backups/db/`, con retención de 30 días que nunca borra el último volcado
       que queda. Corre solo al final de `run_daily_tasks`. Restaurar está paso a paso en
       `RUNBOOK.md` §9. **Falta la config tuya:** sin `GS_BUCKET_NAME` (o `DB_BACKUP_BUCKET`) el
-      comando avisa y no hace nada, y `common.W003` lo repite en cada arranque.
+      comando avisa y no hace nada, y `common.W003` lo repite en cada arranque. Cómo crear el
+      bucket para que salga barato y privado: `DEPLOY.md` §2.5.
+- [x] **Cada recibo se pagaba para siempre.** Django no borra archivos al borrar filas, así que
+      un borrado físico de transacción dejaba la foto huérfana en el bucket — invisible para la
+      app y facturándose igual. Lo notaba sobre todo `wipe_workspace_data()` (vaciar un
+      workspace, o restaurar un backup), que borra todas las transacciones de una. Ahora un
+      `post_delete` se lleva el archivo. **El borrado desde la app sigue siendo soft**, y ahí el
+      recibo tiene que quedarse porque la transacción se puede recuperar: mientras no exista una
+      purga de soft-deleted, esos archivos viven lo que viva la fila. Es una decisión de
+      retención pendiente, no un bug.
+- [ ] **El recibo se sube a resolución completa** (~2 MB). `expo-image-picker` con `quality: 0.7`
+      comprime pero no redimensiona. A ~1 600 px del lado largo serían ~250 KB: **8× menos
+      almacenamiento, 8× más rápida la subida con datos móviles, y menos tokens de imagen en
+      Gemini**, sin perder nada de lo que se lee en un ticket. Necesita `expo-image-manipulator`,
+      que hoy no es dependencia del front.
 - [x] **`DEPLOY.md` §7 decía "Neon free: ~190 h cómputo/mes";** hoy son 100 h.
 
 ## Hosting del front: qué conviene
@@ -133,7 +147,7 @@ request después de un rato inactivo paga el arranque de Django **más** el desp
 | Recurso | Supuesto | Costo/usuario/mes |
 |---|---|---|
 | Cloud Run | ~500 requests/mes, ~150 ms de CPU cada uno | ~$0.002 |
-| Cloud Storage (recibos) | 10 recibos/mes de ~300 KB, acumulando | ~$0.001 |
+| Cloud Storage (recibos) | 10 recibos/mes de ~2 MB, acumulando; Autoclass los abarata con el tiempo | ~$0.002 |
 | Neon (cómputo y storage) | se reparte, no escala lineal | <$0.01 |
 | Correo transaccional | sólo invitaciones, volumen bajo | <$0.01 |
 | **Marginal total** | | **~1 ¢** |
