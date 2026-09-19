@@ -455,7 +455,13 @@ class TransactionSerializer(serializers.ModelSerializer):
 
     def get_loyalty_earnings(self, obj) -> list[dict]:
         """Puntos/cashback/descuento que generó esta transacción -- de sólo
-        lectura, ver `apps.loyalty`."""
+        lectura, ver `apps.loyalty`. Mismo gate que `LoyaltyEarningViewSet`:
+        sin la función Pro `loyalty`, la transacción sigue guardando sus
+        earnings (por si más tarde se pasa a Pro), pero no los expone acá."""
+        from apps.billing.services import has_feature_for_workspace
+
+        if not has_feature_for_workspace(self.context["workspace"], "loyalty"):
+            return []
         return [
             {
                 "kind": e.kind,
@@ -1009,8 +1015,13 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         siempre, así que una fila con error no frena a las demás -- se
         crean las válidas y se reportan los errores fila por fila."""
         from apps.billing.services import require_feature_for_workspace
+        from apps.common.services import require_module_enabled
 
         require_feature_for_workspace(request.workspace, "import_excel")
+        # Aparte del plan: si `xlsx.parse_workbook` empieza a fallar/mal
+        # interpretar filas, un admin apaga "excel_import" desde el admin sin
+        # deploy (ver `apps.common.models.ModuleFlag`).
+        require_module_enabled("excel_import")
 
         file = request.FILES.get("file")
         if not file:

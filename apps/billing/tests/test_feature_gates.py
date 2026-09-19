@@ -3,6 +3,7 @@
 `billing.models.Plan` / `seed_billing_plans`. Cada uno se prueba a nivel
 HTTP contra el endpoint real (no solo la función de servicio) para no
 depender de que el wiring en la otra app siga vivo."""
+from decimal import Decimal
 from io import BytesIO
 
 from django.contrib.auth import get_user_model
@@ -14,7 +15,9 @@ from rest_framework.test import APITestCase
 from apps.accounts.models import Wallet
 from apps.billing.models import Plan
 from apps.billing.services import has_feature_for_workspace
+from apps.common.models import ModuleFlag
 from apps.email_import.models import EmailImportLog
+from apps.loyalty.models import Bank, CardProduct, CategoryType, LoyaltyProgram
 from apps.transactions.models import Category
 from apps.workspaces.models import Membership, Workspace
 
@@ -175,6 +178,23 @@ class EmailImportGateTests(_WorkspaceGateTestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
 
+    def test_pro_blocked_by_module_flag(self):
+        # El interruptor manual (ver `apps.common.models.ModuleFlag`) manda
+        # aparte del plan -- ni pagando se puede confirmar mientras está
+        # apagado a mano.
+        self.upgrade_to_pro()
+        # `update_or_create` porque `common.0002_seed_module_flags` ya
+        # sembró esta fila (habilitada) -- ver esa migración.
+        ModuleFlag.objects.update_or_create(
+            key="email_import", defaults={"label": "Importación por correo", "is_enabled": False}
+        )
+        resp = self.client.post(
+            f"/api/v1/email-import-logs/{self.log.id}/confirm/",
+            {"wallet": str(self.wallet.id), "category": str(self.category.id)},
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, resp.data)
+
 
 class QuickAddGateTests(_WorkspaceGateTestCase):
     def setUp(self):
@@ -229,6 +249,16 @@ class ExcelImportGateTests(_WorkspaceGateTestCase):
         # acá es que pasó el gate, no el contenido del archivo.
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
 
+    def test_pro_blocked_by_module_flag(self):
+        self.upgrade_to_pro()
+        ModuleFlag.objects.update_or_create(
+            key="excel_import", defaults={"label": "Importar Excel", "is_enabled": False}
+        )
+        resp = self.client.post(
+            self.URL, {"file": _xlsx_upload()}, format="multipart", **self.headers
+        )
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, resp.data)
+
 
 class LoyaltyGateTests(_WorkspaceGateTestCase):
     def test_free_cannot_list_earnings(self):
@@ -243,3 +273,44 @@ class LoyaltyGateTests(_WorkspaceGateTestCase):
         self.upgrade_to_pro()
         resp = self.client.get("/api/v1/loyalty-earnings/", **self.headers)
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+    def _spend_with_card(self):
+        """Transacción con tarjeta+programa activos, para que la señal de
+        `apps.loyalty` le genere un `LoyaltyEarning` (ver
+        `apps.loyalty.tests.test_loyalty.LoyaltyEarningSignalTests`)."""
+        bank = Bank.objects.create(name="Banco X")
+        product = CardProduct.objects.create(bank=bank, name="Signature")
+        category_type = CategoryType.objects.create(slug="super", name="Super")
+        LoyaltyProgram.objects.create(
+            card_product=product, kind=LoyaltyProgram.KIND_CASHBACK, default_rate=Decimal("0.01"),
+        )
+        card = Wallet.objects.create(
+            workspace=self.ws, name="Visa", kind=Wallet.KIND_CREDIT,
+            credit_limit=Decimal("3000"), card_product=product,
+        )
+        category = Category.objects.create(
+            workspace=self.ws, name="Super", type=Category.TYPE_EXPENSE, category_type=category_type,
+        )
+        resp = self.client.post(
+            "/api/v1/transactions/",
+            {"wallet": str(card.id), "category": str(category.id), "amount": "100.00", "date": "2026-09-01"},
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        return resp.data["id"]
+
+    def test_free_transaction_hides_loyalty_earnings(self):
+        # El cashback igual se genera y se guarda (por si más tarde se pasa a
+        # Pro) -- lo que no debe verse en Free es la respuesta de la API.
+        txn_id = self._spend_with_card()
+        resp = self.client.get(f"/api/v1/transactions/{txn_id}/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(resp.data["loyalty_earnings"], [])
+
+    def test_pro_transaction_shows_loyalty_earnings(self):
+        self.upgrade_to_pro()
+        txn_id = self._spend_with_card()
+        resp = self.client.get(f"/api/v1/transactions/{txn_id}/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(len(resp.data["loyalty_earnings"]), 1)
+        self.assertEqual(resp.data["loyalty_earnings"][0]["kind"], LoyaltyProgram.KIND_CASHBACK)

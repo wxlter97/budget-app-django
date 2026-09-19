@@ -9,6 +9,7 @@ from drf_spectacular.views import (
 from rest_framework_simplejwt.views import TokenVerifyView
 
 from apps.ai.api import AIStatusView, ParseTextView, ReceiptScanView
+from apps.common.api import ModuleFlagsView
 from apps.billing.api import (
     CancelSubscriptionView,
     CheckoutView,
@@ -84,6 +85,7 @@ api_v1_patterns = [
         name="email-import-inbound",
     ),
     path("quick-add/", QuickAddView.as_view(), name="quick-add"),
+    path("module-flags/", ModuleFlagsView.as_view(), name="module-flags"),
     path("ai/status/", AIStatusView.as_view(), name="ai-status"),
     path("ai/receipt/", ReceiptScanView.as_view(), name="ai-receipt"),
     path("ai/parse/", ParseTextView.as_view(), name="ai-parse"),

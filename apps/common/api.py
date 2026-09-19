@@ -12,6 +12,10 @@ import uuid
 from rest_framework import serializers, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .services import disabled_modules
 
 WORKSPACE_HEADER = "X-Workspace-ID"
 
@@ -141,3 +145,23 @@ class WorkspaceScopedViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         instance.soft_delete()
+
+
+class ModuleFlagsSerializer(serializers.Serializer):
+    disabled = serializers.DictField(
+        child=serializers.CharField(),
+        help_text="`{key: mensaje}` de los módulos apagados ahora mismo (ver "
+                  "`apps.common.models.ModuleFlag`). Una clave ausente acá está "
+                  "habilitada -- el cliente no necesita un valor explícito por default.",
+    )
+
+
+class ModuleFlagsView(APIView):
+    """Lo que el cliente pregunta una vez para saber qué módulos están
+    apagados a mano desde el admin, y esconder/avisar en consecuencia en vez
+    de dejar que la persona los toque y se tope con un 503."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(ModuleFlagsSerializer({"disabled": disabled_modules()}).data)
