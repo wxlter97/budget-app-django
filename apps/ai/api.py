@@ -22,7 +22,7 @@ from apps.accounts.models import Wallet
 from apps.common.api import HasWorkspaceMembership
 from apps.transactions.services import RECEIPT_CONTENT_TYPES, RECEIPT_MAX_SIZE
 
-from . import receipts, services
+from . import parsing, receipts, services
 from .client import AIUnavailable
 
 
@@ -116,6 +116,30 @@ class ReceiptScanRequestSerializer(serializers.Serializer):
     )
 
 
+def _wallet_from(request):
+    """La cartera contra la que buscar duplicados. Opcional en los dos
+    endpoints, y siempre validada contra el workspace del header: sin eso, un
+    UUID ajeno dejaría ver montos y fechas de otro presupuesto. Las privadas de
+    las que el usuario no es dueño tampoco cuentan.
+    """
+    wallet_id = request.data.get("wallet")
+    if not wallet_id:
+        return None
+    try:
+        wallet = Wallet.objects.filter(
+            id=wallet_id, workspace=request.workspace
+        ).filter(
+            Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=request.user)
+        ).first()
+    except (DjangoValidationError, ValueError):
+        # Un UUID mal formado llega como texto cualquiera desde un multipart:
+        # es un 400, no un 500.
+        raise ValidationError({"wallet": "No es un UUID válido."})
+    if wallet is None:
+        raise ValidationError({"wallet": "No existe en este workspace."})
+    return wallet
+
+
 class AIServiceUnavailable(APIException):
     """503 y no 500: que Gemini no conteste no es un error nuestro, y el
     cliente tiene que poder distinguir "volvé a intentar o cargalo a mano" de
@@ -159,30 +183,88 @@ class ReceiptScanView(APIView):
                 workspace=request.workspace,
                 file_bytes=file.read(),
                 content_type=file.content_type,
-                wallet=self._wallet(request),
+                wallet=_wallet_from(request),
             )
         except AIUnavailable:
             raise AIServiceUnavailable()
 
         return Response(ReceiptCandidateSerializer(candidate).data)
 
-    def _wallet(self, request):
-        """La cartera contra la que buscar duplicados. Opcional, y se valida
-        que sea del workspace del header: sin eso, un UUID ajeno dejaría ver
-        montos y fechas de transacciones de otro presupuesto."""
-        wallet_id = request.data.get("wallet")
-        if not wallet_id:
-            return None
+
+
+# ---------------------------------------------------------------------------
+# Entrada por texto libre
+# ---------------------------------------------------------------------------
+class ParseCandidateSerializer(serializers.Serializer):
+    """Lo mismo que el escaneo de recibos, más el tipo y la cartera: una frase
+    puede nombrar las dos cosas ("me pagaron 800 a la cuenta") y un recibo no."""
+
+    type = serializers.ChoiceField(choices=["expense", "income"])
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True)
+    currency = serializers.CharField(allow_null=True)
+    date = serializers.DateField()
+    merchant = serializers.CharField(allow_blank=True)
+    description = serializers.CharField(allow_blank=True)
+    wallet = serializers.UUIDField(allow_null=True)
+    wallet_source = serializers.ChoiceField(
+        choices=["text"], allow_null=True,
+        help_text="`text` = la frase nombró una cartera; `null` = no, el cliente deja la suya.",
+    )
+    category = serializers.UUIDField(allow_null=True)
+    category_source = serializers.ChoiceField(
+        choices=["history", "ai"], allow_null=True,
+        help_text="Igual que en `/ai/receipt/`: el historial se intenta primero.",
+    )
+    confidence = serializers.DictField(
+        child=serializers.ChoiceField(choices=receipts.CONFIDENCE_LEVELS)
+    )
+    possible_duplicates = PossibleDuplicateSerializer(many=True)
+
+
+class ParseRequestSerializer(serializers.Serializer):
+    text = serializers.CharField(
+        max_length=parsing.MAX_TEXT_LENGTH,
+        help_text='La frase tal cual: "gasté 12.50 en almuerzo con la tarjeta".',
+    )
+    wallet = serializers.UUIDField(
+        required=False,
+        help_text="La cartera que el usuario ya tiene elegida, para buscar duplicados "
+                  "cuando la frase no nombra ninguna.",
+    )
+
+
+@extend_schema(tags=["ai"], request=ParseRequestSerializer, responses={200: ParseCandidateSerializer})
+class ParseTextView(APIView):
+    """Convierte una frase suelta en una candidata editable. **No crea nada.**
+
+    Es el mismo contrato que `/ai/receipt/`, y a propósito: el cliente muestra
+    las dos con la misma pantalla, y los canales que vienen después (Telegram,
+    voz) van a entrar por acá sin inventar un formato nuevo.
+    """
+
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "ai"
+
+    def post(self, request):
+        text = (request.data.get("text") or "").strip()
+        if not text:
+            raise ValidationError({"text": "Requerido."})
+        if len(text) > parsing.MAX_TEXT_LENGTH:
+            raise ValidationError(
+                {"text": f"Máximo {parsing.MAX_TEXT_LENGTH} caracteres."}
+            )
+
         try:
-            wallet = Wallet.objects.filter(
-                id=wallet_id, workspace=request.workspace
-            ).filter(
-                Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=request.user)
-            ).first()
-        except (DjangoValidationError, ValueError):
-            # Un UUID mal formado llega como texto cualquiera desde un
-            # multipart: es un 400, no un 500.
-            raise ValidationError({"wallet": "No es un UUID válido."})
-        if wallet is None:
-            raise ValidationError({"wallet": "No existe en este workspace."})
-        return wallet
+            candidate = parsing.parse(
+                user=request.user,
+                workspace=request.workspace,
+                text=text,
+                wallet=_wallet_from(request),
+            )
+        except AIUnavailable:
+            raise AIServiceUnavailable(
+                "No se pudo leer la frase ahora mismo. Probá de nuevo o cargala a mano."
+            )
+
+        return Response(ParseCandidateSerializer(candidate).data)

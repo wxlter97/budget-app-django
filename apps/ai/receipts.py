@@ -16,20 +16,14 @@ acierta, la sugerencia del modelo. Nunca al revés.
 from __future__ import annotations
 
 import base64
-import datetime as dt
-from decimal import Decimal, InvalidOperation
-
-from django.utils import timezone
 
 from apps.transactions.models import Category, Transaction
 from apps.transactions.services import find_possible_duplicates, guess_category_by_merchant
 
 from . import models as m
+from . import normalize
+from .normalize import CONFIDENCE_LEVELS
 from .services import run
-
-# Niveles de confianza que devuelve el modelo. La app usa `low` para marcar el
-# campo y pedirle al usuario que lo mire; no para esconderlo.
-CONFIDENCE_LEVELS = ["high", "medium", "low"]
 
 # Esquema de salida estructurada. Los montos se piden como **texto** y no como
 # número a propósito: un JSON con `12.50` vuelve como float y de ahí a Decimal
@@ -116,9 +110,9 @@ def scan(*, user, workspace, file_bytes: bytes, content_type: str, wallet=None) 
     )
     raw = response.json()
 
-    amount = _decimal(raw.get("total"))
-    date = _date(raw.get("date"))
-    merchant = (raw.get("merchant") or "").strip()[:255]
+    amount = normalize.amount(raw.get("total"))
+    date = normalize.date(raw.get("date"))
+    merchant = normalize.text(raw.get("merchant"))
     confidence = _confidence(raw.get("confidence"), amount=amount, date_was_read=bool(raw.get("date")))
 
     category, category_source = _resolve_category(
@@ -127,8 +121,8 @@ def scan(*, user, workspace, file_bytes: bytes, content_type: str, wallet=None) 
 
     return {
         "amount": amount,
-        "tax_amount": _decimal(raw.get("tax")),
-        "currency": _currency(raw.get("currency")),
+        "tax_amount": normalize.amount(raw.get("tax")),
+        "currency": normalize.currency(raw.get("currency")),
         "date": date,
         "merchant": merchant,
         "description": merchant,
@@ -141,67 +135,20 @@ def scan(*, user, workspace, file_bytes: bytes, content_type: str, wallet=None) 
 
 
 # ---------------------------------------------------------------------------
-# Normalización de lo que devuelve el modelo
+# Normalización propia del recibo (lo común vive en `normalize.py`)
 # ---------------------------------------------------------------------------
-def _decimal(value):
-    """El modelo devuelve texto; puede venir con símbolo de moneda, con coma
-    de miles o vacío. Lo que no sea un número queda en None, que para la app
-    es "esto lo llenás vos"."""
-    if value in (None, ""):
-        return None
-    cleaned = str(value).replace("$", "").replace(",", "").strip()
-    try:
-        amount = Decimal(cleaned)
-    except InvalidOperation:
-        return None
-    # Un total negativo o absurdo es lectura mala, no un dato: mejor vacío.
-    if amount <= 0 or amount >= Decimal("1000000"):
-        return None
-    return amount.quantize(Decimal("0.01"))
-
-
-def _date(value):
-    """Fecha del recibo. Si no se puede leer, o es futura, cae a hoy —
-    que es lo que el usuario habría puesto a mano — y la confianza de ese
-    campo ya viene marcada en `_confidence`."""
-    today = timezone.localdate()
-    try:
-        parsed = dt.date.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return today
-    if parsed > today:
-        return today
-    # Un recibo de hace más de dos años casi siempre es un año mal leído
-    # (2019 por 2029, típico en tickets térmicos gastados).
-    if parsed < today - dt.timedelta(days=730):
-        return today
-    return parsed
-
-
-def _currency(value):
-    """Informativa: la moneda real de la transacción sale de la cartera
-    (`Transaction.currency` se denormaliza de `wallet.currency` en cada save).
-    Sirve para avisarle al usuario que el recibo parece de otra moneda."""
-    code = (value or "").strip().upper()
-    return code if len(code) == 3 and code.isalpha() else None
-
-
 def _confidence(raw, *, amount, date_was_read):
-    """Lo que dijo el modelo, corregido por lo que efectivamente pudimos usar.
-
-    El modelo puede decir "high" del monto y devolver algo que no parsea; para
-    la app lo que importa es si el campo llegó a tener valor, así que eso
-    manda sobre la opinión del modelo.
-    """
-    raw = raw if isinstance(raw, dict) else {}
-    result = {}
-    for field in ("total", "date", "merchant"):
-        level = raw.get(field)
-        result[field] = level if level in CONFIDENCE_LEVELS else "low"
+    """La confianza del modelo, con dos correcciones nuestras: un monto que no
+    se pudo usar y una fecha que no se pudo leer quedan en `low` diga lo que
+    diga él."""
+    unusable = []
     if amount is None:
-        result["total"] = "low"
+        unusable.append("total")
     if not date_was_read:
-        result["date"] = "low"
+        unusable.append("date")
+    result = normalize.confidence(
+        raw, fields=("total", "date", "merchant"), unusable=unusable
+    )
     # `total` es el nombre del campo en el recibo; en la app el campo se llama
     # `amount`. Se traduce acá para no filtrar el vocabulario del prompt al API.
     result["amount"] = result.pop("total")
@@ -215,13 +162,13 @@ def _items(raw):
     for row in raw[:50]:  # un ticket de súper largo no debería inflar la respuesta
         if not isinstance(row, dict):
             continue
-        description = (row.get("description") or "").strip()[:255]
+        description = normalize.text(row.get("description"))
         if not description:
             continue
         items.append({
             "description": description,
             "quantity": (str(row.get("quantity") or "").strip() or None),
-            "amount": _decimal(row.get("amount")),
+            "amount": normalize.amount(row.get("amount")),
         })
     return items
 

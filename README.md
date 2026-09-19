@@ -129,6 +129,7 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 | `POST /workspaces/{id}/rotate-inbound-token/` | Rota el token de importación (solo owner). |
 | `GET /ai/status/` | No usa el header (la cuota es por usuario). `{enabled, quotas: {receipt, parse, chat}, resets_at}` — `enabled: false` cuando no hay `GEMINI_API_KEY`. Ver `apps/ai/`. |
 | `POST /ai/receipt/` | Scoped. `multipart` con `file` (JPG/PNG/WEBP/HEIC/PDF, ≤8 MB) y `wallet` opcional. Devuelve una **candidata** editable con confianza por campo y posibles duplicados. **No crea la transacción ni guarda el archivo.** 429 si se acabó la cuota del plan, 503 si Gemini no contestó. |
+| `POST /ai/parse/` | Scoped. `{text, wallet?}` — una frase suelta ("gasté 12.50 en almuerzo con la tarjeta") a la misma **candidata**, más el tipo y la cartera si la frase los nombra. Tampoco crea nada. Cuota, 429 y 503 iguales. |
 
 ### Importación por correo — cómo funciona
 
@@ -206,7 +207,20 @@ Todo pasa por `services.run()`, que hace siempre lo mismo y en este orden:
 
 Qué modelo atiende cada operación y cuánto cuesta: `apps/ai/pricing.py`.
 
-### Escaneo de recibos
+### Las dos entradas: recibo y frase
+
+`POST /ai/receipt/` y `POST /ai/parse/` devuelven **la misma forma de
+candidata** y con el mismo contrato (editable, confianza por campo, nada
+guardado). Es a propósito: el cliente las muestra con la misma pantalla, y los
+canales que vienen después (Telegram, voz) entran por `/ai/parse/` sin inventar
+un formato nuevo.
+
+Lo común de "no creerle al modelo" vive en `apps/ai/normalize.py` y lo usan las
+dos: un monto que no parsea, negativo o absurdo queda vacío; una fecha futura o
+de hace más de dos años cae a hoy; el modelo no puede declararse seguro de un
+campo que no se pudo usar.
+
+#### Escaneo de recibos
 
 `POST /ai/receipt/` (ver `apps/ai/receipts.py`) devuelve una **candidata**, nunca
 una transacción: el usuario siempre confirma, y el archivo se guarda como
@@ -225,6 +239,26 @@ Dos cosas que ordenan ese archivo:
   fecha futura, o de hace más de dos años (el año mal leído de un ticket térmico),
   cae a hoy. Vale más un campo vacío que el usuario llena que uno inventado que
   no mira.
+
+#### Texto libre
+
+`POST /ai/parse/` (ver `apps/ai/parsing.py`) resuelve además dos cosas que un
+recibo no tiene: el **tipo** ("me pagaron 800" es un ingreso) y la **cartera**
+("con la tarjeta").
+
+Al modelo se le pasan los **nombres reales** de las carteras y categorías del
+workspace, y se le pide que elija uno de esa lista. Sin eso, "con la tarjeta"
+vuelve como texto libre que después hay que adivinar a qué fila corresponde, y
+se falla seguido. Cuesta unos 150 tokens de entrada — en Flash-Lite,
+centésimas de centavo — y sale mucho más barato que una categoría mal puesta.
+
+Dos consecuencias de ese diseño:
+
+- Las carteras **privadas** de las que el usuario no es dueño no entran al
+  prompt. Que el modelo las viera ya sería filtrarlas, aunque no las devolviera.
+- Lo que el modelo responde se matchea contra **esa misma lista**, nunca contra
+  la base de nuevo, así que no hay forma de que resuelva algo que el usuario no
+  podía elegir.
 
 ## Tests
 
