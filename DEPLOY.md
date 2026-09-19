@@ -37,10 +37,14 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregi
 ## 1. Base de datos — Neon
 
 1. **New Project** → nombre `budget`, región **AWS US East (N. Virginia)**.
-2. En *Connection Details* copiá el connection string **Direct** (no el pooled).
+2. En *Connection Details* activá **Connection pooling** y copiá el connection string
+   **pooled** (el host lleva `-pooler`). Es el que usa producción, y es el que pide
+   el check `common.W002`; además hace falta `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True`
+   (ver `CONFIG-PENDIENTE.md`). Las migraciones y el `pg_dump` del backup funcionan
+   igual por ahí.
 3. Verificá que termina en `?sslmode=require`:
    ```
-   postgres://budget_owner:npg_XXXX@ep-nombre-123456.us-east-1.aws.neon.tech/neondb?sslmode=require
+   postgres://budget_owner:npg_XXXX@ep-nombre-123456-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require
    ```
 
 Las migraciones corren solas al arrancar el contenedor; no hay que crear tablas.

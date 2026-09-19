@@ -1,6 +1,6 @@
 # Configuración pendiente — cosas ya implementadas que no funcionan hasta que las configures
 
-> Inventario al 18 sep 2026. Todo lo de acá **ya está programado y probado**; lo que falta
+> Inventario al 19 sep 2026. Todo lo de acá **ya está programado y probado**; lo que falta
 > es una cuenta, una key, un DNS o unas filas en `/admin/`. Mientras falte, la función
 > existe en el código pero no hace nada (en casi todos los casos a propósito: el default
 > es "desactivado y sin romper nada", nunca "abierto por accidente").
@@ -11,19 +11,22 @@
 
 ## Prioridad 1 — pérdida de datos o función caída
 
-- [ ] **`GS_BUCKET_NAME` — adjuntos de recibos *y* backups de la base.** Vacío = los recibos se
+- [x] **`GS_BUCKET_NAME` — adjuntos de recibos *y* backups de la base.** Vacío = los recibos se
       guardan en el disco local del contenedor. En Cloud Run eso significa que **se borran en
       cada deploy**. La función de adjuntar foto/PDF a una transacción (`Transaction.receipt`)
       ya está completa, cámara incluida. **Los pasos, con las banderas que hacen que el
       bucket salga barato y privado desde el día cero, están en `DEPLOY.md` §2.5**
       (región = la de Cloud Run, y esa es irreversible; Autoclass; sin acceso público).
-      **(verificar)**
+      **Verificado el 19-sep-2026:** el job `budget-cron` tiene `GS_BUCKET_NAME` y el backup
+      sube a `backups/db/`.
       La misma variable habilita el volcado diario de la base (`manage.py backup_database`, que
       corre solo al final del job diario y guarda en `backups/db/` del mismo bucket): sin ella
       el comando avisa y no hace nada, y el único respaldo son las ~24 h de historial de Neon.
       Lo avisa `common.W003` en cada arranque. Si preferís un bucket aparte para los backups
       — otra política de retención, otro acceso — está `DB_BACKUP_BUCKET`. Restaurar:
-      `RUNBOOK.md` §9.
+      `RUNBOOK.md` §9. El `pg_dump` de la imagen tiene que ser >= la versión de Neon (hoy 18,
+      `ARG PG_CLIENT_MAJOR` del Dockerfile); subirla cuando Neon suba, o el backup falla con
+      `server version mismatch` (RUNBOOK §9).
 - [ ] **Tareas diarias en producción.** No hay Celery en prod: los recordatorios, las
       transacciones recurrentes y los insights de comportamiento nuevos corren por
       `manage.py run_daily_tasks` desde un Cloud Run Job disparado por Cloud Scheduler
@@ -43,7 +46,15 @@
 - [ ] **Endpoint *pooled* de Neon en `DATABASE_URL`.** Con `DJANGO_DB_CONN_MAX_AGE=0` se abre una
       conexión por request; contra el endpoint directo, las conexiones topan antes que el CPU en
       cuanto hay más de una instancia. Host con `-pooler` +
-      `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True`; el check `common.W002` lo avisa. **(verificar)**
+      `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True`; el check `common.W002` lo avisa. El host
+      ya es `-pooler` en producción (verificado el 19-sep-2026); **(verificar)** sólo la variable
+      de cursores.
+- [ ] **Alerta cuando el job diario falla.** Hoy un `budget-cron` caído sólo se ve si alguien
+      abre la consola de Cloud Run: el backup estuvo roto (`pg_dump` 17 contra Neon 18.6) sin
+      que nada avisara. Una alerta de Cloud Monitoring sobre ejecuciones fallidas del job, al
+      mismo canal de `SUPPORT_WEBHOOK_URL`. De paso, con los 3 reintentos por defecto, si falla
+      sólo el backup se rehacen los pasos 1 a 4 en vano: `--max-retries` más bajo, o el backup
+      en su propio job (ROADMAP 0.13 y 0.14).
 
 ## Prioridad 2 — funciones completas que hoy no se pueden usar
 

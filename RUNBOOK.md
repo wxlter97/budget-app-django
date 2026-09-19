@@ -185,6 +185,40 @@ Detalles que muerden:
   intento.
 - Si `pg_restore` se queja de versión, es el mismo problema que el de
   `pg_dump`: el cliente tiene que ser >= el servidor (ver Dockerfile).
+- El cliente del job es el `postgresql-client-N` que instala el Dockerfile
+  (`ARG PG_CLIENT_MAJOR`, hoy 18 porque Neon corre 18.6). Sale de PGDG porque
+  Debian trixie sólo trae el 17. **Cuando Neon suba de versión mayor, subir
+  `PG_CLIENT_MAJOR` y redesplegar**; si no, el backup falla con `aborting
+  because of server version mismatch`. Así estuvo roto hasta el 19-sep-2026,
+  sin que nada avisara.
+
+### Comprobar que el backup diario funciona
+
+Después de un deploy que toque el Dockerfile, o cuando algo huela mal:
+
+```bash
+# 1. El job usa la imagen nueva (comparar el digest con el de antes del deploy)
+gcloud run jobs describe budget-cron --region=us-east1 \
+  --format="value(spec.template.spec.template.spec.containers[0].image)"
+
+# 2. Ejecutarlo. Escribe, pero las tareas son idempotentes.
+gcloud run jobs execute budget-cron --region=us-east1 --wait
+
+# 3. Logs de esa ejecución: tienen que aparecer "volcado: budget-….dump (… MB)"
+#    y "Listo: gs://…"
+EXEC=$(gcloud run jobs executions list --job=budget-cron --region=us-east1 \
+  --limit=1 --format="value(name)")
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=budget-cron AND labels.\"run.googleapis.com/execution_name\"=\"$EXEC\"" \
+  --freshness=1h --order=asc --format="value(timestamp.date('%H:%M:%S'),severity,textPayload)"
+
+# 4. El objeto está en el bucket
+gcloud storage ls -l gs://$GS_BUCKET_NAME/backups/db/
+
+# 5. Sirve: bajar el último y contar las tablas con datos (60 al 19-sep-2026)
+F=$(gcloud storage ls gs://$GS_BUCKET_NAME/backups/db/ | sort | tail -1)
+gcloud storage cp "$F" /tmp/check.dump
+pg_restore --list /tmp/check.dump | grep -c 'TABLE DATA'
+```
 
 ## 10. Contactos / accesos que vas a necesitar en el momento
 
