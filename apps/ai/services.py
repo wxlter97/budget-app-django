@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+from apps.common.services import module_enabled
+
 from . import models as m
 from . import pricing, quotas
 from .client import AIUnavailable, GeminiResponse, generate, is_enabled
@@ -88,5 +90,12 @@ def run(
 
 def availability_for(user) -> dict:
     """Lo que el front pregunta una vez para saber si mostrar las entradas de
-    IA y cuánto le queda al usuario."""
-    return {"enabled": is_enabled(), **quotas.status_for(user)}
+    IA y cuánto le queda al usuario.
+
+    `enabled` combina dos apagadores distintos: sin `GEMINI_API_KEY` (esta
+    instalación nunca tuvo IA) y el interruptor manual `ModuleFlag` "ai" (la
+    tenía, pero un admin la apagó porque empezó a fallar) -- el cliente no
+    necesita distinguirlos, los dos significan "no mostrar las entradas de
+    IA todavía".
+    """
+    return {"enabled": is_enabled() and module_enabled("ai"), **quotas.status_for(user)}

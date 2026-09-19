@@ -12,6 +12,7 @@ from apps.ai import models as m
 from apps.ai import quotas, services
 from apps.ai.client import AIUnavailable, GeminiResponse
 from apps.billing.models import Plan
+from apps.common.models import ModuleFlag
 from apps.workspaces.models import Workspace
 
 User = get_user_model()
@@ -113,3 +114,33 @@ class SinKeyTests(TestCase):
         self.assertFalse(data["enabled"])
         # Las cuotas se informan igual: sirven para la pantalla de planes.
         self.assertEqual(data["quotas"][m.OP_RECEIPT]["limit"], 3)
+
+
+@override_settings(GEMINI_API_KEY="k-de-prueba")
+class ModuleFlagTests(TestCase):
+    """El interruptor manual `ModuleFlag("ai")` apaga la IA aparte de si hay
+    `GEMINI_API_KEY` -- ver `services.availability_for`."""
+
+    def setUp(self):
+        Plan.objects.create(
+            code="free", name="Gratis", is_default=True,
+            features={"ai_receipts_per_month": 3, "ai_parses_per_month": 10, "ai_chats_per_month": 0},
+        )
+        self.user = User.objects.create_user("ana", "ana@example.com", "pw")
+
+    def test_key_present_but_module_flag_off(self):
+        # `update_or_create` porque `common.0002_seed_module_flags` ya
+        # sembró la fila "ai" (habilitada) -- ver esa migración.
+        ModuleFlag.objects.update_or_create(key="ai", defaults={"label": "IA", "is_enabled": False})
+        self.assertFalse(services.availability_for(self.user)["enabled"])
+
+    def test_key_present_and_no_flag_row_is_enabled(self):
+        # Fail-open: sin fila para esta clave, el interruptor no bloquea
+        # nada -- se borra la que sembró la migración para probar el caso
+        # real de "sin fila todavía".
+        ModuleFlag.objects.filter(key="ai").delete()
+        self.assertTrue(services.availability_for(self.user)["enabled"])
+
+    def test_key_present_and_flag_explicitly_on(self):
+        ModuleFlag.objects.update_or_create(key="ai", defaults={"label": "IA", "is_enabled": True})
+        self.assertTrue(services.availability_for(self.user)["enabled"])

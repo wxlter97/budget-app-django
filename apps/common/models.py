@@ -2,6 +2,45 @@ import uuid
 from django.db import models
 
 
+class ModuleFlag(models.Model):
+    """
+    Interruptor manual por módulo: si algo empieza a fallar en producción
+    (una integración de terceros, un parser frágil...), togglear ``enabled``
+    acá lo apaga al instante para todo el mundo -- sin deploy, sin esperar a
+    la próxima build de la app.
+
+    Deliberadamente NO usa `BaseModel`/soft-delete: es un catálogo chico que
+    se edita a mano desde el admin (`list_editable` en la lista, ver
+    `apps.common.admin`), no un recurso de dominio con historial.
+
+    Fail-open igual que `apps.billing.services` (ver docstring ahí): un
+    ``key`` sin fila todavía en esta tabla se considera habilitado -- así
+    agregar el chequeo en un endpoint nuevo no exige primero crear la fila.
+    """
+
+    key = models.SlugField(
+        max_length=60, unique=True,
+        help_text="Clave estable que usa el código para preguntar (p. ej. \"ai\", "
+                   "\"email_import\", \"excel_import\"). No se traduce ni se muestra.",
+    )
+    label = models.CharField(max_length=100, help_text="Nombre para reconocerlo en esta lista.")
+    is_enabled = models.BooleanField(default=True)
+    disabled_message = models.TextField(
+        blank=True,
+        help_text="Lo que ve la persona mientras está apagado. Vacío = mensaje genérico.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["key"]
+        verbose_name = "interruptor de módulo"
+        verbose_name_plural = "interruptores de módulos"
+
+    def __str__(self):
+        return f"{self.label} ({self.key})"
+
+
 class TimeStampedModel(models.Model):
     """Base con auditoria: created_at / updated_at en todos los modelos."""
     created_at = models.DateTimeField(auto_now_add=True)

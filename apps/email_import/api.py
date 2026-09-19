@@ -163,12 +163,17 @@ class EmailImportLogViewSet(
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         from apps.billing.services import require_feature_for_workspace
+        from apps.common.services import require_module_enabled
 
         log = self.get_object()
         # El log se crea igual en cualquier plan (ver `ingest_inbound_email`
         # -- así una workspace Free ve lo que se está perdiendo), pero
         # confirmarlo (crear la transacción de verdad) es lo que gatea.
         require_feature_for_workspace(request.workspace, "import_email")
+        # Interruptor de emergencia aparte del plan: si el parseo de un banco
+        # empieza a confirmar montos/fechas mal, un admin apaga "email_import"
+        # entero desde el admin sin tocar el código (ver `apps.common.models.ModuleFlag`).
+        require_module_enabled("email_import")
         if log.status != EmailImportLog.STATUS_PENDING:
             raise ValidationError(f"El registro no está pendiente (status={log.status}).")
 

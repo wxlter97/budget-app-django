@@ -1,5 +1,18 @@
 from django.contrib import admin
 
+from .models import ModuleFlag
+
+
+@admin.register(ModuleFlag)
+class ModuleFlagAdmin(admin.ModelAdmin):
+    """Togglear `is_enabled` acá mismo en la lista (sin abrir el registro) es
+    el punto entero de este modelo -- ver el docstring en `models.py`."""
+
+    list_display = ("label", "key", "is_enabled", "updated_at")
+    list_editable = ("is_enabled",)
+    search_fields = ("key", "label")
+    readonly_fields = ("created_at", "updated_at")
+
 
 class BaseModelAdmin(admin.ModelAdmin):
     """
