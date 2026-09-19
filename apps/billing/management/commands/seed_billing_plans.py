@@ -33,6 +33,12 @@ class Command(BaseCommand):
                     "loyalty": False,
                     "multi_currency": False,
                     "quick_add": False,
+                    # Cuotas de IA (ver apps/ai/quotas.py y el backlog de
+                    # funciones nuevas). En Free la IA es una muestra: alcanza
+                    # para probarla y no para que salga cara.
+                    "ai_receipts_per_month": 3,
+                    "ai_parses_per_month": 10,
+                    "ai_chats_per_month": 0,
                 },
             ),
         )
@@ -56,6 +62,10 @@ class Command(BaseCommand):
                     "loyalty": False,
                     "multi_currency": True,
                     "quick_add": False,
+                    # Techo de costo de IA ~$0.085/mes contra $0.99 de precio.
+                    "ai_receipts_per_month": 30,
+                    "ai_parses_per_month": 50,
+                    "ai_chats_per_month": 20,
                 },
             ),
         )
@@ -79,6 +89,13 @@ class Command(BaseCommand):
                     "loyalty": True,
                     "multi_currency": True,
                     "quick_add": True,
+                    # Techo ~$0.36/mes contra $1.99. El lifetime de $19.99 usa
+                    # estas mismas cuotas, no IA ilimitada: un usuario
+                    # intensivo sin tope serían ~14 años de consumo sólo para
+                    # empatar ese pago único.
+                    "ai_receipts_per_month": 100,
+                    "ai_parses_per_month": 200,
+                    "ai_chats_per_month": 100,
                 },
             ),
         )

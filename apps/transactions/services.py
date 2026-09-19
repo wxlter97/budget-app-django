@@ -19,6 +19,17 @@ from rest_framework.exceptions import ValidationError
 
 from .models import Category, Person, RecurringExpense, Transaction, TransactionShare
 
+# Qué archivo vale como recibo. Vive acá y no en la vista porque hay dos
+# puertas por las que entra el mismo archivo — subirlo a una transacción
+# (`/transactions/{id}/receipt/`) y mandarlo a leer por IA
+# (`/ai/receipt/`) — y aceptar en una lo que la otra rechaza sería una
+# sorpresa fea: el usuario escanea, ve los datos, confirma, y recién ahí
+# falla la subida.
+RECEIPT_MAX_SIZE = 8 * 1024 * 1024  # 8 MB
+RECEIPT_CONTENT_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf",
+}
+
 
 def guess_category_by_merchant(*, workspace, txn_type, merchant):
     """

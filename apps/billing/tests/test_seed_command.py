@@ -31,6 +31,29 @@ class SeedBillingPlansTests(TestCase):
             PlanPrice.BILLING_LIFETIME: 19.99,
         })
 
+    def test_seeds_the_ai_quotas_so_no_plan_falls_back_to_the_free_numbers(self):
+        """`apps.ai.quotas` es fail-closed: un plan sin estas claves aplica los
+        números del gratis, y un Pro pagando con cuota de Free sería un
+        bug caro de detectar. Que estén sembradas es parte del contrato."""
+        call_command("seed_billing_plans")
+
+        quotas = {
+            plan.code: {
+                key: plan.features.get(key)
+                for key in ("ai_receipts_per_month", "ai_parses_per_month", "ai_chats_per_month")
+            }
+            for plan in Plan.objects.all()
+        }
+        self.assertEqual(quotas["free"], {
+            "ai_receipts_per_month": 3, "ai_parses_per_month": 10, "ai_chats_per_month": 0,
+        })
+        self.assertEqual(quotas["plus"], {
+            "ai_receipts_per_month": 30, "ai_parses_per_month": 50, "ai_chats_per_month": 20,
+        })
+        self.assertEqual(quotas["pro"], {
+            "ai_receipts_per_month": 100, "ai_parses_per_month": 200, "ai_chats_per_month": 100,
+        })
+
     def test_is_idempotent(self):
         call_command("seed_billing_plans")
         call_command("seed_billing_plans")

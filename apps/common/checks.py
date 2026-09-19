@@ -50,3 +50,21 @@ def neon_uses_pooled_endpoint(app_configs, **kwargs):
             id="common.W002",
         )
     ]
+
+
+@register(Tags.database, deploy=True)
+def database_backups_have_a_bucket(app_configs, **kwargs):
+    """Sin bucket, `backup_database` vuelca y tira el archivo, así que lo único
+    que queda es el historial de Neon: ~24 h en el plan free. Un borrado que se
+    note el lunes ya no tiene de dónde recuperarse."""
+    if settings.DEBUG:
+        return []
+    if settings.DB_BACKUP_BUCKET:
+        return []
+    return [
+        Warning(
+            "No hay bucket de backup, así que el volcado diario de la base no se guarda.",
+            hint="Definí GS_BUCKET_NAME (o DB_BACKUP_BUCKET aparte) — ver CONFIG-PENDIENTE.md.",
+            id="common.W003",
+        )
+    ]

@@ -16,12 +16,16 @@
 
 ## Dónde estamos hoy
 
-- Los PRs #55 (backend) y #74 (front) **están mergeados a `main`**. El código de producto está
-  al día: reembolsos, división entre personas, Personas, ahorro con interés, gamificación,
-  insights de comportamiento, y los arreglos de escala del backend.
+- Los PRs #55 y #56 (backend) y #74 y #75 (front) **están mergeados a `main`**. El código de
+  producto está al día: reembolsos, división entre personas, Personas, ahorro con interés,
+  gamificación, insights de comportamiento, y los arreglos de escala del backend.
+- Además ya están **el backup diario a GCS (0.8)**, **el `_redirects` para Cloudflare (0.5)**,
+  **la base de IA con su cuota por plan (2.1)**, **el escaneo de recibos (2.2)** y **la entrada
+  por texto libre (2.3)**. Todas esperan configuración tuya: el bucket, el DNS y la key de
+  Gemini.
 - La app corre en web (Vercel Hobby). **No hay build nativo publicado** y no hay
   `extra.eas.projectId`.
-- 735 tests en el backend, 239 en el front, todos pasando.
+- 850 tests en el backend, 257 en el front, todos pasando.
 - Lo que falta no es código de producto: es configuración, cobrar, y las funciones nuevas.
 
 ---
@@ -37,10 +41,10 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 | 0.2 | **Cloud Scheduler + Job `budget-cron`** — sin esto no corre nada diario (recordatorios, recurrentes, insights) y no hay error que avise | 🧑 | 30 min |
 | 0.3 | **Endpoint *pooled* de Neon** en `DATABASE_URL` (`common.W002` lo avisa al arrancar) | 🧑 | 10 min |
 | 0.4 | **`CACHE_URL`** con Redis de Upstash — el throttling ya no es correcto con 5 instancias (`common.W001`) | 🧑 | 30 min |
-| 0.5 | **Mover el front a Cloudflare Pages** — Hobby no permite uso comercial. Confirmar primero dónde está la zona DNS (`DEPLOY.md` §3-C) | 🧑 | 1–2 h |
+| 0.5 | **Mover el front a Cloudflare Pages** — Hobby no permite uso comercial. Confirmar primero dónde está la zona DNS (`DEPLOY.md` §3-C). El `public/_redirects` del rewrite SPA **ya está en el repo**, así que del lado del código no queda nada | 🧑 | 1–2 h |
 | 0.6 | **Job `budget-migrate` + `RUN_MIGRATIONS=0`** — saca la carrera de migraciones entre instancias y acelera el arranque en frío (`DEPLOY.md` §2.2) | 🧑 | 30 min |
 | 0.7 | **Sentry** en los dos repos — hasta que esté, los errores de producción sólo se ven si alguien los cuenta | 🧑 | 30 min |
-| 0.8 | **Backups**: `pg_dump` a GCS desde el job diario (Neon free retiene 24 h) | 🤖 + 🧑 | 1 h |
+| 0.8 | ~~**Backups**: `pg_dump` a GCS desde el job diario~~ — **hecho**: `manage.py backup_database` corre al final de `run_daily_tasks` y `RUNBOOK.md` §9 tiene la restauración. Se activa solo cuando exista el bucket de 0.1 | 🤖 ✅ | — |
 | 0.9 | **Ping de keepalive** del Scheduler, opcional pero se nota (`DEPLOY.md` §6.3) | 🧑 | 15 min |
 | 0.10 | **Correo saliente (Mailgun)** — sin esto las invitaciones a workspace no llegan; incluye DNS y esperar propagación | 🧑 | 2–3 h |
 | 0.11 | **Push web (VAPID)**: `manage.py generate_vapid_keys` | 🧑 | 15 min |
@@ -73,10 +77,10 @@ Orden pensado para que cada pieza apoye la siguiente.
 
 | # | Qué | Quién | Tiempo |
 |---|---|---|---|
-| 2.1 | **Base de IA** (`apps/ai`): cliente de Gemini, `GEMINI_API_KEY`, throttle, **cuota mensual por plan** y log de consumo. Sin la cuota no se sigue | 🤖 | 1.5–2 jornadas |
-| 2.2 | **Leer y clasificar recibos** — el que más se nota; reusa `Transaction.receipt` y `expo-image-picker`, que ya están | 🤖 | 1.5 jornadas |
-| 2.3 | **Entrada por texto libre (NLP)** — reusa `apps/quickadd` y `guess_category_by_merchant` | 🤖 | 1 jornada |
-| 2.4 | **Canal de Telegram** — bot, webhook, vinculación de cuenta con token de un uso | 🤖 + 🧑 | 1 jornada |
+| 2.1 | ~~**Base de IA** (`apps/ai`)~~ — **hecha**: cliente de Gemini, throttle `ai`, cuota mensual por plan (`Plan.features`, fail-closed), `AIUsage` como log y contador a la vez, `GET /ai/status/` y `useAIStatus()` en el front. **Falta tuyo:** crear la key de Gemini (tier de pago, no el gratis) y ponerla en `GEMINI_API_KEY` | 🤖 ✅ + 🧑 30 min | — |
+| 2.2 | ~~**Leer y clasificar recibos**~~ — **hecho**: `POST /ai/receipt/` devuelve una candidata editable (monto, fecha, comercio, ítems, confianza por campo), con la categoría resuelta primero por historial y después por IA, y los posibles duplicados. En la app, botón "Escanear recibo" en el alta de gasto | 🤖 ✅ | — |
+| 2.3 | ~~**Entrada por texto libre (NLP)**~~ — **hecho**: `POST /ai/parse/` devuelve la misma candidata que los recibos, más el tipo y la cartera si la frase los nombra. Al modelo se le pasan los nombres reales de carteras y categorías para que elija de una lista cerrada. En la app, un campo de una línea en el alta | 🤖 ✅ | — |
+| 2.4 | **Canal de Telegram** — bot, webhook, vinculación de cuenta con token de un uso. Ya entra por `/ai/parse/`: no lleva parser propio | 🤖 + 🧑 | 1 jornada |
 | 2.5 | **Voz / dictado** — `expo-audio` + audio directo a Gemini, mismo parser que 2.3 | 🤖 | 1 jornada |
 | 2.6 | **Analítica** — decidir primero entre sin-cookies, GA4+Clarity con banner, o métricas propias; implementar web | 🧑 luego 🤖 | 0.5 jornada |
 | 2.7 | **DTE por correo (JSON)** — reusa `apps/email_import` entero; es el que da datos más ricos (ítems, IVA) | 🤖 | 1.5 jornadas |
@@ -84,7 +88,7 @@ Orden pensado para que cada pieza apoye la siguiente.
 | 2.9 | **Resumen y consejos mensuales** — encima de `behavior_insights()`, que ya existe | 🤖 | 0.5–1 jornada |
 | 2.10 | **Chat sobre tus finanzas** — el de mayor superficie de riesgo (aislamiento por workspace), va al final | 🤖 | 2 jornadas |
 
-**Subtotal: ~11–13 jornadas.**
+**Subtotal: ~6.5–8.5 jornadas** (eran 11–13; 2.1, 2.2 y 2.3 ya están).
 
 ---
 
@@ -129,9 +133,9 @@ documentar), no un día de calendario.
 |---|---|---|
 | 0 — Producción sólida | ~1.5 jornadas | casi todo |
 | 1 — Antes de cobrar | ~1.5–2 jornadas | la mitad |
-| 2 — Funciones nuevas | ~11–13 jornadas | poco |
+| 2 — Funciones nuevas | ~6.5–8.5 jornadas | poco |
 | 3 — Nativo y tiendas | ~3–4 jornadas | la mitad |
-| **Total** | **~17–21 jornadas** | |
+| **Total** | **~12.5–16.5 jornadas** | |
 
 **Traducido a calendario:** a 2–3 jornadas por semana son **7 a 10 semanas** para todo. Pero el
 recorte que importa es otro: **las Fases 0 y 1 son ~3–3.5 jornadas y son lo único que necesitás

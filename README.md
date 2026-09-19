@@ -21,7 +21,9 @@ budget/
 ├── requirements.txt
 ├── .env.example
 ├── config/            # proyecto Django (settings, urls, wsgi/asgi, celery)
+├── infra/             # config de infraestructura versionada (ciclo de vida del bucket)
 └── apps/
+    ├── ai/            # Gemini: cliente, cuota mensual por plan y log de consumo
     ├── users/         # AUTH_USER_MODEL personalizado (users.User)
     ├── common/        # BaseModel: UUID PK, soft delete, auditoría, scoping
     ├── workspaces/    # Workspace (presupuesto compartido) + Membership
@@ -126,6 +128,9 @@ que los objetos de otros workspaces devuelven `404` aunque conozcas el UUID.
 | `/email-import-logs/` | Scoped, solo lectura + `?status=`. Acciones: `POST .../{id}/confirm/` (body: `category` obligatorio; `wallet`/`amount`/`date`/`description` opcionales, caen a los valores extraídos del correo — crea la `Transaction`) y `POST .../{id}/reject/`. Solo sobre logs en estado `pending`. |
 | `POST /email-import/inbound/` | **Webhook** de correo entrante. Auth: header `X-Inbound-Secret: <INBOUND_WEBHOOK_SECRET>` **o** firma HMAC nativa de Mailgun si se configura `INBOUND_MAILGUN_SIGNING_KEY`. Body JSON/form: `{to, from, subject, text}` (también acepta los nombres de Mailgun/SendGrid/Postmark). Responde `202 {log_id, status}`. |
 | `POST /workspaces/{id}/rotate-inbound-token/` | Rota el token de importación (solo owner). |
+| `GET /ai/status/` | No usa el header (la cuota es por usuario). `{enabled, quotas: {receipt, parse, chat}, resets_at}` — `enabled: false` cuando no hay `GEMINI_API_KEY`. Ver `apps/ai/`. |
+| `POST /ai/receipt/` | Scoped. `multipart` con `file` (JPG/PNG/WEBP/HEIC/PDF, ≤8 MB) y `wallet` opcional. Devuelve una **candidata** editable con confianza por campo y posibles duplicados. **No crea la transacción ni guarda el archivo.** 429 si se acabó la cuota del plan, 503 si Gemini no contestó. |
+| `POST /ai/parse/` | Scoped. `{text, wallet?}` — una frase suelta ("gasté 12.50 en almuerzo con la tarjeta") a la misma **candidata**, más el tipo y la cartera si la frase los nombra. Tampoco crea nada. Cuota, 429 y 503 iguales. |
 
 ### Importación por correo — cómo funciona
 
@@ -176,6 +181,85 @@ login/registro y el webhook. Rates configurables por entorno
 (`THROTTLE_ANON`, `THROTTLE_USER`, `THROTTLE_AUTH`, `THROTTLE_INBOUND`).
 Backend: `CACHE_URL` (Redis) en producción, en memoria si no se define.
 Desactivado automáticamente durante los tests.
+
+## IA (Gemini)
+
+`apps/ai` es el único lugar que conoce `GEMINI_API_KEY` y el único que habla
+con Google; la app nunca le pega directo (todo lo `EXPO_PUBLIC_*` queda
+embebido en el bundle). **Sin la key, la IA queda apagada entera** y el front
+no muestra sus entradas.
+
+Todo pasa por `services.run()`, que hace siempre lo mismo y en este orden:
+
+1. **Chequea la cuota** (`quotas.check`) antes de gastar la llamada. Los topes
+   mensuales viven en `Plan.features` (`ai_receipts_per_month`,
+   `ai_parses_per_month`, `ai_chats_per_month`), así que se ajustan desde
+   `/admin/` sin deploy. A diferencia del resto de los feature flags de
+   `apps.billing`, esto es **fail-closed**: un plan sin esas claves aplica los
+   números del gratis — acá el costo de equivocarse es una factura.
+2. **Llama a Gemini** (`client.generate`), con un solo reintento y traduciendo
+   cualquier fallo a `AIUnavailable`. Que la IA se caiga nunca debe tumbar
+   nada: el alta manual de una transacción tiene que seguir andando.
+3. **Registra el consumo** en `AIUsage` — operación, modelo, tokens, costo
+   estimado y latencia, **sin nada de lo que el usuario escribió ni de lo que
+   la IA respondió**. Esa misma tabla es el contador de la cuota, así que no
+   hay dos fuentes que puedan discrepar. Una llamada que falla del lado de
+   Google se registra pero no le come la cuota al usuario.
+
+Qué modelo atiende cada operación y cuánto cuesta: `apps/ai/pricing.py`.
+
+### Las dos entradas: recibo y frase
+
+`POST /ai/receipt/` y `POST /ai/parse/` devuelven **la misma forma de
+candidata** y con el mismo contrato (editable, confianza por campo, nada
+guardado). Es a propósito: el cliente las muestra con la misma pantalla, y los
+canales que vienen después (Telegram, voz) entran por `/ai/parse/` sin inventar
+un formato nuevo.
+
+Lo común de "no creerle al modelo" vive en `apps/ai/normalize.py` y lo usan las
+dos: un monto que no parsea, negativo o absurdo queda vacío; una fecha futura o
+de hace más de dos años cae a hoy; el modelo no puede declararse seguro de un
+campo que no se pudo usar.
+
+#### Escaneo de recibos
+
+`POST /ai/receipt/` (ver `apps/ai/receipts.py`) devuelve una **candidata**, nunca
+una transacción: el usuario siempre confirma, y el archivo se guarda como
+`Transaction.receipt` recién cuando aprieta guardar — un escaneo descartado no
+deja nada en el bucket.
+
+Dos cosas que ordenan ese archivo:
+
+- **La categoría se resuelve primero con el historial** del workspace
+  (`guess_category_by_merchant`: gratis, determinista, y sabe cómo categorizó
+  *esta* gente *este* comercio antes) y sólo después con la sugerencia del
+  modelo, que además tiene que matchear una categoría **asignable** — sugerir
+  un grupo daría una transacción que no se puede guardar.
+- **Nada de lo que devuelve el modelo se cree sin normalizar.** Un monto que no
+  parsea, negativo o absurdo queda vacío y marcado `low` en vez de inventado; una
+  fecha futura, o de hace más de dos años (el año mal leído de un ticket térmico),
+  cae a hoy. Vale más un campo vacío que el usuario llena que uno inventado que
+  no mira.
+
+#### Texto libre
+
+`POST /ai/parse/` (ver `apps/ai/parsing.py`) resuelve además dos cosas que un
+recibo no tiene: el **tipo** ("me pagaron 800" es un ingreso) y la **cartera**
+("con la tarjeta").
+
+Al modelo se le pasan los **nombres reales** de las carteras y categorías del
+workspace, y se le pide que elija uno de esa lista. Sin eso, "con la tarjeta"
+vuelve como texto libre que después hay que adivinar a qué fila corresponde, y
+se falla seguido. Cuesta unos 150 tokens de entrada — en Flash-Lite,
+centésimas de centavo — y sale mucho más barato que una categoría mal puesta.
+
+Dos consecuencias de ese diseño:
+
+- Las carteras **privadas** de las que el usuario no es dueño no entran al
+  prompt. Que el modelo las viera ya sería filtrarlas, aunque no las devolviera.
+- Lo que el modelo responde se matchea contra **esa misma lista**, nunca contra
+  la base de nuevo, así que no hay forma de que resuelva algo que el usuario no
+  podía elegir.
 
 ## Tests
 

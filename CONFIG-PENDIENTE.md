@@ -11,10 +11,19 @@
 
 ## Prioridad 1 — pérdida de datos o función caída
 
-- [ ] **`GS_BUCKET_NAME` — adjuntos de recibos.** Vacío = los recibos se guardan en el disco
-      local del contenedor. En Cloud Run eso significa que **se borran en cada deploy**. La
-      función de adjuntar foto/PDF a una transacción (`Transaction.receipt`) ya está completa,
-      cámara incluida. Crear un bucket privado en GCS y setear la variable. **(verificar)**
+- [ ] **`GS_BUCKET_NAME` — adjuntos de recibos *y* backups de la base.** Vacío = los recibos se
+      guardan en el disco local del contenedor. En Cloud Run eso significa que **se borran en
+      cada deploy**. La función de adjuntar foto/PDF a una transacción (`Transaction.receipt`)
+      ya está completa, cámara incluida. **Los pasos, con las banderas que hacen que el
+      bucket salga barato y privado desde el día cero, están en `DEPLOY.md` §2.5**
+      (región = la de Cloud Run, y esa es irreversible; Autoclass; sin acceso público).
+      **(verificar)**
+      La misma variable habilita el volcado diario de la base (`manage.py backup_database`, que
+      corre solo al final del job diario y guarda en `backups/db/` del mismo bucket): sin ella
+      el comando avisa y no hace nada, y el único respaldo son las ~24 h de historial de Neon.
+      Lo avisa `common.W003` en cada arranque. Si preferís un bucket aparte para los backups
+      — otra política de retención, otro acceso — está `DB_BACKUP_BUCKET`. Restaurar:
+      `RUNBOOK.md` §9.
 - [ ] **Tareas diarias en producción.** No hay Celery en prod: los recordatorios, las
       transacciones recurrentes y los insights de comportamiento nuevos corren por
       `manage.py run_daily_tasks` desde un Cloud Run Job disparado por Cloud Scheduler
@@ -32,6 +41,15 @@
 
 ## Prioridad 2 — funciones completas que hoy no se pueden usar
 
+- [ ] **`GEMINI_API_KEY` — todas las funciones de IA.** Vacía = la IA queda apagada de punta a
+      punta: `GET /api/v1/ai/status/` responde `enabled: false` y el front no muestra ninguna
+      entrada de IA (por diseño, así no aparecen botones que fallan al tocarlos). La base ya
+      está: cliente, throttle, cuota mensual por plan y registro de consumo (`apps/ai/`).
+      **Usar el tier de pago, no la capa gratis:** la gratis usa los datos para entrenar, así
+      que sólo sirve para probar con datos propios.
+      Las cuotas por plan no son variables de entorno — viven en `Plan.features` y las siembra
+      `manage.py seed_billing_plans` (Free 3 recibos/10 parseos/0 chats · Plus 30/50/20 ·
+      Pro 100/200/100). Se pueden ajustar desde `/admin/` sin deploy.
 - [ ] **Importación por correo bancario.** Necesita tres cosas y hoy no anda sin ellas:
       1. `INBOUND_EMAIL_DOMAIN` + ruta *inbound* en Mailgun (o similar) apuntando al webhook,
          con sus registros MX en el DNS.

@@ -157,6 +157,148 @@ gcloud run jobs update budget-admin --region us-east1 \
 gcloud run jobs execute budget-admin --region us-east1 --wait
 ```
 
+### 2.5 Bucket de GCS — recibos y backups (una sola vez)
+
+Un solo bucket privado cubre las dos cosas que hoy no tienen dónde vivir:
+
+- **Los recibos** (`Transaction.receipt`). Sin bucket se guardan en el disco del
+  contenedor, que en Cloud Run es efímero: **se borran en cada deploy**.
+- **El volcado diario de la base** (`manage.py backup_database`, §6), que va al
+  prefijo `backups/db/` del mismo bucket. Sin él el único respaldo son las ~24 h
+  de historial que retiene Neon en plan free.
+
+Es un bucket, no dos, porque el código ya usa `GS_BUCKET_NAME` para las dos
+cosas. Si algún día querés separarlos —el argumento no es el costo sino el
+radio de explosión: que la service account del servicio web no pueda leerse un
+volcado entero de la base— existe `DB_BACKUP_BUCKET` y no hace falta tocar nada
+más.
+
+**La región se elige una sola vez y no se puede cambiar.** Tiene que ser la
+misma de Cloud Run (`us-east1`): entre un bucket y un servicio de la misma
+región el tráfico no se cobra, y desde otra región se paga egreso en **cada
+lectura de recibo**. Es, de lejos, la decisión más cara de este bloque, y la
+única irreversible: mover un bucket es crear otro y copiar todo.
+
+```bash
+BUCKET=budget-recibos-prod    # tiene que ser único en todo GCS, no sólo en tu proyecto
+
+gcloud storage buckets create gs://$BUCKET \
+  --location us-east1 \
+  --default-storage-class STANDARD \
+  --uniform-bucket-level-access \
+  --public-access-prevention
+
+# Autoclass: Google mueve solo cada objeto a la clase más barata según hace
+# cuánto que nadie lo lee, y lo sube de vuelta al leerlo (ver más abajo).
+gcloud storage buckets update gs://$BUCKET \
+  --enable-autoclass --autoclass-terminal-storage-class ARCHIVE
+
+# Aborta a las 24 h las subidas que quedaron a medias (una foto a medio subir
+# se factura igual). Ver infra/README.md.
+gcloud storage buckets update gs://$BUCKET --lifecycle-file=infra/gcs-lifecycle.json
+```
+
+> Si tu `gcloud` es viejo y rechaza `--autoclass-terminal-storage-class`, el
+> bucket **igual queda bien**: sin esa bandera Autoclass baja hasta Nearline en
+> vez de hasta Archive. Actualizá `gcloud` y volvé a correr ese `update`, o
+> ponelo en la consola (Bucket → Configuración → Autoclass).
+
+Las banderas del `create`, una por una:
+
+| Bandera | Por qué |
+|---|---|
+| `--location us-east1` | Misma región que Cloud Run → tráfico gratis. **Irreversible.** |
+| `--uniform-bucket-level-access` | Permisos sólo por IAM, sin ACLs por objeto. Es lo que espera `GS_DEFAULT_ACL = None` en `settings.py`. |
+| `--public-access-prevention` | Bloquea que alguien lo haga público por accidente. Los recibos se sirven por `/transactions/{id}/receipt/`, que exige la misma membresía que el resto del API: la URL de GCS no se expone nunca. |
+| `--default-storage-class STANDARD` | Lo que se acaba de subir se lee seguido; abaratarlo desde el día cero sale más caro (ver abajo). |
+
+#### Por qué Autoclass y no reglas de ciclo de vida
+
+Las dos bajan de clase lo que no se toca. La diferencia está en lo que cobran
+cuando te equivocás de predicción:
+
+|  | Reglas de ciclo de vida | Autoclass |
+|---|---|---|
+| Costo de la función | $0 | $0.0025 por cada 1 000 objetos/mes (sólo los ≥ 128 KiB) |
+| Leer algo que ya bajó de clase | **Cobra recuperación** ($0.01–$0.05/GiB) | **No cobra recuperación** |
+| Borrar antes del mínimo de permanencia | **Cobra hasta el mínimo** (30/90/365 días según la clase) | **No cobra** |
+| Volver a subir de clase lo que se empezó a usar | No lo hace | Automático |
+
+Un recibo es exactamente el caso que hace perder plata a las reglas fijas: no
+hay forma de saber cuándo alguien va a abrir el del año pasado (una garantía, un
+reclamo, la declaración de renta), ni cuándo va a borrar la transacción. Con
+reglas, **cada** una de esas dos cosas tiene multa. Con Autoclass, ninguna.
+
+Con 20 000 recibos la comisión de Autoclass son **$0.05/mes**, contra los ~$0.40
+que ahorra el bajar de clase esos mismos objetos. Paga sola y no hay nada que
+mantener.
+
+#### Permisos y variable
+
+```bash
+# Las dos service accounts (servicio y job) son la misma por defecto en Cloud Run.
+SA="$(gcloud projects describe $(gcloud config get-value project) \
+      --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+
+gcloud storage buckets add-iam-policy-binding gs://$BUCKET \
+  --member "serviceAccount:$SA" --role roles/storage.objectAdmin
+
+gcloud run services update budget-api --region us-east1 \
+  --update-env-vars "GS_BUCKET_NAME=$BUCKET"
+```
+
+El Job diario necesita la **misma** variable — está en el `--set-env-vars` de
+§6.1. Sin ella el backup avisa en los logs y no hace nada.
+
+#### Comprobar
+
+```bash
+gcloud storage buckets describe gs://$BUCKET \
+  --format="yaml(location,storageClass,autoclass,iamConfiguration,lifecycle)"
+```
+
+Tiene que decir `location: US-EAST1`, `autoclass.enabled: true`,
+`uniformBucketLevelAccess.enabled: true` y
+`publicAccessPrevention: enforced`. Después, de punta a punta: subí un recibo
+desde la app y corré el backup a mano
+(`gcloud run jobs execute budget-cron --region us-east1 --wait`); tienen que
+aparecer los dos:
+
+```bash
+gcloud storage ls -r gs://$BUCKET
+```
+
+#### Cuánto cuesta
+
+Precios de `us-east1` al 19 sep 2026 (por GiB/mes): Standard `$0.020`,
+Nearline `$0.010`, Coldline `$0.004`, Archive `$0.0012`. Las primeras **5 GiB
+de Standard en regiones de EE.UU. son gratis para siempre**, igual que 5 000
+operaciones de escritura y 50 000 de lectura al mes.
+
+| Escenario | Qué hay guardado | Al mes |
+|---|---|---|
+| Hoy (vos probando) | unos pocos MB | **$0** (entra en la capa gratis) |
+| 100 usuarios, 1 año | ~24 000 recibos (~48 GB) + 30 volcados | **~$0.30** |
+| 1 000 usuarios, 1 año | ~240 000 recibos (~480 GB) + 30 volcados | **~$3.60** |
+
+Supone 20 recibos por usuario al mes y **~2 MB por recibo**, que es lo que sube
+la app hoy: `expo-image-picker` con `quality: 0.7` comprime pero **no
+redimensiona**, así que lo que viaja es la foto a la resolución completa de la
+cámara.
+
+Ahí está la única palanca que mueve la aguja: **el tamaño del recibo.** Bajarlo
+a ~1 600 px del lado largo (~250 KB, de sobra para leer un ticket, y también
+para que lo lea Gemini) deja esas mismas cifras en **~$0.10 y ~$0.90**, y de
+paso hace la subida 8× más rápida con datos móviles — que es lo que el usuario
+nota. Necesita `expo-image-manipulator`, que hoy no es dependencia del front.
+
+Los volcados de la base ni se notan: comprimidos, y Neon free topa en 0.5 GB.
+Con recibos chicos la comisión de Autoclass pasa a ser el renglón más grande,
+y aun así son centavos.
+
+El egreso a Cloud Run no se cobra por estar en la misma región, y los recibos
+nunca salen a internet desde GCS: los sirve el backend.
+
 ---
 
 ## 3. Frontend — Vercel o Cloudflare Pages
@@ -204,11 +346,13 @@ command no lleva `npm ci`. La imagen de build trae Node 22 por defecto, que es
 lo que usa el repo; si algún día no coincide, se fija con la variable
 `NODE_VERSION`.
 
-Lo único que hay que replicar a mano es el rewrite de SPA que hoy está en
-`vercel.json` (todas las rutas a `index.html`): en Pages es un archivo
-`public/_redirects` con `/* /index.html 200`. Va en `public/` porque `expo
-export` copia ese directorio tal cual a `dist/` — igual que `sw.js` y
-`manifest.webmanifest`.
+El rewrite de SPA que en Vercel vive en `vercel.json` (todas las rutas a
+`index.html`) **ya está en el repo**: `moneyapp/public/_redirects`. Va en
+`public/` porque `expo export` copia ese directorio tal cual a `dist/` — igual
+que `sw.js` y `manifest.webmanifest` — y Pages lo lee desde la raíz del output
+sin servirlo como contenido. Los dos archivos conviven: Vercel ignora
+`_redirects` y Pages ignora `vercel.json`, así que mover el hosting no toca el
+build.
 
 También hay que cambiar el script `deploy:web` de `package.json`, que hoy es
 `npx vercel deploy --prod`, por `npx wrangler pages deploy dist`.
@@ -265,11 +409,18 @@ La **primera** request del día tarda ~2-4 s (Cloud Run + Neon despiertan).
 
 ## 6. Tareas sin Celery
 
-`manage.py run_daily_tasks` corre las tres tareas periódicas en el orden
-correcto (recurrentes → cierre de mes → recordatorios, ver
+`manage.py run_daily_tasks` corre las tareas periódicas en el orden correcto
+(recurrentes → cierres → recordatorios → backup de la base, ver
 `apps/common/management/commands/run_daily_tasks.py`) sincrónicamente, sin
 broker. Todas son idempotentes: no pasa nada si el job corre dos veces el
 mismo día, o a una hora que no es la ideal.
+
+El backup va último a propósito: si `pg_dump` falla o el bucket rechaza la
+subida, el job queda marcado como fallido en Cloud Run — que es como uno se
+entera — pero para entonces los recordatorios ya salieron. Necesita
+`GS_BUCKET_NAME` (o `DB_BACKUP_BUCKET`) en el Job, si no avisa y no hace nada —
+el bucket se crea en [§2.5](#25-bucket-de-gcs--recibos-y-backups-una-sola-vez).
+Restaurar desde un volcado: `RUNBOOK.md` §9.
 
 ### 6.1 Cloud Run Job (una sola vez)
 
@@ -277,9 +428,11 @@ mismo día, o a una hora que no es la ideal.
 gcloud run jobs deploy budget-cron \
   --source . --region us-east1 \
   --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
-  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
+  --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0,GS_BUCKET_NAME=budget-recibos-prod" \
   --command python \
   --args "manage.py,run_daily_tasks"
+
+# El permiso sobre el bucket ya se dio en §2.5 (misma service account).
 
 gcloud run jobs execute budget-cron --region us-east1 --wait   # probarlo a mano una vez
 ```
@@ -363,7 +516,11 @@ a Neon, apuntá el ping a un endpoint que consulte, por ejemplo
 - **Neon free**: 0.5 GB, 100 h cómputo/mes, auto-suspende a los 5 min.
 - **Cloud Run free**: 2 M req, 360 000 GiB-s, 180 000 vCPU-s al mes.
 - **Vercel Hobby**: gratis uso no comercial, ~100 GB banda/mes.
-- **Backups**: Neon free retiene ~24 h. Un `pg_dump` periódico si querés más.
+- **Cloud Storage**: 5 GiB de Standard gratis para siempre en regiones de
+  EE.UU. Con Autoclass lo viejo baja solo de clase; el detalle y las cifras
+  proyectadas están en §2.5.
+- **Backups**: Neon free retiene ~24 h. El volcado diario a GCS (§6) cubre el
+  resto por centavos.
 
 ---
 
