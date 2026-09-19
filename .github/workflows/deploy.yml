@@ -52,3 +52,37 @@ jobs:
             echo "intento $i: $code"; sleep 6
           done
           echo "healthz no respondió 200"; exit 1
+
+      # Los Cloud Run Jobs NO se redespliegan solos: este workflow sólo tocaba
+      # el servicio, así que la imagen de los jobs quedaba congelada en la del
+      # día que se crearon. La base, en cambio, sigue migrando en cada arranque
+      # del servicio -- y en cuanto una migración borra una columna, el job
+      # empieza a fallar contra un esquema que ya no es el suyo. Fue
+      # exactamente lo que pasó: `budget-cron` venía fallando desde el 13 sep
+      # con "column transactions_categorybudget.month does not exist", seis
+      # días sin recurrentes, sin cierres y sin recordatorios, sin que nada
+      # avisara.
+      #
+      # Se reutiliza la imagen que acaba de quedar en el servicio en vez de
+      # construir otra: es el mismo commit, y así no hay forma de que el job y
+      # el servicio corran código distinto.
+      #
+      # Va después del smoke test a propósito: si el servicio nuevo no levanta,
+      # esa imagen tampoco tiene por qué llegar al job.
+      - name: Sincronizar la imagen de los jobs
+        run: |
+          IMAGE=$(gcloud run services describe budget-api \
+            --project budget-wxlter --region us-east1 \
+            --format='value(spec.template.spec.containers[0].image)')
+          if [ -z "$IMAGE" ]; then
+            echo "No se pudo leer la imagen del servicio"; exit 1
+          fi
+          echo "imagen: $IMAGE"
+          for JOB in budget-cron budget-migrate; do
+            if gcloud run jobs describe "$JOB" --project budget-wxlter --region us-east1 >/dev/null 2>&1; then
+              gcloud run jobs update "$JOB" --project budget-wxlter --region us-east1 --image "$IMAGE"
+              echo "actualizado: $JOB"
+            else
+              echo "no existe, se omite: $JOB"
+            fi
+          done
