@@ -437,6 +437,24 @@ gcloud run jobs deploy budget-cron \
 gcloud run jobs execute budget-cron --region us-east1 --wait   # probarlo a mano una vez
 ```
 
+> **Un Job no se redespliega solo.** Este comando fija una imagen y ahí se
+> queda, mientras la base sigue migrando en cada arranque del servicio. En
+> cuanto una migración borra una columna, el job falla contra un esquema que ya
+> no es el suyo — y como corre de noche y sin público, nadie se entera. Pasó:
+> `budget-cron` estuvo seis días tirando `column
+> transactions_categorybudget.month does not exist`, sin recurrentes, sin
+> cierres y sin recordatorios.
+>
+> Por eso el workflow de §9 sincroniza la imagen de los jobs con la del
+> servicio en cada deploy. Si desplegás a mano con `deploy-cloudrun.sh`,
+> acordate de hacer lo mismo:
+>
+> ```bash
+> gcloud run jobs update budget-cron --region us-east1 \
+>   --image "$(gcloud run services describe budget-api --region us-east1 \
+>       --format='value(spec.template.spec.containers[0].image)')"
+> ```
+
 ### 6.2 Cloud Scheduler → Cloud Run Job (para que corra solo cada día)
 
 Un Cloud Scheduler que dispara el Job de arriba todos los días a las 7am
@@ -541,6 +559,11 @@ a Neon, apuntá el ping a un endpoint que consulte, por ejemplo
 
 `.github/workflows/deploy.yml` corre `gcloud run deploy --source .` en cada push a
 `main`. No usa claves de service account: autentica por OIDC.
+
+Después del smoke test, el mismo workflow le pone a `budget-cron` y a
+`budget-migrate` **la imagen que acaba de quedar en el servicio** — no
+construye otra: es el mismo commit, y así el job y el servicio no pueden correr
+código distinto (ver el recuadro de §6.1). Un job que no exista se omite.
 
 **Setup (una vez):**
 

@@ -29,6 +29,12 @@
       `manage.py run_daily_tasks` desde un Cloud Run Job disparado por Cloud Scheduler
       (`DEPLOY.md` §6.1 y §6.2). Si el Job/Scheduler no está creado, **nada de lo diario
       corre nunca** y no hay ningún error visible que te avise. **(verificar)**
+      Segundo modo de falla, ya visto en producción: el Job **existe pero corre una imagen
+      vieja**. Un Cloud Run Job no se redespliega solo, y la base sí sigue migrando; en cuanto
+      una migración borra una columna, el job revienta contra un esquema que ya no es el suyo.
+      `budget-cron` estuvo así seis días. Desde entonces el workflow de deploy le sincroniza la
+      imagen al job en cada push a `main` (`DEPLOY.md` §9); si desplegás a mano, el recuadro de
+      §6.1 tiene el comando.
 - [ ] **`CACHE_URL` (Redis) en producción.** Vacío = el throttling de DRF cuenta en la memoria
       de cada instancia: con las 5 instancias que permite el servicio, los límites valen 5 veces
       y se reinician en cada deploy. Al arrancar el contenedor, el check `common.W001` lo avisa
