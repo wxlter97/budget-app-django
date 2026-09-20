@@ -11,6 +11,7 @@ transacción (ver `apps.transactions.api.TransactionSerializer`), porque
 necesita el monto de ANTES del descuento -- algo que esta señal, que sólo ve
 la transacción ya guardada, no puede reconstruir.
 """
+from datetime import date
 from decimal import Decimal
 
 from django.db.models.signals import post_delete, post_save
@@ -37,11 +38,15 @@ def _recompute(instance: Transaction) -> None:
     if not card_product_id or category_type is None:
         return
 
+    # Recién creada con `objects.create(date="2026-09-01")` la fecha sigue siendo
+    # el texto que se le pasó, no un `date`.
+    on = instance.date if isinstance(instance.date, date) else date.fromisoformat(str(instance.date))
+
     programs = LoyaltyProgram.objects.filter(
         card_product_id=card_product_id, is_active=True, kind__in=_AUTO_KINDS
     )
     for program in programs:
-        rate = program.rate_for(category_type)
+        rate = program.rate_for(category_type, on)
         if not rate:
             continue
         earned = (instance.amount * rate).quantize(Decimal("0.01"))

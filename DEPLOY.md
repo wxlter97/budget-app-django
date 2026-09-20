@@ -149,6 +149,24 @@ gcloud run jobs deploy budget-admin \
 gcloud run jobs execute budget-admin --region us-east1 --wait
 ```
 
+### 2.3b Catálogo de lealtad (bancos, tarjetas, tasas)
+
+`seed_loyalty_catalog` carga los bancos, las tarjetas y sus programas de puntos,
+cashback y descuento de `apps/loyalty/catalog.py`. Es idempotente (actualiza lo
+que ya está, no duplica ni borra) y tiene `--dry-run`. Primero en simulación, y
+después de revisarla, de verdad:
+
+```bash
+gcloud run jobs update budget-admin --region us-east1 \
+  --command python --args "manage.py,seed_loyalty_catalog,--dry-run"
+gcloud run jobs execute budget-admin --region us-east1 --wait
+gcloud run jobs update budget-admin --region us-east1 \
+  --command python --args "manage.py,seed_loyalty_catalog"
+gcloud run jobs execute budget-admin --region us-east1 --wait
+```
+
+Si un banco cambia una tasa, se edita `catalog.py` y se vuelve a correr.
+
 ### 2.4 Planes de billing (una sola vez, la primera vez que se activa)
 
 `seed_billing_plans` crea los planes Free/Pro -- correrlo es seguro en

@@ -74,8 +74,8 @@ class LoyaltyCategoryRateAdmin(BaseModelAdmin):
     programa → Tasas por rubro) -- este listado es sólo para verlas todas
     juntas de un vistazo, sin entrar programa por programa."""
 
-    list_display = ("program", "category_type", "rate")
-    list_filter = ("category_type",)
+    list_display = ("program", "category_type", "weekday", "rate")
+    list_filter = ("category_type", "weekday")
     search_fields = ("program__name", "category_type__name")
     raw_id_fields = ("program", "category_type")
 

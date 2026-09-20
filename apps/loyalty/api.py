@@ -68,7 +68,7 @@ class CategoryTypeViewSet(viewsets.ModelViewSet):
 class LoyaltyCategoryRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = LoyaltyCategoryRate
-        fields = ("id", "program", "category_type", "rate")
+        fields = ("id", "program", "category_type", "rate", "weekday")
         read_only_fields = ("id",)
 
 

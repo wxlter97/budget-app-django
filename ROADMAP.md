@@ -65,7 +65,7 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 | 1.3 | **Probar el flujo completo de punta a punta**: trial → cobro → webhook → activación → cancelación. **Bloqueado hasta implementar `WompiProvider` contra el sandbox de Wompi** (ver 1.1) | 🤖 + 🧑 | 2–3 h |
 | 1.4 | **Revisar precios a la luz del costo real.** Empujar el anual; decidir si el lifetime de $19.99 se mantiene (con IA es ~14 años de consumo para empatar). Análisis con los números: `ECONOMIA-POR-PLAN.md` (se regenera con `scripts/economia_por_plan.py`) | 🧑 | decisión |
 | 1.5 | **Legal**: revisar `privacy.tsx` y términos contra lo que de verdad va a hacer la app (IA, analítica, terceros). Hoy la política promete que no hay rastreadores de terceros | 🤖 + 🧑 | 2 h |
-| 1.6 | **Catálogo de lealtad** (`Bank`, `CardProduct`, `LoyaltyProgram`, tasas) y mapear categorías a `CategoryType` — sin filas, puntos y cashback nunca se calculan | 🧑 | 2–3 h |
+| 1.6 | **Catálogo de lealtad** (`Bank`, `CardProduct`, `LoyaltyProgram`, tasas) y mapear categorías a `CategoryType` — sin filas, puntos y cashback nunca se calculan. **Hecho en código (20-sep):** `seed_loyalty_catalog` (`DEPLOY.md` §2.3b) con Agrícola, BAC, Promérica, Azul, Atlántida, Hipotecario y lo verificable de Cuscatlán e Industrial, y tasas por **día de la semana**. **Falta:** correr el comando en producción, mapear las categorías de cada workspace a los rubros, y completar Cuscatlán (MultiPuntos), Davivienda, Industrial, ABANK y Apoyo Integral (sus sitios no publican la tasa) | 🧑 | 1 h |
 | 1.7 | **Schemas de correo bancario** (`BankEmailSchema`), uno por banco; sin ellos toda importación falla | 🤖 + 🧑 | 1–2 h por banco |
 
 **Subtotal: ~1.5–2 jornadas** (más lo que sume cada banco).
