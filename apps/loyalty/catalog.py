@@ -25,6 +25,8 @@ Lo que a propósito NO está (no cabe en el modelo o no se pudo verificar):
 """
 
 MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
+ANY_DAY = None  # el día de una tasa que vale todos los días
+
 
 # (slug, nombre). Los cinco primeros ya existían.
 CATEGORY_TYPES = [
@@ -88,6 +90,9 @@ MERCHANTS = [
     # Sin rubro propio: un café en Pronto sigue siendo "Comida"; el comercio sólo
     # sirve para el descuento de UNO.
     ("Tiendas Pronto", None, ["pronto"]),
+    # Las gasolineras UNO (descuento de la tarjeta UNO de Cuscatlán). Un alias tan corto
+    # sólo cuenta como palabra entera, y quien no lo escriba no recibe el descuento.
+    ("Gasolineras UNO", "gasolina", ["uno", "gasolinera uno", "gasolineras uno"]),
     # Sin gasolineras a propósito: un café en Puma o Shell se escribe con el nombre de
     # la gasolinera y caería en el rubro gasolina. Para eso ya está la categoría Gasolina.
     ("Amazon Prime", "suscripciones", ["prime video"]),
@@ -113,6 +118,7 @@ CATEGORY_TO_RUBRO = {
     "suscripciones": "suscripciones",
     "farmacia": "farmacia",
     "educacion": "educacion",
+    "gimnasio": "gimnasio-deporte",
     "deporte": "gimnasio-deporte",
     "telefono": "telefonia-internet",
     "internet": "telefonia-internet",
@@ -130,12 +136,15 @@ RENAMES = [
 ]
 
 
-def P(kind, default, name="", rates=(), point_value=None, active=True, merchants=()):
-    """`rates`: tasas por rubro; `merchants`: tasas de un solo comercio,
-    `(nombre del comercio, tasa)` o `(nombre, tasa, día)`."""
+def P(kind, default, name="", rates=(), point_value=None, active=True, merchants=(), min_amount=None):
+    """`rates`: tasas por rubro, `(slug, tasa)`, `(slug, tasa, día)` o
+    `(slug, tasa, día, True)` si sólo vale para cargos automáticos (`AUTO`);
+    `merchants`: tasas de un solo comercio, `(nombre del comercio, tasa)` o
+    `(nombre, tasa, día)`. `min_amount`: compra mínima para ganar."""
     return {
         "kind": kind, "name": name, "default": default, "rates": list(rates),
         "point_value": point_value, "active": active, "merchants": list(merchants),
+        "min_amount": min_amount,
     }
 
 
@@ -154,6 +163,9 @@ _AGRICOLA_DIAS = [
 _JOVEN_3 = ["suscripciones", "transporte", "gaming", "telefonia-internet",
             "compras-en-linea", "delivery", "conciertos-eventos"]
 _JOVEN_2 = ["gimnasio-deporte", "comida-rapida", "tecnologia", "cines", "educacion"]
+
+# El cashback de las tarjetas de Cuscatlán sólo aplica en compras de $10 o más.
+MIN_CUSCATLAN = 10
 
 CATALOG = [
     {
@@ -259,33 +271,37 @@ CATALOG = [
             # Fuente: bancocuscatlan.com/tarjetas/de-credito (septiembre 2026). Los
             # bonos de bienvenida, Priority Pass, etc. no se modelan.
             # --- de un solo comercio
-            # El 6 % es "en gasolineras UNO y tiendas Pronto". Las compras se anotan como
-            # "gasolina" (nunca "UNO"), así que el descuento se ata al rubro gasolina --
-            # aproxima bien porque casi toda la gasolina se carga en UNO -- y a Pronto.
+            # El 6 % es sólo "en gasolineras UNO y tiendas Pronto": se reconocen por el
+            # nombre en la descripción. Sin él (o con otra gasolinera) no hay descuento.
             prod("UNO", "visa",
-                 P("discount", 0, "Descuento UNO", [("gasolina", 0.06)],
-                   merchants=[("Tiendas Pronto", 0.06)]),
+                 P("discount", 0, "Descuento UNO",
+                   merchants=[("Gasolineras UNO", 0.06), ("Tiendas Pronto", 0.06)]),
                  P("points", 1, "MultiPuntos")),
             prod("UNO Oro", "visa",
-                 P("discount", 0, "Descuento UNO", [("gasolina", 0.06)],
-                   merchants=[("Tiendas Pronto", 0.06)]),
+                 P("discount", 0, "Descuento UNO",
+                   merchants=[("Gasolineras UNO", 0.06), ("Tiendas Pronto", 0.06)]),
                  P("points", 1, "MultiPuntos")),
             prod("Selectos", "other",
                  P("discount", 0, "Descuento Selectos", merchants=[("Súper Selectos", 0.07)])),
             prod("Cash Back Tigo", "other",
-                 P("cashback", 0, "Cash Back Tigo", merchants=[("Tigo", 0.20)])),
+                 P("cashback", 0, "Cash Back Tigo", merchants=[("Tigo", 0.20)], min_amount=MIN_CUSCATLAN)),
             # --- cashback
             prod("Cash Back Visa", "visa",
-                 P("cashback", 0, "Cash Back", [("gasolina", 0.05), ("restaurantes", 0.05)])),
+                 P("cashback", 0, "Cash Back", [("gasolina", 0.05), ("restaurantes", 0.05)],
+                   min_amount=MIN_CUSCATLAN)),
             prod("PedidosYa", "visa",
                  P("cashback", 0, "Cashback PedidosYa",
-                   [("delivery", 0.05), ("restaurantes", 0.05), ("comida-rapida", 0.05)])),
-            # Sólo lo que no depende de estar inscrito en Pagos Automáticos (el 5 % en
-            # servicios básicos lo exige y no se sabe de qué pagos se trata).
+                   [("delivery", 0.05), ("restaurantes", 0.05), ("comida-rapida", 0.05)],
+                   min_amount=MIN_CUSCATLAN)),
+            # El 5 % en servicios básicos sólo vale si el pago es un cargo automático
+            # (Pagos Automáticos): el gasto lo marca así al registrarse.
             prod("ePay", "mastercard",
-                 P("cashback", 0.01, "ePay", [("suscripciones", 0.05), ("delivery", 0.05)])),
+                 P("cashback", 0.01, "ePay",
+                   [("suscripciones", 0.05), ("delivery", 0.05)]
+                   + [(s, 0.05, ANY_DAY, True) for s in ("agua", "electricidad", "telefonia-internet")],
+                   min_amount=MIN_CUSCATLAN)),
             prod("NIU", "visa",
-                 P("cashback", 0, "Cashback NIU", [("restaurantes", 0.05)])),
+                 P("cashback", 0, "Cashback NIU", [("restaurantes", 0.05)], min_amount=MIN_CUSCATLAN)),
             # --- MultiPuntos
             prod("MultiPuntos Visa Clásica", "visa", P("points", 1, "MultiPuntos")),
             prod("MultiPuntos Visa Oro", "visa", P("points", 1, "MultiPuntos")),

@@ -33,7 +33,7 @@ class CatalogDataTests(TestCase):
                 kinds = [p["kind"] for p in item["programs"]]
                 self.assertEqual(len(kinds), len(set(kinds)), item["name"])
                 for program in item["programs"]:
-                    keys = [(r[0], r[2] if len(r) > 2 else None) for r in program["rates"]]
+                    keys = [(r[0], r[2] if len(r) > 2 else None, len(r) > 3 and r[3]) for r in program["rates"]]
                     self.assertEqual(len(keys), len(set(keys)), item["name"])
 
     def test_percent_programs_use_fractions_and_weekdays_are_valid(self):
@@ -44,7 +44,7 @@ class CatalogDataTests(TestCase):
                     if program["kind"] != "points":
                         self.assertTrue(all(0 <= v <= 1 for v in values), item["name"])
                     for r in program["rates"]:
-                        if len(r) > 2:
+                        if len(r) > 2 and r[2] is not None:
                             self.assertIn(r[2], range(7))
 
 
@@ -125,19 +125,23 @@ class CuscatlanUnoTests(TestCase):
     """El descuento de UNO es sólo en gasolineras UNO y tiendas Pronto, no en todo:
     antes estaba cargado como 6 % de tasa base."""
 
-    def test_the_discount_only_applies_to_gasoline_and_pronto(self):
+    def test_the_discount_only_applies_to_uno_stations_and_pronto(self):
         from apps.loyalty.models import Merchant
+        from apps.loyalty.services import match_merchant
 
         _seed()
         program = LoyaltyProgram.objects.get(
             card_product__name="UNO", card_product__bank__name="Banco Cuscatlán", kind="discount"
         )
         gasolina = CategoryType.objects.get(slug="gasolina")
-        super_ = CategoryType.objects.get(slug="supermercado")
+        uno = match_merchant("gasolina uno metrocentro")
         pronto = Merchant.objects.get(name="Tiendas Pronto")
-        self.assertEqual(str(program.rate_for(gasolina)), "0.0600")
+        self.assertEqual(uno.name, "Gasolineras UNO")
+        self.assertEqual(str(program.rate_for(gasolina, None, uno)), "0.0600")
         self.assertEqual(str(program.rate_for(None, None, pronto)), "0.0600")
-        self.assertEqual(str(program.rate_for(super_)), "0.0000")
+        # Otra gasolinera, o la misma sin decir cuál, no recibe el descuento.
+        self.assertEqual(str(program.rate_for(gasolina)), "0.0000")
+        self.assertIsNone(match_merchant("gasolina shell"))
 
     def test_it_replaces_the_old_6_percent_base_rate_of_an_existing_uno(self):
         bank = Bank.objects.create(name="Banco Cuscatlán")

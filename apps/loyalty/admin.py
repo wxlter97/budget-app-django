@@ -16,7 +16,7 @@ from .models import (
 class LoyaltyCategoryRateInline(admin.TabularInline):
     model = LoyaltyCategoryRate
     extra = 1
-    fields = ("category_type", "merchant", "weekday", "rate")
+    fields = ("category_type", "merchant", "weekday", "requires_autopay", "rate")
     autocomplete_fields = ("merchant",)
 
 
@@ -24,7 +24,7 @@ class LoyaltyProgramInline(admin.TabularInline):
     model = LoyaltyProgram
     extra = 0
     show_change_link = True
-    fields = ("kind", "name", "default_rate", "point_value", "is_active", "rates_count")
+    fields = ("kind", "name", "default_rate", "point_value", "min_amount", "is_active", "rates_count")
     readonly_fields = ("rates_count",)
 
     @admin.display(description="Tasas por rubro")

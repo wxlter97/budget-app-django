@@ -101,3 +101,38 @@ def loyalty_summary(workspace, date_after=None, date_before=None) -> dict:
         "points_balances": points_balances(workspace),
         "period_totals": period_totals(workspace, date_after, date_before),
     }
+
+
+def map_categories_to_rubros(categories) -> list:
+    """Asigna el rubro de lealtad (`CategoryType`) a las categorías que **no tienen
+    uno todavía**, según su nombre (`catalog.CATEGORY_TO_RUBRO`, sin importar
+    mayúsculas ni tildes). Nunca pisa un rubro elegido a mano. Devuelve las
+    categorías que cambió. Si los rubros no están cargados todavía
+    (`seed_loyalty_catalog`), no hace nada."""
+    from . import catalog
+    from .models import CategoryType
+
+    rubros = {t.slug: t for t in CategoryType.objects.filter(slug__in=set(catalog.CATEGORY_TO_RUBRO.values()))}
+    changed = []
+    for category in categories.filter(category_type__isnull=True):
+        rubro = rubros.get(catalog.CATEGORY_TO_RUBRO.get(normalize_text(category.name)))
+        if rubro is not None:
+            category.category_type = rubro
+            category.save(update_fields=["category_type", "updated_at"])
+            changed.append(category)
+    return changed
+
+
+def recompute_earnings(transactions) -> int:
+    """Vuelve a calcular lo ganado (puntos y cashback) de esas transacciones con
+    las reglas actuales: sirve cuando se cargó o cambió el catálogo, o se mapeó
+    un rubro, DESPUÉS de que los gastos ya existían (la señal de
+    `signals.py` sólo corre al guardar). No toca los descuentos, que registra el
+    cliente. Devuelve cuántas transacciones recorrió."""
+    from .signals import _recompute
+
+    count = 0
+    for txn in transactions.select_related("wallet", "category"):
+        _recompute(txn)
+        count += 1
+    return count
