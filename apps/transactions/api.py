@@ -737,9 +737,37 @@ class TransactionViewSet(WorkspaceScopedViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        # `-id` desempata: con `-date, -created_at` solos, dos filas con el mismo
+        # instante podían saltarse o repetirse entre páginas de `limit/offset`.
         return super().get_queryset().filter(
             Q(wallet__visibility=Wallet.VISIBILITY_SHARED) | Q(wallet__owner=user)
+        ).order_by("-date", "-created_at", "-id")
+
+    @action(detail=False, methods=["get"])
+    def totals(self, request):
+        """
+        Ingresos y gastos que cumplen los mismos filtros que la lista, por moneda.
+
+        Existe porque la lista se pagina: sumar en el cliente sólo lo cargado daría
+        un total distinto según cuánto se haya desplazado. Las transferencias no
+        cuentan ni como ingreso ni como gasto (igual que en el cliente).
+        """
+        qs = self.filter_queryset(self.get_queryset()).order_by()
+        rows = (
+            qs.filter(type__in=[Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE])
+            .values("currency", "type")
+            .annotate(total=Sum("amount"))
         )
+        by_currency: dict[str, dict[str, Decimal]] = {}
+        for r in rows:
+            entry = by_currency.setdefault(
+                r["currency"], {"income": Decimal("0"), "expenses": Decimal("0")}
+            )
+            entry["income" if r["type"] == Transaction.TYPE_INCOME else "expenses"] += r["total"]
+        return Response([
+            {"currency": c, "income": v["income"], "expenses": v["expenses"]}
+            for c, v in sorted(by_currency.items())
+        ])
 
     # Definidas en `services` porque el mismo archivo entra también por
     # `/ai/receipt/` y las dos puertas tienen que aceptar lo mismo.

@@ -210,6 +210,13 @@ class Transaction(BaseModel):
 
     class Meta:
         ordering = ["-date", "-created_at"]
+        indexes = [
+            # Historial de una cartera y rangos de fecha: las consultas más comunes.
+            models.Index(fields=["wallet", "-date"], name="txn_wallet_date_idx"),
+            models.Index(fields=["to_wallet", "-date"], name="txn_towallet_date_idx"),
+            models.Index(fields=["category", "-date"], name="txn_category_date_idx"),
+            models.Index(fields=["date"], name="txn_date_idx"),
+        ]
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(type__in=["income", "expense", "transfer"]),

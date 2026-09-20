@@ -103,6 +103,10 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "apps.common.middleware.MaintenanceModeMiddleware",
+    # Cloud Run no comprime: sin esto, cada JSON (listas de transacciones, el
+    # dashboard) viaja entero. Django sólo comprime si el cliente manda
+    # `Accept-Encoding: gzip` y la respuesta pesa más de ~200 bytes.
+    "django.middleware.gzip.GZipMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
