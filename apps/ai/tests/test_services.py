@@ -20,7 +20,7 @@ User = get_user_model()
 _GENERATE = "apps.ai.services.generate"
 
 
-def _ok(model="gemini-2.5-flash", tokens=(1500, 300)):
+def _ok(model="gemini-3.8-flash", tokens=(1500, 300)):
     return GeminiResponse(
         text='{"amount": 12.5}', model=model,
         input_tokens=tokens[0], output_tokens=tokens[1], latency_ms=812,
@@ -52,8 +52,8 @@ class RunTests(TestCase):
         self.assertEqual(row.latency_ms, 812)
         self.assertEqual(row.workspace, self.workspace)
         self.assertTrue(row.counts_against_quota)
-        # 1500 in × $0.30/Mtok + 300 out × $2.50/Mtok = $0.00120
-        self.assertEqual(row.cost_micros, 1200)
+        # 1500 in × $0.75/Mtok + 300 out × $3.75/Mtok = $0.00225
+        self.assertEqual(row.cost_micros, 2250)
 
     def test_no_llama_a_gemini_si_ya_no_queda_cuota(self):
         """El chequeo va antes de gastar la llamada, no después."""
@@ -85,19 +85,19 @@ class RunTests(TestCase):
     def test_cada_operacion_va_al_modelo_que_le_toca(self):
         with patch(_GENERATE, return_value=_ok()) as generate:
             services.run(user=self.user, operation=m.OP_PARSE, parts=[{"text": "hola"}])
-        self.assertEqual(generate.call_args[1]["model"], "gemini-2.5-flash-lite")
+        self.assertEqual(generate.call_args[1]["model"], "gemini-3.5-flash-lite")
 
-    def test_el_audio_va_al_modelo_que_lo_acepta_y_se_cobra_mas_caro(self):
-        """Flash-Lite no acepta audio, y Gemini cobra el audio de entrada a
-        $1.00/Mtok contra $0.30 del texto."""
+    def test_el_audio_va_al_modelo_que_lo_acepta_y_usa_su_precio_de_entrada(self):
+        """El audio no va al modelo Flash-Lite de texto sino al Flash, y se
+        costea con `AUDIO_INPUT_PRICE_PER_MTOK`."""
         with patch(_GENERATE, return_value=_ok(tokens=(800, 120))) as generate:
             services.run(
                 user=self.user, operation=m.OP_PARSE,
                 parts=[{"text": "hola"}], has_audio=True,
             )
-        self.assertEqual(generate.call_args[1]["model"], "gemini-2.5-flash")
-        # 800 × $1.00/Mtok + 120 × $2.50/Mtok = $0.0011
-        self.assertEqual(m.AIUsage.objects.get().cost_micros, 1100)
+        self.assertEqual(generate.call_args[1]["model"], "gemini-3.8-flash")
+        # 800 × $0.75/Mtok + 120 × $3.75/Mtok = $0.00105
+        self.assertEqual(m.AIUsage.objects.get().cost_micros, 1050)
 
 
 @override_settings(GEMINI_API_KEY="")

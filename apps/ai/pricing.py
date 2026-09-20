@@ -6,11 +6,16 @@ precio que cobramos, es la **estimación** con la que se llena `AIUsage.
 cost_micros` para poder mirar el gasto por operación sin esperar la factura de
 Google. La factura real siempre manda; esto sirve para saber de dónde salió.
 
-> Precios de la API de Gemini al **18 sep 2026** (tier de pago), en dólares por
-> millón de tokens. **Los de los Flash son promocionales hasta fin de 2026**, y
-> por eso la asignación de modelos está acá arriba y no desparramada: cuando
-> cambien, se cambia en un solo lugar y el registro de consumo muestra el
-> antes y el después.
+> Precios de la API de Gemini al **20 sep 2026** (tier de pago), en dólares por
+> millón de tokens. **Los de `gemini-3.8-flash` son promocionales hasta el
+> 31-dic-2026** ($0.75 / $3.75) y después suben ($1.50 / $7.50), y por eso la
+> asignación de modelos está acá arriba y no desparramada: cuando cambien, se
+> cambia en un solo lugar y el registro de consumo muestra el antes y el después.
+>
+> **Los modelos 2.5 ya no están disponibles para cuentas nuevas**: la API
+> responde 404 ("no longer available to new users") aunque figuren en la lista
+> de modelos y en la página de deprecaciones. Se dejan en la tabla sólo para
+> poder costear filas viejas de `AIUsage`; no se usan.
 """
 from apps.ai import models as m
 
@@ -18,6 +23,8 @@ from apps.ai import models as m
 PRICES_PER_MTOK = {
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-3.8-flash": (0.75, 3.75),  # promocional hasta el 31-dic-2026
     "gemini-3.5-flash": (1.50, 9.00),
     "gemini-3.1-pro": (2.00, 12.00),
 }
@@ -30,17 +37,17 @@ PRICES_PER_MTOK = {
 # El chat es más de la mitad del costo de un usuario intensivo, así que va en
 # Flash-Lite: la diferencia se nota en la factura, no en las respuestas.
 MODEL_FOR_OPERATION = {
-    m.OP_RECEIPT: "gemini-2.5-flash",       # necesita visión
-    m.OP_PARSE: "gemini-2.5-flash-lite",    # texto corto → JSON
-    m.OP_CHAT: "gemini-2.5-flash-lite",
-    m.OP_SUMMARY: "gemini-2.5-flash",       # razona sobre el mes entero
+    m.OP_RECEIPT: "gemini-3.8-flash",       # necesita visión
+    m.OP_PARSE: "gemini-3.5-flash-lite",    # texto corto → JSON
+    m.OP_CHAT: "gemini-3.5-flash-lite",
+    m.OP_SUMMARY: "gemini-3.8-flash",       # razona sobre el mes entero
 }
 
-# El dictado manda audio, que Gemini cobra aparte y más caro ($1.00/Mtok de
-# entrada contra $0.30). Va en su propio modelo porque Flash-Lite no acepta
-# audio.
-MODEL_FOR_AUDIO = "gemini-2.5-flash"
-AUDIO_INPUT_PRICE_PER_MTOK = 1.00
+# El dictado manda audio. En la serie 3 Gemini publica el mismo precio de
+# entrada para audio que para texto (verificar en la página de precios si algún
+# día vuelve a cobrarse aparte, como pasaba con la 2.5).
+MODEL_FOR_AUDIO = "gemini-3.8-flash"
+AUDIO_INPUT_PRICE_PER_MTOK = 0.75
 
 
 def model_for(operation: str, *, has_audio: bool = False) -> str:
