@@ -73,6 +73,18 @@
       Las cuotas por plan no son variables de entorno — viven en `Plan.features` y las siembra
       `manage.py seed_billing_plans` (Free 3 recibos/10 parseos/0 chats · Plus 30/50/20 ·
       Pro 100/200/100). Se pueden ajustar desde `/admin/` sin deploy.
+      **Estado al 20-sep-2026:** la key ya está en el servicio como el secreto `gemini-api-key`
+      y las cuotas por plan quedaron sembradas. La IA está **apagada a propósito** desde el admin
+      (*Common → Interruptores de módulos → `ai`*) mientras se definen precios; ese interruptor corta el
+      gasto en el servidor (`services.run()` lo consulta), no sólo esconde los botones. Para
+      volver a encenderla hace falta **crédito de prepago** en AI Studio: sin saldo la API
+      responde 402 (*prepayment credits are depleted*), y con el saldo agotado también corta
+      el gasto. Los modelos son de la serie 3 (`apps/ai/pricing.py`): los 2.5 devuelven 404 para
+      cuentas nuevas aunque figuren en la lista de modelos. Al encender la IA, mergear el
+      borrador de la política de privacidad (`moneyapp`, sección "Inteligencia artificial").
+      **Ojo con `budget-admin`:** su imagen no se sincronizaba con los deploys, así que la
+      primera vez sembró los planes *sin* las claves de IA; ya se sincroniza (ver
+      `deploy.yml`).
 - [ ] **Importación por correo bancario.** Necesita tres cosas y hoy no anda sin ellas:
       1. `INBOUND_EMAIL_DOMAIN` + ruta *inbound* en Mailgun (o similar) apuntando al webhook,
          con sus registros MX en el DNS.
