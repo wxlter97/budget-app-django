@@ -18,7 +18,15 @@ from rest_framework.response import Response
 from apps.common.api import HasWorkspaceMembership
 
 from . import services
-from .models import Bank, CardProduct, CategoryType, LoyaltyCategoryRate, LoyaltyEarning, LoyaltyProgram
+from .models import (
+    Bank,
+    CardProduct,
+    CategoryType,
+    LoyaltyCategoryRate,
+    LoyaltyEarning,
+    LoyaltyProgram,
+    Merchant,
+)
 
 
 class IsAdminOrReadOnly(IsAuthenticated):
@@ -65,11 +73,45 @@ class CategoryTypeViewSet(viewsets.ModelViewSet):
         instance.soft_delete()
 
 
+class MerchantSerializer(serializers.ModelSerializer):
+    """`aliases` viaja como lista: es lo que el front necesita para reconocer
+    el comercio en la descripción mientras se escribe (misma regla que
+    `services.match_merchant`)."""
+
+    aliases = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Merchant
+        fields = ("id", "name", "category_type", "aliases", "created_at", "updated_at")
+        read_only_fields = ("id", "aliases", "created_at", "updated_at")
+
+    def get_aliases(self, obj) -> list[str]:
+        return obj.alias_list
+
+
+class MerchantViewSet(viewsets.ModelViewSet):
+    serializer_class = MerchantSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    queryset = Merchant.objects.all()
+
+    def perform_destroy(self, instance):
+        instance.soft_delete()
+
+
 class LoyaltyCategoryRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = LoyaltyCategoryRate
-        fields = ("id", "program", "category_type", "rate", "weekday")
+        fields = ("id", "program", "category_type", "merchant", "rate", "weekday")
         read_only_fields = ("id",)
+
+    def validate(self, attrs):
+        # En un PATCH parcial, lo que no viene se toma de la instancia.
+        current = self.instance
+        category_type = attrs.get("category_type", getattr(current, "category_type", None))
+        merchant = attrs.get("merchant", getattr(current, "merchant", None))
+        if (category_type is None) == (merchant is None):
+            raise serializers.ValidationError("Indicá un rubro o un comercio, no los dos ni ninguno.")
+        return attrs
 
 
 class LoyaltyCategoryRateViewSet(viewsets.ModelViewSet):

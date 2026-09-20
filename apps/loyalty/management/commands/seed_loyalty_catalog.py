@@ -14,7 +14,14 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from apps.loyalty import catalog
-from apps.loyalty.models import Bank, CardProduct, CategoryType, LoyaltyCategoryRate, LoyaltyProgram
+from apps.loyalty.models import (
+    Bank,
+    CardProduct,
+    CategoryType,
+    LoyaltyCategoryRate,
+    LoyaltyProgram,
+    Merchant,
+)
 
 
 def _dec(value) -> Decimal:
@@ -54,6 +61,14 @@ class Command(BaseCommand):
             for slug, name in catalog.CATEGORY_TYPES:
                 types[slug] = _upsert(CategoryType, {"slug": slug}, {"name": name}, counts, "rubros")
 
+            merchants = {}
+            for name, slug, aliases in catalog.MERCHANTS:
+                merchants[name] = _upsert(
+                    Merchant, {"name": name},
+                    {"category_type": types[slug], "aliases": "\n".join(aliases)},
+                    counts, "comercios",
+                )
+
             for bank_name, old, new in catalog.RENAMES:
                 product = CardProduct.all_objects.filter(bank__name=bank_name, name=old).first()
                 clash = CardProduct.all_objects.filter(bank__name=bank_name, name=new).exists()
@@ -70,7 +85,7 @@ class Command(BaseCommand):
                         {"network": item["network"]}, counts, "productos",
                     )
                     for spec in item["programs"]:
-                        self._program(product, spec, types, counts)
+                        self._program(product, spec, types, merchants, counts)
 
             if options["dry_run"]:
                 transaction.set_rollback(True)
@@ -80,7 +95,7 @@ class Command(BaseCommand):
             self.stdout.write(f"  {label}: {counts[label]}")
         self.stdout.write(self.style.SUCCESS(f"{prefix}Catálogo de lealtad listo."))
 
-    def _program(self, product, spec, types, counts):
+    def _program(self, product, spec, types, merchants, counts):
         program = (
             LoyaltyProgram.all_objects.filter(card_product=product, kind=spec["kind"])
             .order_by("created_at")
@@ -116,6 +131,14 @@ class Command(BaseCommand):
             weekday = rate[2] if len(rate) > 2 else None
             _upsert(
                 LoyaltyCategoryRate,
-                {"program": program, "category_type": types[slug], "weekday": weekday},
+                {"program": program, "category_type": types[slug], "merchant": None, "weekday": weekday},
                 {"rate": _dec(value)}, counts, "tasas",
+            )
+        for rate in spec["merchants"]:
+            name, value = rate[0], rate[1]
+            weekday = rate[2] if len(rate) > 2 else None
+            _upsert(
+                LoyaltyCategoryRate,
+                {"program": program, "category_type": None, "merchant": merchants[name], "weekday": weekday},
+                {"rate": _dec(value)}, counts, "tasas de comercio",
             )

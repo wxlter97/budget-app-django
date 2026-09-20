@@ -14,9 +14,9 @@ Convenciones (las mismas de `LoyaltyProgram`):
   como en `date.weekday()`: 0 = lunes … 6 = domingo.
 
 Lo que a propósito NO está (no cabe en el modelo o no se pudo verificar):
-- beneficios de un solo comercio (Walmart, Súper Selectos, PriceSmart, Tigo,
-  Farmacias San Nicolás, millas al comprar en Avianca): el modelo da tasas por
-  rubro, y aplicarlas a todo el rubro sería mentir;
+- beneficios de un solo comercio de los que no está claro el alcance (Walmart
+  "7 % de ahorro", Tigo 20 %): los que sí están claros (Selectos, PriceSmart, San
+  Nicolás, Avianca) se cargan como tasa de comercio (`merchants=` en cada programa);
 - tarjetas cuyo sitio sólo dice "hasta N" o no publica la tasa;
 - Cuscatlán MultiPuntos, Davivienda por producto, Industrial (salvo Premium),
   ABANK y Apoyo Integral: sin datos verificables en su sitio.
@@ -50,6 +50,69 @@ CATEGORY_TYPES = [
     ("educacion", "Educación"),
 ]
 
+# (nombre, rubro, alias). Comercios que se reconocen en la descripción de una
+# transacción (el nombre también cuenta como alias). Sirven para dos cosas:
+# beneficios de un solo comercio y afinar el rubro de una categoría amplia
+# ("Comida" mezcla restaurantes con supermercados). Los alias se sacaron de lo que
+# de verdad se escribe en las transacciones; se agregan más desde el admin.
+MERCHANTS = [
+    ("Súper Selectos", "supermercado", ["selectos", "super selectos"]),
+    ("Walmart", "supermercado", ["wal mart", "walmart"]),
+    ("La Despensa de Don Juan", "supermercado", ["despensa", "despensa de don juan", "maxi despensa"]),
+    ("PriceSmart", "supermercado", ["price smart", "pricesmart"]),
+    ("Farmacias San Nicolás", "farmacia", ["san nicolas", "farmacia san nicolas"]),
+    ("Farmacias Económicas", "farmacia", ["farmacia economica", "farmacias economicas"]),
+    ("McDonald's", "comida-rapida", ["mc", "mcd", "mcdonalds", "mcdonald s"]),
+    ("Wendy's", "comida-rapida", ["wendys", "wendy s"]),
+    ("Pizza Hut", "comida-rapida", ["hut"]),
+    ("Pollo Campero", "comida-rapida", ["campero"]),
+    ("Panda Express", "comida-rapida", []),
+    ("Chipotle", "comida-rapida", []),
+    ("Shake Shack", "comida-rapida", []),
+    ("Raising Cane's", "comida-rapida", ["raising canes"]),
+    ("Denny's", "restaurantes", ["dennys", "denny s"]),
+    ("Starbucks", "restaurantes", []),
+    ("Cinemark", "cines", []),
+    ("Cinépolis", "cines", ["cinepolis"]),
+    ("Uber", "transporte", []),
+    ("Uber Eats", "delivery", []),
+    ("PedidosYa", "delivery", ["pedidos ya"]),
+    ("Netflix", "suscripciones", []),
+    ("Spotify", "suscripciones", []),
+    ("Disney+", "suscripciones", ["disney plus", "disney"]),
+    ("Avianca", "viajes", []),
+    # Sin gasolineras a propósito: un café en Puma o Shell se escribe con el nombre de
+    # la gasolinera y caería en el rubro gasolina. Para eso ya está la categoría Gasolina.
+    ("Amazon Prime", "suscripciones", ["prime video"]),
+    ("Amazon", "compras-en-linea", []),
+    ("Temu", "compras-en-linea", []),
+    ("Shein", "compras-en-linea", []),
+    ("AliExpress", "compras-en-linea", ["ali express"]),
+]
+
+# Categorías de un workspace (por nombre, sin importar mayúsculas ni tildes) ->
+# rubro. Sólo llena las que no tienen rubro todavía (`map_categories_to_rubros`).
+# Las que se dejaron fuera a propósito no tienen un rubro que les sirva:
+# Ahorro, Vivienda, Regalos, Ropa, Salud, Parking, Impuestos, Miscelánea…
+CATEGORY_TO_RUBRO = {
+    "agua": "agua",
+    "electricidad": "electricidad",
+    "gasolina": "gasolina",
+    "supermercado": "supermercado",
+    "restaurantes": "restaurantes",
+    # "Comida" mezcla restaurantes, comida rápida y súper: el rubro por defecto es
+    # restaurantes y el comercio reconocido en la descripción lo afina.
+    "comida": "restaurantes",
+    "suscripciones": "suscripciones",
+    "farmacia": "farmacia",
+    "educacion": "educacion",
+    "deporte": "gimnasio-deporte",
+    "telefono": "telefonia-internet",
+    "internet": "telefonia-internet",
+    "transporte": "transporte",
+    "transporte publico": "transporte",
+}
+
 # (banco, nombre anterior, nombre nuevo): productos que ya estaban cargados a mano
 # con otro nombre. Se renombran (no se crean de nuevo) para no perder las
 # tarjetas de los usuarios que ya los tienen asignados.
@@ -60,10 +123,12 @@ RENAMES = [
 ]
 
 
-def P(kind, default, name="", rates=(), point_value=None, active=True):
+def P(kind, default, name="", rates=(), point_value=None, active=True, merchants=()):
+    """`rates`: tasas por rubro; `merchants`: tasas de un solo comercio,
+    `(nombre del comercio, tasa)` o `(nombre, tasa, día)`."""
     return {
         "kind": kind, "name": name, "default": default, "rates": list(rates),
-        "point_value": point_value, "active": active,
+        "point_value": point_value, "active": active, "merchants": list(merchants),
     }
 
 
@@ -105,12 +170,14 @@ CATALOG = [
             prod("Tarjeta Sin Membresía Mastercard", "mastercard",
                  P("points", 0.5, PB, point_value=PB_VALUE)),
             prod("Tarjeta San Nicolás Mastercard", "mastercard",
-                 P("points", 1, PB, point_value=PB_VALUE)),
+                 P("points", 1, PB, point_value=PB_VALUE, merchants=[("Farmacias San Nicolás", 2)])),
             prod("Tarjeta Joven (crédito)", "other",
                  P("points", 0.5, PB, [(s, 3) for s in _JOVEN_3] + [(s, 2) for s in _JOVEN_2],
                    PB_VALUE)),
-            prod("Tarjeta Platinum LifeMiles Visa", "visa", P("points", 1, "LifeMiles")),
-            prod("Tarjeta Infinite LifeMiles Visa", "visa", P("points", 1, "LifeMiles")),
+            prod("Tarjeta Platinum LifeMiles Visa", "visa",
+                 P("points", 1, "LifeMiles", merchants=[("Avianca", 2)])),
+            prod("Tarjeta Infinite LifeMiles Visa", "visa",
+                 P("points", 1, "LifeMiles", merchants=[("Avianca", 3)])),
             # --- débito: 1 punto por cada $2
             prod("Débito Clásica Mastercard", "mastercard", P("points", 0.5, PB, point_value=PB_VALUE)),
             prod("Débito Black Mastercard", "mastercard",
@@ -156,6 +223,15 @@ CATALOG = [
             prod("AAdvantage Amex Platinum", "amex", P("points", 1, "AAdvantage")),
             prod("AAdvantage Mastercard Dorada", "mastercard", P("points", 1, "AAdvantage")),
             prod("AAdvantage Mastercard Platinum", "mastercard", P("points", 1, "AAdvantage")),
+            # --- de un solo comercio
+            prod("Selectos Mastercard Clásica", "mastercard",
+                 P("cashback", 0, "Dólares Selectos", merchants=[("Súper Selectos", 0.07)])),
+            prod("Selectos Mastercard Dorada", "mastercard",
+                 P("cashback", 0, "Dólares Selectos", merchants=[("Súper Selectos", 0.07)])),
+            prod("Selectos Mastercard Platino", "mastercard",
+                 P("cashback", 0, "Dólares Selectos", merchants=[("Súper Selectos", 0.07)])),
+            prod("PriceSmart Visa", "visa",
+                 P("cashback", 0, "PriceCash", merchants=[("PriceSmart", 0.05)])),
             # --- puntos BAC: 1 por dólar
             prod("Mastercard Clásica", "mastercard", P("points", 1, "Puntos BAC")),
             prod("Mastercard Gold", "mastercard", P("points", 1, "Puntos BAC")),
@@ -176,6 +252,8 @@ CATALOG = [
             prod("UNO", "visa", P("discount", 0.06, "Descuento UNO")),
             prod("ePay", "mastercard", P("cashback", 0.01, "ePay")),
             prod("NIU", "visa"),
+            prod("Selectos", "other",
+                 P("discount", 0, "Descuento Selectos", merchants=[("Súper Selectos", 0.07)])),
             prod("PedidosYa", "visa",
                  P("cashback", 0, "Cashback PedidosYa",
                    [("delivery", 0.05), ("restaurantes", 0.05), ("comida-rapida", 0.05)])),

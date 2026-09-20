@@ -167,6 +167,20 @@ gcloud run jobs execute budget-admin --region us-east1 --wait
 
 Si un banco cambia una tasa, se edita `catalog.py` y se vuelve a correr.
 
+Después, asignar el rubro de lealtad a las categorías de los workspaces (sin rubro,
+una categoría no genera puntos ni cashback). Sólo llena las que no tienen uno, nunca
+pisa lo elegido a mano; `--recompute` calcula lo que habrían ganado los gastos ya
+existentes de esas categorías:
+
+```bash
+gcloud run jobs update budget-admin --region us-east1 \
+  --command python --args "manage.py,map_categories_to_rubros,--dry-run"
+gcloud run jobs execute budget-admin --region us-east1 --wait
+gcloud run jobs update budget-admin --region us-east1 \
+  --command python --args "manage.py,map_categories_to_rubros,--recompute"
+gcloud run jobs execute budget-admin --region us-east1 --wait
+```
+
 ### 2.4 Planes de billing (una sola vez, la primera vez que se activa)
 
 `seed_billing_plans` crea los planes Free/Pro -- correrlo es seguro en

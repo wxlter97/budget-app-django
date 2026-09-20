@@ -1,9 +1,39 @@
-"""Agregados de lealtad para el reporte del workspace (ver `api.py`)."""
+"""Agregados de lealtad para el reporte del workspace (ver `api.py`) y el
+reconocimiento de comercios en la descripción de una transacción."""
+import re
+import unicodedata
 from decimal import Decimal
 
 from django.db.models import Sum
 
-from .models import LoyaltyEarning, LoyaltyProgram
+from .models import LoyaltyEarning, LoyaltyProgram, Merchant
+
+
+def normalize_text(text: str) -> str:
+    """Minúsculas, sin tildes y con todo lo que no sea letra o número como un
+    espacio: "McDonald's — Metrocentro" -> "mcdonald s metrocentro". La misma
+    regla vive en el front (`lib/loyaltyRate.ts`); si se cambia una, la otra."""
+    stripped = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", stripped.lower()).strip()
+
+
+def match_merchant(description: str, merchants=None):
+    """El comercio (`Merchant`) que aparece en la descripción, o `None`.
+
+    Un alias cuenta sólo como palabra(s) completa(s) (así "mc" no dispara con
+    "mcdonalds" ni "uno" con "alguno"); si varios coinciden gana el alias más
+    largo ("uber eats" antes que "uber"). `merchants` permite pasar la lista ya
+    cargada cuando se reconocen muchas descripciones seguidas."""
+    text = f" {normalize_text(description)} "
+    if not text.strip():
+        return None
+    best, best_len = None, 0
+    for merchant in merchants if merchants is not None else Merchant.objects.all():
+        for alias in merchant.alias_list:
+            needle = normalize_text(alias)
+            if len(needle) > best_len and f" {needle} " in text:
+                best, best_len = merchant, len(needle)
+    return best
 
 
 def points_balances(workspace) -> list[dict]:
