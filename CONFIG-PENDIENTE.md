@@ -75,7 +75,7 @@
       Pro 100/200/100). Se pueden ajustar desde `/admin/` sin deploy.
       **Estado al 20-sep-2026:** la key ya está en el servicio como el secreto `gemini-api-key`
       y las cuotas por plan quedaron sembradas. La IA está **apagada a propósito** desde el admin
-      (*Common → Module flags → `ai`*) mientras se definen precios; ese interruptor corta el
+      (*Common → Interruptores de módulos → `ai`*) mientras se definen precios; ese interruptor corta el
       gasto en el servidor (`services.run()` lo consulta), no sólo esconde los botones. Para
       volver a encenderla hace falta **crédito de prepago** en AI Studio: sin saldo la API
       responde 402 (*prepayment credits are depleted*), y con el saldo agotado también corta
