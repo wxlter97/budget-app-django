@@ -167,6 +167,13 @@ class Transaction(BaseModel):
     # `loyalty.LoyaltyCategoryRate.requires_autopay`). No se puede deducir de la
     # descripción, así que lo marca quien registra el gasto.
     is_autopay = models.BooleanField("cargo automático", default=False)
+    # Comercio con beneficio de la tarjeta ("¿fue en Súper Selectos?"), elegido por quien
+    # registra el gasto. Gana al que se reconoce en la descripción: no depende de cómo
+    # se haya escrito el nombre (ver `loyalty.services.match_merchant`).
+    merchant = models.ForeignKey(
+        "loyalty.Merchant", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name="comercio",
+    )
     is_refundable = models.BooleanField(default=False)
     # De sólo lectura para el cliente (ver `TransactionSerializer`):
     # HALLAZGO real -- hasta acá era un boolean que cualquiera podía

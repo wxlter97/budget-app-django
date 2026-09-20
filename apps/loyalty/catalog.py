@@ -1,11 +1,12 @@
 """
 Catálogo de lealtad de los bancos de El Salvador, como datos.
 
-Lo carga `manage.py seed_loyalty_catalog` (repetible: actualiza lo que ya está y
-crea lo que falta, no duplica). Fuentes: las páginas públicas de cada banco,
-leídas en septiembre de 2026; las tasas cambian, así que si un banco las cambia
-se edita ACÁ y se vuelve a correr el comando (o desde el admin, que gana hasta la
-próxima corrida).
+Lo carga `manage.py seed_loyalty_catalog`. **El admin es la fuente de verdad**: el
+comando sólo crea lo que falta y nunca pisa lo que ya existe (salvo con `--actualizar`,
+a propósito). Por eso este archivo es la carga inicial y el lugar donde se agregan
+tarjetas, comercios o tasas NUEVAS para instalaciones nuevas; si un banco cambia una
+tasa de una tarjeta que ya está cargada, se corrige desde el admin (Lealtad), sin
+deploy. Fuentes: las páginas públicas de cada banco, leídas en septiembre de 2026.
 
 Convenciones (las mismas de `LoyaltyProgram`):
 - puntos y millas: unidades por dólar (`2` = "2 puntos por $1"; `0.5` = "1 por $2").

@@ -151,10 +151,11 @@ gcloud run jobs execute budget-admin --region us-east1 --wait
 
 ### 2.3b Catálogo de lealtad (bancos, tarjetas, tasas)
 
-`seed_loyalty_catalog` carga los bancos, las tarjetas y sus programas de puntos,
-cashback y descuento de `apps/loyalty/catalog.py`. Es idempotente (actualiza lo
-que ya está, no duplica ni borra) y tiene `--dry-run`. Primero en simulación, y
-después de revisarla, de verdad:
+**El admin (Lealtad) es la fuente de verdad** del catálogo: bancos, tarjetas, programas,
+tasas, comercios y alias se agregan y se corrigen ahí, sin deploy. `seed_loyalty_catalog`
+carga `apps/loyalty/catalog.py` y por defecto **sólo crea lo que falta**: nunca modifica,
+revive ni borra lo que ya existe, así que correrlo de nuevo no deshace nada hecho en el
+admin. Tiene `--dry-run`.
 
 ```bash
 gcloud run jobs update budget-admin --region us-east1 \
@@ -165,7 +166,12 @@ gcloud run jobs update budget-admin --region us-east1 \
 gcloud run jobs execute budget-admin --region us-east1 --wait
 ```
 
-Si un banco cambia una tasa, se edita `catalog.py` y se vuelve a correr.
+`--actualizar` es la excepción deliberada: pisa lo existente con lo de `catalog.py`, revive
+lo borrado y renombra los productos que se habían cargado a mano con otro nombre
+(`RENAMES`). Sirve **una vez**, para la primera carga sobre datos que tenían errores (p. ej.
+la tarjeta UNO con 6 % de descuento en todo, o EconoMía con 5 % de tasa base), o para
+restaurar el catálogo entero. Pisa las correcciones hechas en el admin; córrelo primero
+con `--dry-run` y sólo sabiéndolo.
 
 Después, tres pasos, siempre primero con `--dry-run`:
 
