@@ -445,6 +445,7 @@ Restaurar desde un volcado: `RUNBOOK.md` §9.
 ```bash
 gcloud run jobs deploy budget-cron \
   --source . --region us-east1 \
+  --max-retries 1 \
   --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
   --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0,GS_BUCKET_NAME=budget-recibos-prod" \
   --command python \
@@ -454,6 +455,10 @@ gcloud run jobs deploy budget-cron \
 
 gcloud run jobs execute budget-cron --region us-east1 --wait   # probarlo a mano una vez
 ```
+
+`--max-retries 1`: con el valor por defecto (3), si sólo falla el backup los
+reintentos rehacen los pasos 1 a 4 (recurrentes, cierres, recordatorios) en vano.
+Un reintento cubre un fallo transitorio de red sin repetir todo tres veces.
 
 > **Un Job no se redespliega solo.** Este comando fija una imagen y ahí se
 > queda, mientras la base sigue migrando en cada arranque del servicio. En

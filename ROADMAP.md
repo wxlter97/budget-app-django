@@ -39,18 +39,18 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 |---|---|---|---|
 | 0.1 | **`GS_BUCKET_NAME`** — sin esto los recibos se borran en cada deploy | 🧑 | 20 min |
 | 0.2 | **Cloud Scheduler + Job `budget-cron`** — sin esto no corre nada diario (recordatorios, recurrentes, insights) y no hay error que avise | 🧑 | 30 min |
-| 0.3 | **Endpoint *pooled* de Neon** en `DATABASE_URL` (`common.W002` lo avisa al arrancar). El host ya es `-pooler` en producción (verificado el 19-sep-2026); falta confirmar `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True` en el servicio | 🧑 | 5 min |
+| 0.3 | ~~**Endpoint *pooled* de Neon** en `DATABASE_URL`~~ — **hecho** (verificado el 20-sep-2026): el host es `-pooler` y el servicio y el job tienen `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True` | 🧑 ✅ | — |
 | 0.4 | **`CACHE_URL`** con Redis de Upstash — el throttling no es correcto con más de una instancia (`common.W001`). Producción corre con `maxScale: 1` (verificado el 19-sep-2026), así que **no hace falta hasta subir el máximo** | 🧑 | 30 min |
 | 0.5 | **Mover el front a Cloudflare Pages** — Hobby no permite uso comercial. Confirmar primero dónde está la zona DNS (`DEPLOY.md` §3-C). El `public/_redirects` del rewrite SPA **ya está en el repo**, así que del lado del código no queda nada | 🧑 | 1–2 h |
-| 0.6 | **Job `budget-migrate` + `RUN_MIGRATIONS=0`** — saca la carrera de migraciones entre instancias y acelera el arranque en frío (`DEPLOY.md` §2.2) | 🧑 | 30 min |
+| 0.6 | ~~**Job `budget-migrate` + `RUN_MIGRATIONS=0`**~~ — **hecho** (20-sep-2026): el job existe, el servicio tiene `RUN_MIGRATIONS=0` y `deploy.yml` migra antes de mover el tráfico (`DEPLOY.md` §2.2). Regla que trae: nunca borrar ni renombrar una columna en el mismo release que deja de usarla | 🧑 ✅ | — |
 | 0.7 | **Sentry** en los dos repos — hasta que esté, los errores de producción sólo se ven si alguien los cuenta | 🧑 | 30 min |
 | 0.8 | ~~**Backups**: `pg_dump` a GCS desde el job diario~~ — **hecho**: `manage.py backup_database` corre al final de `run_daily_tasks` y `RUNBOOK.md` §9 tiene la restauración. Se activa solo cuando exista el bucket de 0.1. Ojo: hasta el 19-sep-2026 no produjo ni un volcado, porque la imagen traía `pg_dump` 17 y Neon corre 18.6 (`server version mismatch`); arreglado instalando el cliente desde PGDG (`ARG PG_CLIENT_MAJOR` del Dockerfile) | 🤖 ✅ | — |
 | 0.9 | **Ping de keepalive** del Scheduler, opcional pero se nota (`DEPLOY.md` §6.3) | 🧑 | 15 min |
 | 0.10 | **Correo saliente (Mailgun)** — sin esto las invitaciones a workspace no llegan; incluye DNS y esperar propagación | 🧑 | 2–3 h |
-| 0.11 | **Push web (VAPID)**: `manage.py generate_vapid_keys` | 🧑 | 15 min |
+| 0.11 | ~~**Push web (VAPID)**~~ — **hecho** (20-sep-2026): las claves estaban en el servicio desde el 14-sep y ahora también en el job `budget-cron`, que es quien manda los recordatorios diarios | 🧑 ✅ | — |
 | 0.12 | **`SUPPORT_WEBHOOK_URL`** (Discord) para que los tickets avisen | 🧑 | 10 min |
-| 0.13 | **Alerta de fallo del job `budget-cron`** — hoy un job caído sólo se ve si alguien mira la consola de Cloud Run (el backup estuvo roto sin que nada avisara). Alerta de Cloud Monitoring sobre ejecuciones fallidas, al mismo canal que 0.12 | 🧑 | 20 min |
-| 0.14 | **Reintentos del job diario** (opcional) — con el valor por defecto (3), si falla sólo el backup los reintentos rehacen los pasos 1 a 4 en vano. Bajar `--max-retries` o mover el backup a su propio job | 🧑 | 15 min |
+| 0.13 | ~~**Alerta de fallo del job `budget-cron`**~~ — **hecho** (20-sep-2026): política `budget-cron: ejecución fallida` (`infra/alerta-job-fallido.json`) con canal de correo. Confirmar en Monitoring que el canal figura como verificado | 🧑 ✅ | — |
+| 0.14 | ~~**Reintentos del job diario**~~ — **hecho** (20-sep-2026): `--max-retries 1` en `budget-cron` (antes 3: si fallaba sólo el backup se rehacían los pasos 1 a 4 en vano) | 🧑 ✅ | — |
 
 **Subtotal: ~1.5 jornadas**, casi todas tuyas. 0.1 a 0.5 son el mínimo real para abrir.
 
