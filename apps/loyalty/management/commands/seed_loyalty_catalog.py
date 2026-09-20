@@ -1,12 +1,22 @@
 """Carga el catálogo de lealtad de los bancos de El Salvador (`apps/loyalty/catalog.py`).
 
-Se puede correr las veces que haga falta: lo que ya existe se actualiza y lo que
-falta se crea. No borra nada (ni bancos, ni productos, ni tasas que no estén en
-el catálogo); los productos renombrados (`RENAMES`) conservan su id, así que las
-carteras que ya los tienen asignados no se pierden.
+**El admin es la fuente de verdad.** Por defecto este comando sólo CREA lo que
+falta (bancos, tarjetas, programas, tasas, comercios) y **nunca modifica, revive ni
+borra** lo que ya existe: si alguien corrigió una tasa, renombró una tarjeta o
+eliminó un comercio desde el admin, correr el comando otra vez no lo deshace. Es
+seguro correrlo las veces que haga falta, p. ej. para recibir las tarjetas nuevas que
+se agreguen a `catalog.py`.
 
-    manage.py seed_loyalty_catalog --dry-run   # muestra qué haría y no guarda nada
-    manage.py seed_loyalty_catalog
+`--actualizar` es la excepción, deliberada y explícita: pisa lo existente con lo que
+dice `catalog.py` (valores, nombres, compra mínima…), revive lo que se había borrado y
+aplica los `RENAMES`. Sirve para la primera carga sobre datos que se habían escrito a
+mano con errores, o para restaurar el catálogo entero. Pisa correcciones hechas en
+el admin: usarlo sólo sabiéndolo.
+
+    manage.py seed_loyalty_catalog --dry-run               # qué crearía; no guarda nada
+    manage.py seed_loyalty_catalog                         # crea lo que falta
+    manage.py seed_loyalty_catalog --actualizar --dry-run  # qué pisaría
+    manage.py seed_loyalty_catalog --actualizar
 """
 from decimal import Decimal
 
@@ -29,13 +39,17 @@ def _dec(value) -> Decimal:
     return Decimal(str(value))
 
 
-def _upsert(model, lookup: dict, defaults: dict, counts: dict, label: str):
-    """`update_or_create` que además cuenta creados/actualizados y revive filas
-    borradas (soft delete): si no, chocarían con las constraints de unicidad."""
+def _upsert(model, lookup: dict, defaults: dict, counts: dict, label: str, overwrite: bool):
+    """Crea la fila si no existe. Si ya existe (aunque esté borrada), la deja como
+    está, salvo con `overwrite`, que la actualiza y la revive (las filas borradas
+    con soft delete chocarían con las constraints de unicidad si se recrearan)."""
     obj = model.all_objects.filter(**lookup).first()
     if obj is None:
         counts[label + " creados"] = counts.get(label + " creados", 0) + 1
         return model.all_objects.create(**lookup, **defaults)
+    if not overwrite:
+        counts[label + " existentes (sin tocar)"] = counts.get(label + " existentes (sin tocar)", 0) + 1
+        return obj
     changed = obj.is_deleted
     for field, value in defaults.items():
         if getattr(obj, field) != value:
@@ -53,36 +67,56 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--dry-run", action="store_true", help="No guarda nada; sólo informa.")
+        parser.add_argument(
+            "--actualizar", action="store_true",
+            help="Pisa lo existente con lo de catalog.py (y aplica los renombres). Ver la "
+            "docstring: pisa correcciones hechas en el admin.",
+        )
 
     def handle(self, *args, **options):
+        self.overwrite = options["actualizar"]
         counts: dict[str, int] = {}
         with transaction.atomic():
             types = {}
             for slug, name in catalog.CATEGORY_TYPES:
-                types[slug] = _upsert(CategoryType, {"slug": slug}, {"name": name}, counts, "rubros")
+                types[slug] = _upsert(
+                    CategoryType, {"slug": slug}, {"name": name}, counts, "rubros", self.overwrite
+                )
 
             merchants = {}
             for name, slug, aliases in catalog.MERCHANTS:
                 merchants[name] = _upsert(
                     Merchant, {"name": name},
                     {"category_type": types[slug] if slug else None, "aliases": "\n".join(aliases)},
-                    counts, "comercios",
+                    counts, "comercios", self.overwrite,
                 )
 
-            for bank_name, old, new in catalog.RENAMES:
-                product = CardProduct.all_objects.filter(bank__name=bank_name, name=old).first()
-                clash = CardProduct.all_objects.filter(bank__name=bank_name, name=new).exists()
-                if product and not clash:
-                    product.name = new
-                    product.save()
-                    counts["productos renombrados"] = counts.get("productos renombrados", 0) + 1
+            if self.overwrite:
+                for bank_name, old, new in catalog.RENAMES:
+                    product = CardProduct.all_objects.filter(bank__name=bank_name, name=old).first()
+                    clash = CardProduct.all_objects.filter(bank__name=bank_name, name=new).exists()
+                    if product and not clash:
+                        product.name = new
+                        product.save()
+                        counts["productos renombrados"] = counts.get("productos renombrados", 0) + 1
+            # Sin --actualizar no se renombra, pero tampoco se crea un duplicado de una tarjeta
+            # que ya existe con su nombre anterior (las carteras están asignadas a esa).
+            legacy = {(b, new): old for b, old, new in catalog.RENAMES}
 
             for entry in catalog.CATALOG:
-                bank = _upsert(Bank, {"name": entry["bank"]}, {}, counts, "bancos")
+                bank = _upsert(Bank, {"name": entry["bank"]}, {}, counts, "bancos", self.overwrite)
                 for item in entry["products"]:
+                    name = item["name"]
+                    old = legacy.get((entry["bank"], name))
+                    if (
+                        not self.overwrite and old
+                        and not CardProduct.all_objects.filter(bank=bank, name=name).exists()
+                        and CardProduct.all_objects.filter(bank=bank, name=old).exists()
+                    ):
+                        name = old
                     product = _upsert(
-                        CardProduct, {"bank": bank, "name": item["name"]},
-                        {"network": item["network"]}, counts, "productos",
+                        CardProduct, {"bank": bank, "name": name},
+                        {"network": item["network"]}, counts, "productos", self.overwrite,
                     )
                     for spec in item["programs"]:
                         self._program(product, spec, types, merchants, counts)
@@ -113,10 +147,10 @@ class Command(BaseCommand):
                 card_product=product, kind=spec["kind"], **defaults
             )
             counts["programas creados"] = counts.get("programas creados", 0) + 1
-        else:
+        elif self.overwrite:
             changed = program.is_deleted
             for field, value in defaults.items():
-                # No pisar un valor de canje puesto a mano si el catálogo no trae uno.
+                # No pisar un valor de canje o un mínimo puestos a mano si el catálogo no trae uno.
                 if field in ("point_value", "min_amount") and value is None:
                     continue
                 if getattr(program, field) != value:
@@ -126,6 +160,8 @@ class Command(BaseCommand):
                 program.is_deleted = False
                 program.save()
                 counts["programas actualizados"] = counts.get("programas actualizados", 0) + 1
+        else:
+            counts["programas existentes (sin tocar)"] = counts.get("programas existentes (sin tocar)", 0) + 1
 
         for rate in spec["rates"]:
             slug, value = rate[0], rate[1]
@@ -135,7 +171,7 @@ class Command(BaseCommand):
                 LoyaltyCategoryRate,
                 {"program": program, "category_type": types[slug], "merchant": None,
                  "weekday": weekday, "requires_autopay": autopay},
-                {"rate": _dec(value)}, counts, "tasas",
+                {"rate": _dec(value)}, counts, "tasas", self.overwrite,
             )
         for rate in spec["merchants"]:
             name, value = rate[0], rate[1]
@@ -144,5 +180,5 @@ class Command(BaseCommand):
                 LoyaltyCategoryRate,
                 {"program": program, "category_type": None, "merchant": merchants[name],
                  "weekday": weekday, "requires_autopay": False},
-                {"rate": _dec(value)}, counts, "tasas de comercio",
+                {"rate": _dec(value)}, counts, "tasas de comercio", self.overwrite,
             )

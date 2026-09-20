@@ -42,7 +42,8 @@ def _recompute(instance: Transaction) -> None:
     on = instance.date if isinstance(instance.date, date) else date.fromisoformat(str(instance.date))
     # El comercio reconocido en la descripción manda sobre la categoría: una
     # categoría "Comida" mezcla restaurantes con supermercados.
-    merchant = match_merchant(instance.description)
+    # Lo que eligió quien registró el gasto manda sobre lo que se deduce del texto.
+    merchant = instance.merchant if instance.merchant_id else match_merchant(instance.description)
     category_type = (merchant.category_type if merchant else None) or (
         instance.category.category_type if instance.category_id else None
     )

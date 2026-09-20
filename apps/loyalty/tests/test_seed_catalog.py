@@ -89,7 +89,7 @@ class SeedCommandTests(TestCase):
         LoyaltyProgram.objects.create(
             card_product=old_econ, kind="cashback", name="SUPERMERCADOS", default_rate="0.05"
         )
-        _seed()
+        _seed("--actualizar")
         old.refresh_from_db()
         self.assertEqual((old.name, old.network), ("American Express Blue", "amex"))
         # El programa existente se reutiliza, no se duplica.
@@ -116,7 +116,7 @@ class SeedCommandTests(TestCase):
         _seed()
         rate = LoyaltyCategoryRate.objects.filter(weekday=0).first()
         rate.soft_delete()
-        _seed()
+        _seed("--actualizar")
         rate.refresh_from_db()
         self.assertFalse(rate.is_deleted)
 
@@ -149,7 +149,89 @@ class CuscatlanUnoTests(TestCase):
         old = LoyaltyProgram.objects.create(
             card_product=product, kind="discount", name="Descuento UNO", default_rate="0.06"
         )
-        _seed()
+        _seed("--actualizar")
         old.refresh_from_db()
         self.assertEqual(str(old.default_rate), "0.0000")
         self.assertEqual(product.programs.filter(kind="discount").count(), 1)
+
+
+class AdminIsTheSourceOfTruthTests(TestCase):
+    """Por defecto el seed sólo crea lo que falta: nada de lo que se cambió desde el
+    admin se deshace al volver a correrlo."""
+
+    def setUp(self):
+        _seed()
+
+    def test_an_edited_rate_program_and_product_survive_a_second_run(self):
+        program = LoyaltyProgram.objects.get(
+            card_product__name="Tarjeta Dorada Visa", card_product__bank__name="Banco Agrícola"
+        )
+        program.default_rate = "3"
+        program.name = "Nombre del admin"
+        program.min_amount = "25"
+        program.save()
+        rate = LoyaltyCategoryRate.objects.get(program=program, category_type__slug="supermercado")
+        rate.rate = "9"
+        rate.save()
+        product = program.card_product
+        product.network = "mastercard"
+        product.save()
+
+        out = _seed()
+        program.refresh_from_db(); rate.refresh_from_db(); product.refresh_from_db()
+        self.assertEqual((str(program.default_rate), program.name, str(program.min_amount)),
+                         ("3.0000", "Nombre del admin", "25.00"))
+        self.assertEqual(str(rate.rate), "9.0000")
+        self.assertEqual(product.network, "mastercard")
+        self.assertIn("sin tocar", out)
+
+    def test_deleted_things_stay_deleted(self):
+        from apps.loyalty.models import Merchant
+
+        rate = LoyaltyCategoryRate.objects.filter(weekday=0).first()
+        rate.soft_delete()
+        merchant = Merchant.objects.get(name="Walmart")
+        merchant.soft_delete()
+        product = CardProduct.objects.get(name="Tarjeta Clásica Visa")
+        product.soft_delete()
+        counts = (CardProduct.all_objects.count(), Merchant.all_objects.count())
+
+        _seed()
+        rate.refresh_from_db(); merchant.refresh_from_db(); product.refresh_from_db()
+        self.assertTrue(rate.is_deleted and merchant.is_deleted and product.is_deleted)
+        # y tampoco se volvieron a crear con otro id
+        self.assertEqual(counts, (CardProduct.all_objects.count(), Merchant.all_objects.count()))
+
+    def test_new_entries_added_to_the_catalog_later_are_created(self):
+        from apps.loyalty.models import Merchant
+
+        Merchant.all_objects.filter(name="Walmart").delete()
+        CardProduct.all_objects.filter(name="Tarjeta Clásica Visa").delete()
+        _seed()
+        self.assertTrue(Merchant.objects.filter(name="Walmart").exists())
+        self.assertTrue(CardProduct.objects.filter(name="Tarjeta Clásica Visa").exists())
+
+    def test_a_card_with_its_old_name_is_not_duplicated_nor_renamed(self):
+        LoyaltyProgram.objects.all().delete()
+        CardProduct.all_objects.filter(name="Tarjeta Dorada Visa").delete()
+        bank = Bank.objects.get(name="Banco Agrícola")
+        old = CardProduct.objects.create(bank=bank, name="Tarjeta Oro", network="visa")
+        _seed()
+        self.assertFalse(CardProduct.objects.filter(name="Tarjeta Dorada Visa").exists())
+        old.refresh_from_db()
+        self.assertEqual(old.name, "Tarjeta Oro")
+        # pero sí se le cargan los programas que le faltaban
+        self.assertEqual(old.programs.count(), 1)
+
+    def test_actualizar_overwrites_on_purpose_and_dry_run_does_not_save(self):
+        program = LoyaltyProgram.objects.get(
+            card_product__name="Tarjeta Dorada Visa", card_product__bank__name="Banco Agrícola"
+        )
+        program.default_rate = "3"
+        program.save()
+        self.assertIn("SIMULACIÓN", _seed("--actualizar", "--dry-run"))
+        program.refresh_from_db()
+        self.assertEqual(str(program.default_rate), "3.0000")
+        _seed("--actualizar")
+        program.refresh_from_db()
+        self.assertEqual(str(program.default_rate), "1.0000")

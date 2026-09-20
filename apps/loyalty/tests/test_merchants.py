@@ -320,3 +320,57 @@ class RecomputeAndDefaultMappingTests(APITestCase):
         self.assertFalse(LoyaltyEarning.objects.filter(transaction=txn).exists())
         call_command("recompute_loyalty_earnings", stdout=StringIO())
         self.assertEqual(LoyaltyEarning.objects.get(transaction=txn).points, Decimal("40.00"))
+
+
+class ChosenMerchantTests(MerchantSignalTests):
+    """El comercio que se elige al registrar el gasto no depende de cómo se escribió."""
+
+    def _spend_with(self, description, merchant):
+        txn = Transaction.objects.create(
+            wallet=self.card, category=self.food, amount=Decimal("100.00"),
+            date="2026-09-22", description=description, merchant=merchant,
+        )
+        return LoyaltyEarning.objects.filter(transaction=txn).first()
+
+    def test_a_chosen_merchant_earns_its_rate_whatever_the_description_says(self):
+        self.assertEqual(self._spend_with("el súper de la esquina", self.selectos).amount, Decimal("7.00"))
+        self.assertEqual(self._spend_with("", self.selectos).amount, Decimal("7.00"))
+
+    def test_the_chosen_merchant_wins_over_the_one_recognised_in_the_text(self):
+        other = Merchant.objects.create(name="Walmart", category_type=self.super, aliases="walmart")
+        # el texto dice Selectos (7 %), pero se eligió Walmart (sin tasa propia -> rubro súper, 3 %)
+        self.assertEqual(self._spend_with("selectos", other).amount, Decimal("3.00"))
+
+    def test_without_a_choice_the_text_still_recognises_it(self):
+        self.assertEqual(self._spend_with("Selectos", None).amount, Decimal("7.00"))
+
+    def test_deleting_the_merchant_keeps_the_transaction(self):
+        txn = Transaction.objects.create(
+            wallet=self.card, category=self.food, amount=Decimal("10.00"),
+            date="2026-09-22", merchant=self.selectos,
+        )
+        self.selectos.delete()
+        txn.refresh_from_db()
+        self.assertIsNone(txn.merchant)
+
+    def test_the_api_saves_and_returns_the_chosen_merchant(self):
+        from django.contrib.auth import get_user_model
+        from apps.workspaces.models import Membership
+
+        user = get_user_model().objects.create_user("ana", "ana@example.com", "pw")
+        Membership.objects.create(workspace=self.ws, user=user, role=Membership.ROLE_OWNER)
+        self.client.force_authenticate(user)
+        body = {"wallet": str(self.card.pk), "category": str(self.food.pk), "type": "expense",
+                "amount": "100.00", "date": "2026-09-22", "description": "compras",
+                "merchant": str(self.selectos.pk)}
+        res = self.client.post("/api/v1/transactions/", body, HTTP_X_WORKSPACE_ID=str(self.ws.pk))
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()["merchant"], str(self.selectos.pk))
+        self.assertEqual(LoyaltyEarning.objects.get(transaction_id=res.json()["id"]).amount, Decimal("7.00"))
+        # y se puede quitar al editar
+        res = self.client.patch(
+            f"/api/v1/transactions/{res.json()['id']}/", {"merchant": None},
+            HTTP_X_WORKSPACE_ID=str(self.ws.pk), format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIsNone(res.json()["merchant"])
