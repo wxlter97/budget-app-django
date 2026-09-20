@@ -20,6 +20,7 @@ monto de ANTES del descuento -- algo que ya no está en la transacción
 guardada (esta queda con el monto neto, a diferencia del cashback que no
 toca el monto de la compra).
 """
+from datetime import date
 from decimal import Decimal
 
 from django.db import models
@@ -141,14 +142,29 @@ class LoyaltyProgram(BaseModel):
     def __str__(self):
         return self.name or f"{self.card_product} ({self.get_kind_display()})"
 
-    def rate_for(self, category_type) -> Decimal:
-        """Tasa efectiva para un rubro: el override de `LoyaltyCategoryRate`
-        si existe, si no la `default_rate` del programa."""
+    def rate_for(self, category_type, on: date | None = None) -> Decimal:
+        """Tasa efectiva para un rubro (y, si se pasa, la fecha de la compra).
+
+        Gana la más específica: el override de `LoyaltyCategoryRate` para ese
+        rubro **y ese día de la semana**, luego el del rubro sin día, y si no
+        hay ninguno la `default_rate` del programa. Sin `on`, los overrides
+        que dependen del día no se consideran."""
         if category_type is not None:
-            override = self.category_rates.filter(category_type=category_type).first()
-            if override is not None:
-                return override.rate
+            overrides = list(self.category_rates.filter(category_type=category_type))
+            if on is not None:
+                for override in overrides:
+                    if override.weekday == on.weekday():
+                        return override.rate
+            for override in overrides:
+                if override.weekday is None:
+                    return override.rate
         return self.default_rate
+
+
+WEEKDAY_CHOICES = [
+    (0, "Lunes"), (1, "Martes"), (2, "Miércoles"), (3, "Jueves"),
+    (4, "Viernes"), (5, "Sábado"), (6, "Domingo"),
+]  # mismos números que `date.weekday()`
 
 
 class LoyaltyCategoryRate(BaseModel):
@@ -166,18 +182,33 @@ class LoyaltyCategoryRate(BaseModel):
         "tasa", max_digits=6, decimal_places=4,
         help_text="Mismo formato que la tasa default del programa (puntos por unidad, o fracción para cashback/descuento). Reemplaza la default sólo para este rubro.",
     )
+    weekday = models.PositiveSmallIntegerField(
+        "día de la semana (opcional)", null=True, blank=True, choices=WEEKDAY_CHOICES,
+        help_text="Si se indica, la tasa sólo aplica las compras hechas ese día (p. ej. 2 puntos los lunes en Supermercado). Vacío = todos los días. Gana a la tasa del rubro sin día.",
+    )
 
     class Meta:
         verbose_name = "tasa por rubro"
         verbose_name_plural = "tasas por rubro"
         constraints = [
+            # Una tasa por (programa, rubro, día). Dos constraints porque en
+            # Postgres los NULL no chocan entre sí: sin el segundo se podrían
+            # cargar dos tasas "todos los días" para el mismo rubro.
             models.UniqueConstraint(
-                fields=["program", "category_type"], name="unique_rate_per_program_category"
+                fields=["program", "category_type", "weekday"],
+                condition=models.Q(weekday__isnull=False),
+                name="unique_rate_per_program_category_weekday",
+            ),
+            models.UniqueConstraint(
+                fields=["program", "category_type"],
+                condition=models.Q(weekday__isnull=True),
+                name="unique_rate_per_program_category",
             ),
         ]
 
     def __str__(self):
-        return f"{self.program} · {self.category_type}: {self.rate}"
+        day = f" ({self.get_weekday_display()})" if self.weekday is not None else ""
+        return f"{self.program} · {self.category_type}{day}: {self.rate}"
 
 
 class LoyaltyEarning(BaseModel):

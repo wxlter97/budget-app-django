@@ -48,6 +48,46 @@ class LoyaltyProgramRateForTests(APITestCase):
     def test_no_category_type_uses_default(self):
         self.assertEqual(self.program.rate_for(None), Decimal("0.01"))
 
+    def test_weekday_rate_only_applies_that_day(self):
+        from datetime import date
+
+        LoyaltyCategoryRate.objects.create(
+            program=self.program, category_type=self.super_type, rate=Decimal("0.03")
+        )
+        LoyaltyCategoryRate.objects.create(
+            program=self.program, category_type=self.super_type, rate=Decimal("0.05"), weekday=0
+        )
+        monday, tuesday = date(2026, 9, 21), date(2026, 9, 22)
+        self.assertEqual(self.program.rate_for(self.super_type, monday), Decimal("0.05"))
+        # Otro día cae al override del rubro sin día, no al default del programa.
+        self.assertEqual(self.program.rate_for(self.super_type, tuesday), Decimal("0.03"))
+        # Sin fecha, el bono del día no cuenta.
+        self.assertEqual(self.program.rate_for(self.super_type), Decimal("0.03"))
+        # Otro rubro no se ve afectado.
+        self.assertEqual(self.program.rate_for(self.other_type, monday), Decimal("0.01"))
+
+    def test_weekday_rate_without_a_dayless_one_falls_back_to_default(self):
+        from datetime import date
+
+        LoyaltyCategoryRate.objects.create(
+            program=self.program, category_type=self.super_type, rate=Decimal("0.05"), weekday=0
+        )
+        self.assertEqual(self.program.rate_for(self.super_type, date(2026, 9, 22)), Decimal("0.01"))
+
+    def test_cannot_duplicate_a_rate_for_the_same_rubro_and_day(self):
+        from django.db import IntegrityError, transaction
+
+        for weekday in (None, 0):
+            LoyaltyCategoryRate.objects.create(
+                program=self.program, category_type=self.super_type, rate=Decimal("0.05"),
+                weekday=weekday,
+            )
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                LoyaltyCategoryRate.objects.create(
+                    program=self.program, category_type=self.super_type, rate=Decimal("0.06"),
+                    weekday=weekday,
+                )
+
 
 class LoyaltyEarningSignalTests(APITestCase):
     """Puntos y cashback se generan/actualizan/borran solos con la
@@ -80,6 +120,20 @@ class LoyaltyEarningSignalTests(APITestCase):
         return Transaction.objects.create(
             wallet=self.card, category=self.cat, amount=Decimal(amount), date="2026-09-01",
         )
+
+    def test_weekday_bonus_is_applied_by_the_transaction_date(self):
+        LoyaltyCategoryRate.objects.create(
+            program=self.points, category_type=self.super_type, rate=Decimal("4"), weekday=0
+        )
+        monday = Transaction.objects.create(
+            wallet=self.card, category=self.cat, amount=Decimal("100.00"), date="2026-09-21",
+        )
+        tuesday = Transaction.objects.create(
+            wallet=self.card, category=self.cat, amount=Decimal("100.00"), date="2026-09-22",
+        )
+        points = lambda t: LoyaltyEarning.objects.get(transaction=t, kind="points").points
+        self.assertEqual(points(monday), Decimal("400.00"))
+        self.assertEqual(points(tuesday), Decimal("200.00"))
 
     def test_creates_points_and_cashback_with_category_override(self):
         txn = self._spend("100.00")
