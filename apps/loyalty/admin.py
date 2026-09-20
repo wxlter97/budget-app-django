@@ -2,12 +2,22 @@ from django.contrib import admin
 
 from apps.common.admin import BaseModelAdmin
 
-from .models import Bank, CardProduct, CategoryType, LoyaltyCategoryRate, LoyaltyEarning, LoyaltyProgram
+from .models import (
+    Bank,
+    CardProduct,
+    CategoryType,
+    LoyaltyCategoryRate,
+    LoyaltyEarning,
+    LoyaltyProgram,
+    Merchant,
+)
 
 
 class LoyaltyCategoryRateInline(admin.TabularInline):
     model = LoyaltyCategoryRate
     extra = 1
+    fields = ("category_type", "merchant", "weekday", "rate")
+    autocomplete_fields = ("merchant",)
 
 
 class LoyaltyProgramInline(admin.TabularInline):
@@ -39,6 +49,16 @@ class CategoryTypeAdmin(BaseModelAdmin):
     list_display = ("name", "slug", "icon")
     search_fields = ("name", "slug")
     prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(Merchant)
+class MerchantAdmin(BaseModelAdmin):
+    """Los alias son lo que se busca en la descripción de la transacción (uno
+    por línea, sin importar mayúsculas ni tildes, y como palabra completa)."""
+
+    list_display = ("name", "category_type")
+    list_filter = ("category_type",)
+    search_fields = ("name", "aliases")
 
 
 @admin.register(CardProduct)
@@ -74,10 +94,10 @@ class LoyaltyCategoryRateAdmin(BaseModelAdmin):
     programa → Tasas por rubro) -- este listado es sólo para verlas todas
     juntas de un vistazo, sin entrar programa por programa."""
 
-    list_display = ("program", "category_type", "weekday", "rate")
+    list_display = ("program", "category_type", "merchant", "weekday", "rate")
     list_filter = ("category_type", "weekday")
-    search_fields = ("program__name", "category_type__name")
-    raw_id_fields = ("program", "category_type")
+    search_fields = ("program__name", "category_type__name", "merchant__name")
+    raw_id_fields = ("program", "category_type", "merchant")
 
 
 @admin.register(LoyaltyEarning)

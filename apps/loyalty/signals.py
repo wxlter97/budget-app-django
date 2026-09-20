@@ -20,6 +20,7 @@ from django.dispatch import receiver
 from apps.transactions.models import Transaction
 
 from .models import LoyaltyEarning, LoyaltyProgram
+from .services import match_merchant
 
 _AUTO_KINDS = (LoyaltyProgram.KIND_POINTS, LoyaltyProgram.KIND_CASHBACK)
 
@@ -34,19 +35,25 @@ def _recompute(instance: Transaction) -> None:
         return
 
     card_product_id = instance.wallet.card_product_id
-    category_type = instance.category.category_type if instance.category_id else None
-    if not card_product_id or category_type is None:
+    if not card_product_id:
         return
-
     # Recién creada con `objects.create(date="2026-09-01")` la fecha sigue siendo
     # el texto que se le pasó, no un `date`.
     on = instance.date if isinstance(instance.date, date) else date.fromisoformat(str(instance.date))
+    # El comercio reconocido en la descripción manda sobre la categoría: una
+    # categoría "Comida" mezcla restaurantes con supermercados.
+    merchant = match_merchant(instance.description)
+    category_type = (merchant.category_type if merchant else None) or (
+        instance.category.category_type if instance.category_id else None
+    )
+    if category_type is None and merchant is None:
+        return
 
     programs = LoyaltyProgram.objects.filter(
         card_product_id=card_product_id, is_active=True, kind__in=_AUTO_KINDS
-    )
+    ).prefetch_related("category_rates")
     for program in programs:
-        rate = program.rate_for(category_type, on)
+        rate = program.rate_for(category_type, on, merchant)
         if not rate:
             continue
         earned = (instance.amount * rate).quantize(Decimal("0.01"))
