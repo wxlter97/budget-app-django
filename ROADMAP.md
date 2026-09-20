@@ -40,7 +40,7 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 | 0.1 | **`GS_BUCKET_NAME`** — sin esto los recibos se borran en cada deploy | 🧑 | 20 min |
 | 0.2 | **Cloud Scheduler + Job `budget-cron`** — sin esto no corre nada diario (recordatorios, recurrentes, insights) y no hay error que avise | 🧑 | 30 min |
 | 0.3 | **Endpoint *pooled* de Neon** en `DATABASE_URL` (`common.W002` lo avisa al arrancar). El host ya es `-pooler` en producción (verificado el 19-sep-2026); falta confirmar `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True` en el servicio | 🧑 | 5 min |
-| 0.4 | **`CACHE_URL`** con Redis de Upstash — el throttling ya no es correcto con 5 instancias (`common.W001`) | 🧑 | 30 min |
+| 0.4 | **`CACHE_URL`** con Redis de Upstash — el throttling no es correcto con más de una instancia (`common.W001`). Producción corre con `maxScale: 1` (verificado el 19-sep-2026), así que **no hace falta hasta subir el máximo** | 🧑 | 30 min |
 | 0.5 | **Mover el front a Cloudflare Pages** — Hobby no permite uso comercial. Confirmar primero dónde está la zona DNS (`DEPLOY.md` §3-C). El `public/_redirects` del rewrite SPA **ya está en el repo**, así que del lado del código no queda nada | 🧑 | 1–2 h |
 | 0.6 | **Job `budget-migrate` + `RUN_MIGRATIONS=0`** — saca la carrera de migraciones entre instancias y acelera el arranque en frío (`DEPLOY.md` §2.2) | 🧑 | 30 min |
 | 0.7 | **Sentry** en los dos repos — hasta que esté, los errores de producción sólo se ven si alguien los cuenta | 🧑 | 30 min |

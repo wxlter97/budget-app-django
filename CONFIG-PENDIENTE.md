@@ -43,6 +43,12 @@
       y se reinician en cada deploy. Al arrancar el contenedor, el check `common.W001` lo avisa
       en los logs. Memorystore son ~$35/mes de más: alcanza Redis de Upstash o la tabla de cache
       de Django en Postgres.
+      **Hoy no hace falta:** producción corre con `maxScale: 1` (verificado el 19-sep-2026), o
+      sea una sola instancia, y ahí el throttling en memoria cuenta bien. Lo único que se pierde
+      es la cuenta en cada deploy o al escalar a cero. Pasa a ser necesario **el día que se suba
+      el máximo de instancias**; hasta entonces `common.W001` es ruido. `CACHE_URL` lleva la URL
+      completa con contraseña: va como secreto (`--set-secrets CACHE_URL=cache-url:latest`),
+      nunca como variable en claro.
 - [ ] **Endpoint *pooled* de Neon en `DATABASE_URL`.** Con `DJANGO_DB_CONN_MAX_AGE=0` se abre una
       conexión por request; contra el endpoint directo, las conexiones topan antes que el CPU en
       cuanto hay más de una instancia. Host con `-pooler` +
@@ -102,6 +108,12 @@ aviso *fuera* de la app.
 - [ ] **Push en navegador (VAPID).** `manage.py generate_vapid_keys` y pegar
       `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`. Vacío = se omiten los pushes
       a navegadores. Es el que más rinde hoy, porque la app en producción es la web.
+      **Estado al 19-sep-2026:** las tres variables ya están en el *servicio* (desde el 14-sep,
+      la privada como secreto `vapid-private-key`) pero **no en el job `budget-cron`**, que es
+      quien manda los recordatorios diarios: por eso sus logs dicen "Push web sin VAPID
+      configurado". Falta pasárselas al job (`gcloud run jobs update budget-cron
+      --update-env-vars VAPID_PUBLIC_KEY=…,VAPID_SUBJECT=… --update-secrets
+      VAPID_PRIVATE_KEY=vapid-private-key:latest`).
 - [ ] **Push nativo (iOS/Android).** Falta `extra.eas.projectId` en el `app.json` de `moneyapp`
       (correr `eas init`), y después las credenciales de FCM para Android y de APNs para iOS
       (esto último requiere cuenta de Apple Developer, ~$99/año). Sin el `projectId` la app
@@ -112,7 +124,10 @@ aviso *fuera* de la app.
 
 - [ ] **Sentry.** `SENTRY_DSN` en el backend y `EXPO_PUBLIC_SENTRY_DSN` en el front. Vacío =
       ni se importa el SDK. Hasta que esté, los errores de producción sólo se ven si un
-      usuario te los cuenta.
+      usuario te los cuenta. **Estado al 19-sep-2026:** `SENTRY_DSN` ya está en el servicio
+      (secreto `sentry-dsn`, desde el 14-sep) pero no en el job `budget-cron`, así que los
+      fallos del job diario no llegan a Sentry. Se le pasa con `--update-secrets
+      SENTRY_DSN=sentry-dsn:latest`. Falta confirmar `EXPO_PUBLIC_SENTRY_DSN` en el front.
 - [ ] **Avisos de tickets de soporte.** `SUPPORT_WEBHOOK_URL` (webhook de un canal de Discord).
       Vacío = los tickets se guardan en la base pero nadie te avisa que entraron.
 - [ ] **Dashboard externo (Villa Wxlter).** `DASHBOARD_API_TOKEN` y `DASHBOARD_WORKSPACE_ID`.

@@ -65,7 +65,7 @@ gcloud run deploy "$SERVICE" \
   --concurrency 8 \
   --timeout 300 \
   --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
-  --set-env-vars "DJANGO_DEBUG=False,DJANGO_ALLOWED_HOSTS=.run.app,DJANGO_CSRF_TRUSTED_ORIGINS=https://*.run.app,DJANGO_DB_CONN_MAX_AGE=0,DJANGO_TIME_ZONE=${TZ},DJANGO_LANGUAGE_CODE=es"
+  --set-env-vars "DJANGO_DEBUG=False,DJANGO_ALLOWED_HOSTS=.run.app,DJANGO_CSRF_TRUSTED_ORIGINS=https://*.run.app,DJANGO_DB_CONN_MAX_AGE=0,DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True,DJANGO_TIME_ZONE=${TZ},DJANGO_LANGUAGE_CODE=es"
 
 echo
 echo "==> Listo. Ahora conectá CORS con la URL de Vercel (DEPLOY.md §4):"

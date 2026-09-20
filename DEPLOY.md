@@ -100,26 +100,40 @@ Comprobá:
 > La revisión rota que quedó del intento fallido no molesta: el próximo deploy
 > exitoso se lleva el tráfico.
 
-El servicio queda con `--max-instances 5`. Las migraciones corren al arrancar
+El script deja el servicio con `--max-instances 5`; **producción corre hoy con 1**
+(verificado el 19-sep-2026, se bajó a mano). Las migraciones corren al arrancar
 cada contenedor (`entrypoint.sh`), así que con varias instancias un deploy que
 trae migraciones puede dar unos 502 mientras la instancia que perdió la carrera
 reintenta. Para sacárselo de encima (y de paso acelerar el arranque en frío),
 migrar aparte y dejar al servicio sin migrar:
 
 ```bash
+# Una vez. --max-retries 0: una migración que falló no se reintenta sola.
 gcloud run jobs deploy budget-migrate \
   --source . --region us-east1 \
+  --max-retries 0 \
   --set-secrets "DJANGO_SECRET_KEY=django-secret-key:latest,DATABASE_URL=database-url:latest" \
   --set-env-vars "DJANGO_DEBUG=False,RUN_MIGRATIONS=0" \
   --command python --args "manage.py,migrate,--noinput"
+```
 
-# En cada release que traiga migraciones, antes del deploy:
-gcloud run jobs execute budget-migrate --region us-east1 --wait
+El workflow de deploy (`.github/workflows/deploy.yml`) ya lo usa: despliega la
+revisión **sin tráfico**, corre `budget-migrate` con esa misma imagen y sólo si
+sale bien le pasa el tráfico. Si `budget-migrate` no existe, se omite y migra el
+arranque del contenedor, como antes. Cuando el job exista y un deploy ya haya
+pasado por ahí, se apaga la migración al arrancar (una sola vez):
 
-# Y una vez, para que las instancias no vuelvan a migrar al arrancar:
+```bash
 gcloud run services update budget-api --region us-east1 \
   --update-env-vars "RUN_MIGRATIONS=0"
 ```
+
+Consecuencia que hay que tener presente: la migración corre **antes** de que el
+código nuevo reciba tráfico, así que la revisión vieja tiene que seguir andando
+contra el esquema nuevo durante esos minutos. Nunca borrar ni renombrar una
+columna en el mismo release que deja de usarla: primero se deja de usar, y en
+el release siguiente se borra. Es exactamente lo que rompió a `budget-cron`
+con la migración 0026.
 
 ### 2.3 Superusuario (solo para `/admin/`)
 
@@ -524,6 +538,33 @@ Ojo: `/healthz/` **no toca la base** (es un `JsonResponse` fijo, ver
 que es la mitad más grande del arranque en frío, igual. Para despertar también
 a Neon, apuntá el ping a un endpoint que consulte, por ejemplo
 `/api/v1/dashboard/balance/` con su `DASHBOARD_API_TOKEN` en un header.
+
+### 6.4 Alerta cuando el job diario falla
+
+Sin esto, un `budget-cron` caído sólo se ve si alguien abre la consola de Cloud
+Run. El backup estuvo roto (`server version mismatch`) sin que nada avisara.
+La política está versionada en `infra/alerta-job-fallido.json`; cómo crearla y
+qué cuenta como fallo, en `infra/README.md`. Se crea **sin canal**, y el aviso
+recién llega cuando le agregás uno:
+
+```bash
+# 1. Un canal (correo, por ejemplo) -- una sola vez
+gcloud beta monitoring channels create \
+  --display-name="Avisos budget" --type=email \
+  --channel-labels=email_address=TU_CORREO
+
+# 2. Ver su id y colgárselo a la política
+gcloud beta monitoring channels list --format="table(name,displayName)"
+gcloud alpha monitoring policies update POLITICA_ID \
+  --add-notification-channels=CANAL_ID
+```
+
+`gcloud alpha/beta monitoring` pide instalar componentes; la alternativa sin
+instalar nada es la API REST (`infra/README.md`) o la consola: Monitoring →
+Alerting → *Edit notification channels*.
+
+Un job que **no llegó a correr** (Scheduler roto) no dispara esta alerta: no hay
+ejecución que falle. Eso se ve en `RUNBOOK.md` §5.
 
 ---
 
