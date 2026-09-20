@@ -162,6 +162,11 @@ class Transaction(BaseModel):
     # trabajo, un trámite que reembolsa el seguro). Es la única de las dos
     # que el cliente puede marcar a mano -- sirve para filtrar/llevar
     # control ("¿qué gastos estoy esperando que me devuelvan?").
+    # Pago que la tarjeta cobra sola (Pagos Automáticos de servicios): algunos
+    # programas de lealtad dan una tasa distinta sólo en ese caso (ver
+    # `loyalty.LoyaltyCategoryRate.requires_autopay`). No se puede deducir de la
+    # descripción, así que lo marca quien registra el gasto.
+    is_autopay = models.BooleanField("cargo automático", default=False)
     is_refundable = models.BooleanField(default=False)
     # De sólo lectura para el cliente (ver `TransactionSerializer`):
     # HALLAZGO real -- hasta acá era un boolean que cualquiera podía

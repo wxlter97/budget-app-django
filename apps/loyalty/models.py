@@ -63,6 +63,47 @@ class CategoryType(BaseModel):
         return self.name
 
 
+class Merchant(BaseModel):
+    """Un comercio conocido (Súper Selectos, McDonald's, Cinemark…): sirve para
+    dos cosas que un rubro solo no resuelve.
+
+    1. **Beneficios de un solo comercio** (7 % en Selectos, 2 millas en
+       Avianca): una `LoyaltyCategoryRate` puede apuntar a un comercio en vez
+       de a un rubro.
+    2. **Rubro más fino que la categoría del usuario**: una categoría "Comida"
+       mezcla restaurantes con supermercados. Si el comercio se reconoce en la
+       descripción de la transacción, su rubro manda sobre el de la categoría.
+
+    El reconocimiento es por `aliases` (ver `services.match_merchant`): no hay
+    campo de comercio en la transacción, sólo su descripción libre."""
+
+    name = models.CharField("nombre", max_length=100, unique=True)
+    category_type = models.ForeignKey(
+        CategoryType, on_delete=models.SET_NULL, null=True, blank=True, related_name="merchants",
+        verbose_name="rubro", help_text="Vacío si el comercio no encaja en ningún rubro.",
+    )
+    aliases = models.TextField(
+        "alias", blank=True,
+        help_text=(
+            "Cómo aparece en la descripción de una transacción, uno por línea "
+            "(sin importar mayúsculas ni tildes). Cuenta si aparece como palabra "
+            "completa: \"mc\" reconoce \"mc combo\" pero no \"mcdonalds\"."
+        ),
+    )
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "comercio"
+        verbose_name_plural = "comercios"
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def alias_list(self) -> list[str]:
+        return [a.strip() for a in [self.name, *self.aliases.splitlines()] if a.strip()]
+
+
 class CardProduct(BaseModel):
     NETWORK_VISA = "visa"
     NETWORK_MASTERCARD = "mastercard"
@@ -132,6 +173,14 @@ class LoyaltyProgram(BaseModel):
         "valor de canje por punto (opcional)", max_digits=8, decimal_places=4, null=True, blank=True,
         help_text="Sólo puntos: valor estimado por punto (p. ej. 0.01 = 1 punto vale 1 centavo). Sólo referencia, no afecta ningún cálculo real.",
     )
+    min_amount = models.DecimalField(
+        "compra mínima (opcional)", max_digits=14, decimal_places=2, null=True, blank=True,
+        help_text=(
+            "Sólo las compras de este monto o más ganan (p. ej. 10 = \"a partir de $10\"). "
+            "Vacío = cualquier monto. Aplica a puntos y cashback; el descuento lo aplica "
+            "el propio cliente al registrar el gasto."
+        ),
+    )
     is_active = models.BooleanField("activo", default=True)
 
     class Meta:
@@ -142,22 +191,49 @@ class LoyaltyProgram(BaseModel):
     def __str__(self):
         return self.name or f"{self.card_product} ({self.get_kind_display()})"
 
-    def rate_for(self, category_type, on: date | None = None) -> Decimal:
-        """Tasa efectiva para un rubro (y, si se pasa, la fecha de la compra).
+    def qualifies(self, amount: Decimal) -> bool:
+        """Si una compra de ese monto llega a la compra mínima del programa."""
+        return self.min_amount is None or amount >= self.min_amount
 
-        Gana la más específica: el override de `LoyaltyCategoryRate` para ese
-        rubro **y ese día de la semana**, luego el del rubro sin día, y si no
-        hay ninguno la `default_rate` del programa. Sin `on`, los overrides
-        que dependen del día no se consideran."""
+    def rate_for(
+        self, category_type, on: date | None = None, merchant=None, autopay: bool = False
+    ) -> Decimal:
+        """Tasa efectiva para una compra: gana la regla más específica.
+
+        1. el comercio, ese día de la semana
+        2. el comercio, todos los días
+        3. el rubro, ese día de la semana
+        4. el rubro, todos los días
+        5. la `default_rate` del programa
+
+        Sin `on`, las reglas que dependen del día no se consideran; sin
+        `merchant` (o si el programa no tiene reglas para él), se pasa a las del rubro.
+        Las reglas `requires_autopay` sólo cuentan si la compra es un cargo
+        automático (`autopay`), y en ese caso ganan a las de cualquier cargo."""
+        rows = list(self.category_rates.all())
+        day = on.weekday() if on is not None else None
+
+        def pick(match):
+            candidates = [r for r in rows if match(r)]
+            for autopay_rule in (True, False) if autopay else (False,):
+                pool = [r for r in candidates if r.requires_autopay == autopay_rule]
+                if day is not None:
+                    for r in pool:
+                        if r.weekday == day:
+                            return r.rate
+                for r in pool:
+                    if r.weekday is None:
+                        return r.rate
+            return None
+
+        if merchant is not None:
+            rate = pick(lambda r: r.merchant_id == merchant.pk)
+            if rate is not None:
+                return rate
         if category_type is not None:
-            overrides = list(self.category_rates.filter(category_type=category_type))
-            if on is not None:
-                for override in overrides:
-                    if override.weekday == on.weekday():
-                        return override.rate
-            for override in overrides:
-                if override.weekday is None:
-                    return override.rate
+            rate = pick(lambda r: r.category_type_id == category_type.pk)
+            if rate is not None:
+                return rate
         return self.default_rate
 
 
@@ -168,47 +244,80 @@ WEEKDAY_CHOICES = [
 
 
 class LoyaltyCategoryRate(BaseModel):
-    """Tasa especial de un programa para un rubro puntual (p. ej. 5% de
-    cashback en Supermercado en vez del 1% default del programa) -- ésta es
-    la pieza que resuelve "para tal categoría, tal % en tal tarjeta"."""
+    """Tasa especial de un programa para un rubro **o un comercio** puntual
+    (p. ej. 5% de cashback en Supermercado en vez del 1% default del programa,
+    o 7% sólo en Súper Selectos) -- ésta es la pieza que resuelve "para tal
+    categoría, tal % en tal tarjeta". Exactamente uno de `category_type` y
+    `merchant`; opcionalmente sólo un día de la semana."""
 
     program = models.ForeignKey(
         LoyaltyProgram, on_delete=models.CASCADE, related_name="category_rates", verbose_name="programa"
     )
     category_type = models.ForeignKey(
-        CategoryType, on_delete=models.CASCADE, related_name="+", verbose_name="rubro"
+        CategoryType, on_delete=models.CASCADE, related_name="+", verbose_name="rubro",
+        null=True, blank=True,
+    )
+    merchant = models.ForeignKey(
+        Merchant, on_delete=models.CASCADE, related_name="+", verbose_name="comercio",
+        null=True, blank=True,
+        help_text="Para un beneficio de un solo comercio. Se llena éste **o** el rubro, no los dos.",
     )
     rate = models.DecimalField(
         "tasa", max_digits=6, decimal_places=4,
-        help_text="Mismo formato que la tasa default del programa (puntos por unidad, o fracción para cashback/descuento). Reemplaza la default sólo para este rubro.",
+        help_text="Mismo formato que la tasa default del programa (puntos por unidad, o fracción para cashback/descuento). Reemplaza la default sólo para este rubro o comercio.",
     )
     weekday = models.PositiveSmallIntegerField(
         "día de la semana (opcional)", null=True, blank=True, choices=WEEKDAY_CHOICES,
-        help_text="Si se indica, la tasa sólo aplica las compras hechas ese día (p. ej. 2 puntos los lunes en Supermercado). Vacío = todos los días. Gana a la tasa del rubro sin día.",
+        help_text="Si se indica, la tasa sólo aplica las compras hechas ese día (p. ej. 2 puntos los lunes en Supermercado). Vacío = todos los días. Gana a la tasa sin día.",
+    )
+
+    requires_autopay = models.BooleanField(
+        "sólo cargos automáticos", default=False,
+        help_text=(
+            "La tasa aplica únicamente si el gasto es un cargo automático de la tarjeta "
+            "(Pagos Automáticos de servicios): el gasto lo marca así al registrarlo."
+        ),
     )
 
     class Meta:
-        verbose_name = "tasa por rubro"
-        verbose_name_plural = "tasas por rubro"
+        verbose_name = "tasa por rubro o comercio"
+        verbose_name_plural = "tasas por rubro o comercio"
         constraints = [
-            # Una tasa por (programa, rubro, día). Dos constraints porque en
-            # Postgres los NULL no chocan entre sí: sin el segundo se podrían
-            # cargar dos tasas "todos los días" para el mismo rubro.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(category_type__isnull=False, merchant__isnull=True)
+                    | models.Q(category_type__isnull=True, merchant__isnull=False)
+                ),
+                name="rate_has_category_type_xor_merchant",
+            ),
+            # Una tasa por (programa, rubro o comercio, día). Cuatro constraints
+            # porque en Postgres los NULL no chocan entre sí: hace falta una por
+            # cada combinación de "con día / sin día" y "rubro / comercio".
             models.UniqueConstraint(
-                fields=["program", "category_type", "weekday"],
-                condition=models.Q(weekday__isnull=False),
+                fields=["program", "category_type", "weekday", "requires_autopay"],
+                condition=models.Q(category_type__isnull=False, weekday__isnull=False),
                 name="unique_rate_per_program_category_weekday",
             ),
             models.UniqueConstraint(
-                fields=["program", "category_type"],
-                condition=models.Q(weekday__isnull=True),
+                fields=["program", "category_type", "requires_autopay"],
+                condition=models.Q(category_type__isnull=False, weekday__isnull=True),
                 name="unique_rate_per_program_category",
+            ),
+            models.UniqueConstraint(
+                fields=["program", "merchant", "weekday", "requires_autopay"],
+                condition=models.Q(merchant__isnull=False, weekday__isnull=False),
+                name="unique_rate_per_program_merchant_weekday",
+            ),
+            models.UniqueConstraint(
+                fields=["program", "merchant", "requires_autopay"],
+                condition=models.Q(merchant__isnull=False, weekday__isnull=True),
+                name="unique_rate_per_program_merchant",
             ),
         ]
 
     def __str__(self):
         day = f" ({self.get_weekday_display()})" if self.weekday is not None else ""
-        return f"{self.program} · {self.category_type}{day}: {self.rate}"
+        return f"{self.program} · {self.merchant or self.category_type}{day}: {self.rate}"
 
 
 class LoyaltyEarning(BaseModel):

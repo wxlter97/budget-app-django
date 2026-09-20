@@ -1,9 +1,39 @@
-"""Agregados de lealtad para el reporte del workspace (ver `api.py`)."""
+"""Agregados de lealtad para el reporte del workspace (ver `api.py`) y el
+reconocimiento de comercios en la descripción de una transacción."""
+import re
+import unicodedata
 from decimal import Decimal
 
 from django.db.models import Sum
 
-from .models import LoyaltyEarning, LoyaltyProgram
+from .models import LoyaltyEarning, LoyaltyProgram, Merchant
+
+
+def normalize_text(text: str) -> str:
+    """Minúsculas, sin tildes y con todo lo que no sea letra o número como un
+    espacio: "McDonald's — Metrocentro" -> "mcdonald s metrocentro". La misma
+    regla vive en el front (`lib/loyaltyRate.ts`); si se cambia una, la otra."""
+    stripped = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", stripped.lower()).strip()
+
+
+def match_merchant(description: str, merchants=None):
+    """El comercio (`Merchant`) que aparece en la descripción, o `None`.
+
+    Un alias cuenta sólo como palabra(s) completa(s) (así "mc" no dispara con
+    "mcdonalds" ni "uno" con "alguno"); si varios coinciden gana el alias más
+    largo ("uber eats" antes que "uber"). `merchants` permite pasar la lista ya
+    cargada cuando se reconocen muchas descripciones seguidas."""
+    text = f" {normalize_text(description)} "
+    if not text.strip():
+        return None
+    best, best_len = None, 0
+    for merchant in merchants if merchants is not None else Merchant.objects.all():
+        for alias in merchant.alias_list:
+            needle = normalize_text(alias)
+            if len(needle) > best_len and f" {needle} " in text:
+                best, best_len = merchant, len(needle)
+    return best
 
 
 def points_balances(workspace) -> list[dict]:
@@ -71,3 +101,38 @@ def loyalty_summary(workspace, date_after=None, date_before=None) -> dict:
         "points_balances": points_balances(workspace),
         "period_totals": period_totals(workspace, date_after, date_before),
     }
+
+
+def map_categories_to_rubros(categories) -> list:
+    """Asigna el rubro de lealtad (`CategoryType`) a las categorías que **no tienen
+    uno todavía**, según su nombre (`catalog.CATEGORY_TO_RUBRO`, sin importar
+    mayúsculas ni tildes). Nunca pisa un rubro elegido a mano. Devuelve las
+    categorías que cambió. Si los rubros no están cargados todavía
+    (`seed_loyalty_catalog`), no hace nada."""
+    from . import catalog
+    from .models import CategoryType
+
+    rubros = {t.slug: t for t in CategoryType.objects.filter(slug__in=set(catalog.CATEGORY_TO_RUBRO.values()))}
+    changed = []
+    for category in categories.filter(category_type__isnull=True):
+        rubro = rubros.get(catalog.CATEGORY_TO_RUBRO.get(normalize_text(category.name)))
+        if rubro is not None:
+            category.category_type = rubro
+            category.save(update_fields=["category_type", "updated_at"])
+            changed.append(category)
+    return changed
+
+
+def recompute_earnings(transactions) -> int:
+    """Vuelve a calcular lo ganado (puntos y cashback) de esas transacciones con
+    las reglas actuales: sirve cuando se cargó o cambió el catálogo, o se mapeó
+    un rubro, DESPUÉS de que los gastos ya existían (la señal de
+    `signals.py` sólo corre al guardar). No toca los descuentos, que registra el
+    cliente. Devuelve cuántas transacciones recorrió."""
+    from .signals import _recompute
+
+    count = 0
+    for txn in transactions.select_related("wallet", "category"):
+        _recompute(txn)
+        count += 1
+    return count
