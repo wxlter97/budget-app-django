@@ -104,6 +104,11 @@ jobs:
       # construir otra: es el mismo commit, y así no hay forma de que el job y
       # el servicio corran código distinto.
       #
+      # También los jobs de uso puntual (`budget-admin`, `budget-seed`,
+      # `budget-merge-wallets`): `budget-admin` corre `seed_billing_plans`, y con
+      # una imagen vieja sembró los planes sin las claves de cuota de IA.
+      # Los que no existan se omiten.
+      #
       # Va después del smoke test a propósito: si el servicio nuevo no levanta,
       # esa imagen tampoco tiene por qué llegar al job.
       - name: Sincronizar la imagen de los jobs
@@ -115,7 +120,7 @@ jobs:
             echo "No se pudo leer la imagen del servicio"; exit 1
           fi
           echo "imagen: $IMAGE"
-          for JOB in budget-cron budget-migrate; do
+          for JOB in budget-cron budget-migrate budget-admin budget-seed budget-merge-wallets; do
             if gcloud run jobs describe "$JOB" --project budget-wxlter --region us-east1 >/dev/null 2>&1; then
               gcloud run jobs update "$JOB" --project budget-wxlter --region us-east1 --image "$IMAGE"
               echo "actualizado: $JOB"
