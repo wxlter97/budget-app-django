@@ -144,3 +144,12 @@ class ModuleFlagTests(TestCase):
     def test_key_present_and_flag_explicitly_on(self):
         ModuleFlag.objects.update_or_create(key="ai", defaults={"label": "IA", "is_enabled": True})
         self.assertTrue(services.availability_for(self.user)["enabled"])
+
+    def test_run_se_niega_con_el_modulo_apagado_y_no_deja_rastro(self):
+        ModuleFlag.objects.update_or_create(key="ai", defaults={"label": "IA", "is_enabled": False})
+        with patch(_GENERATE) as generate:
+            with self.assertRaises(AIUnavailable) as ctx:
+                services.run(user=self.user, operation=m.OP_PARSE, parts=[{"text": "hola"}])
+        self.assertEqual(ctx.exception.code, "module_disabled")
+        generate.assert_not_called()
+        self.assertEqual(m.AIUsage.objects.count(), 0)
