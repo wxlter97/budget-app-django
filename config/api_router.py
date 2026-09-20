@@ -11,6 +11,7 @@ from apps.loyalty.api import (
     LoyaltyCategoryRateViewSet,
     MerchantViewSet,
     LoyaltyEarningViewSet,
+    LoyaltyMovementViewSet,
     LoyaltyProgramViewSet,
 )
 from apps.notifications.api import NotificationViewSet, PushDeviceViewSet
@@ -60,6 +61,7 @@ router.register("card-products", CardProductViewSet, basename="cardproduct")
 router.register("loyalty-programs", LoyaltyProgramViewSet, basename="loyaltyprogram")
 router.register("loyalty-merchants", MerchantViewSet, basename="loyaltymerchant")
 router.register("loyalty-category-rates", LoyaltyCategoryRateViewSet, basename="loyaltycategoryrate")
+router.register("loyalty-movements", LoyaltyMovementViewSet, basename="loyaltymovement")
 router.register("loyalty-earnings", LoyaltyEarningViewSet, basename="loyaltyearning")
 
 router.register("personal-tokens", PersonalAccessTokenViewSet, basename="personaltoken")

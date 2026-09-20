@@ -8,6 +8,7 @@ from .models import (
     CategoryType,
     LoyaltyCategoryRate,
     LoyaltyEarning,
+    LoyaltyMovement,
     LoyaltyProgram,
     Merchant,
 )
@@ -113,3 +114,15 @@ class LoyaltyEarningAdmin(BaseModelAdmin):
     search_fields = ("transaction__description", "program__name")
     raw_id_fields = ("workspace", "transaction", "program")
     date_hierarchy = "created_at"
+
+
+@admin.register(LoyaltyMovement)
+class LoyaltyMovementAdmin(BaseModelAdmin):
+    """El libro de canjes y ajustes (ver `LoyaltyMovement`). Se usa desde la app; acá es de
+    consulta y para corregir a mano si hiciera falta."""
+
+    list_display = ("date", "kind", "delta", "cash_value", "wallet", "program", "note")
+    list_filter = ("kind",)
+    search_fields = ("note", "wallet__name", "program__name")
+    raw_id_fields = ("workspace", "wallet", "program", "deposit_transaction", "created_by")
+    date_hierarchy = "date"
