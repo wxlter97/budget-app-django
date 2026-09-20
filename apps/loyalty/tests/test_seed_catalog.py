@@ -119,3 +119,33 @@ class SeedCommandTests(TestCase):
         _seed()
         rate.refresh_from_db()
         self.assertFalse(rate.is_deleted)
+
+
+class CuscatlanUnoTests(TestCase):
+    """El descuento de UNO es sólo en gasolineras UNO y tiendas Pronto, no en todo:
+    antes estaba cargado como 6 % de tasa base."""
+
+    def test_the_discount_only_applies_to_gasoline_and_pronto(self):
+        from apps.loyalty.models import Merchant
+
+        _seed()
+        program = LoyaltyProgram.objects.get(
+            card_product__name="UNO", card_product__bank__name="Banco Cuscatlán", kind="discount"
+        )
+        gasolina = CategoryType.objects.get(slug="gasolina")
+        super_ = CategoryType.objects.get(slug="supermercado")
+        pronto = Merchant.objects.get(name="Tiendas Pronto")
+        self.assertEqual(str(program.rate_for(gasolina)), "0.0600")
+        self.assertEqual(str(program.rate_for(None, None, pronto)), "0.0600")
+        self.assertEqual(str(program.rate_for(super_)), "0.0000")
+
+    def test_it_replaces_the_old_6_percent_base_rate_of_an_existing_uno(self):
+        bank = Bank.objects.create(name="Banco Cuscatlán")
+        product = CardProduct.objects.create(bank=bank, name="UNO", network="visa")
+        old = LoyaltyProgram.objects.create(
+            card_product=product, kind="discount", name="Descuento UNO", default_rate="0.06"
+        )
+        _seed()
+        old.refresh_from_db()
+        self.assertEqual(str(old.default_rate), "0.0000")
+        self.assertEqual(product.programs.filter(kind="discount").count(), 1)
