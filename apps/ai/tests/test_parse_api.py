@@ -18,6 +18,7 @@ from apps.ai import models as m
 from apps.ai import parsing
 from apps.ai.client import AIUnavailable, GeminiResponse
 from apps.billing.models import Plan
+from apps.common.models import ModuleFlag
 from apps.transactions.models import Category, Transaction
 from apps.workspaces.models import Membership, Workspace
 
@@ -151,3 +152,14 @@ class ParseTextTests(APITestCase):
         resp = self.client.get("/api/v1/ai/status/")
         self.assertEqual(resp.data["quotas"]["parse"]["remaining"], 0)
         self.assertEqual(resp.data["quotas"]["receipt"]["remaining"], 3)
+
+    def test_con_el_modulo_apagado_no_se_llama_a_gemini_ni_se_gasta_nada(self):
+        """El interruptor manual tiene que cortar el gasto en el servidor: el
+        front lo usa para esconder los botones, pero este endpoint se puede
+        llamar directo con un token válido."""
+        ModuleFlag.objects.update_or_create(key="ai", defaults={"label": "IA", "is_enabled": False})
+        with patch(_GENERATE) as generate:
+            resp = self.client.post(URL, {"text": "gasté 12.50 en almuerzo"}, **self._h())
+        generate.assert_not_called()
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(m.AIUsage.objects.count(), 0)

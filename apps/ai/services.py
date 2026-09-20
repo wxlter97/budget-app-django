@@ -44,6 +44,14 @@ def run(
     acota la ráfaga, y la alternativa — bloquear filas o reservar cupo — es
     mucha maquinaria para proteger medio centavo.
     """
+    # El interruptor manual (`ModuleFlag` "ai") corta el gasto acá, en el
+    # servidor. `availability_for` sólo alimenta al front para esconder los
+    # botones, pero /ai/receipt/ y /ai/parse/ se pueden llamar directo con un
+    # token válido, y todas las funciones pasan por este único camino. Va antes
+    # de la cuota: no consulta nada ni deja fila en `AIUsage`.
+    if not module_enabled("ai"):
+        raise AIUnavailable("module_disabled", "La IA está desactivada.")
+
     quotas.check(user, operation)
 
     model = pricing.model_for(operation, has_audio=has_audio)
