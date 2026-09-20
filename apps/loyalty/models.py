@@ -23,6 +23,7 @@ toca el monto de la compra).
 from datetime import date
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 
 from apps.common.models import BaseModel
@@ -366,3 +367,52 @@ class LoyaltyEarning(BaseModel):
 
     def __str__(self):
         return f"{self.transaction_id} · {self.program} ({self.kind})"
+
+
+class LoyaltyMovement(BaseModel):
+    """Lo que se hace con las recompensas ya ganadas: **canjearlas** o **ajustarlas**.
+
+    El disponible de una tarjeta y un programa es `ganado + suma de los movimientos`
+    (`services.wallet_balances`). Lo ganado sale de `LoyaltyEarning` y se recalcula solo
+    con cada gasto, así que un canje o un ajuste NO puede vivir ahí: se perdería. Por eso
+    hay un libro aparte, y "editar el disponible" nunca sobrescribe un saldo: agrega un
+    renglón (con motivo) que se puede corregir o deshacer.
+
+    `delta` es el efecto sobre el disponible, en la unidad del programa (puntos, o
+    dinero para cashback): negativo al canjear, con signo al ajustar."""
+
+    KIND_REDEEM = "redeem"
+    KIND_ADJUST = "adjust"
+    KIND_CHOICES = [(KIND_REDEEM, "Canje"), (KIND_ADJUST, "Ajuste")]
+
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="loyalty_movements")
+    wallet = models.ForeignKey("accounts.Wallet", on_delete=models.CASCADE, related_name="loyalty_movements")
+    program = models.ForeignKey(LoyaltyProgram, on_delete=models.CASCADE, related_name="movements")
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    delta = models.DecimalField(max_digits=14, decimal_places=2)
+    # Sólo canjes: lo que valió en dinero (un punto vale distinto el día del canje).
+    cash_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    date = models.DateField()
+    note = models.CharField(max_length=200, blank=True)
+    # Si el canje se depositó en una cartera, el ingreso que se registró.
+    deposit_transaction = models.ForeignKey(
+        "transactions.Transaction", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "movimiento de recompensas"
+        verbose_name_plural = "movimientos de recompensas"
+        constraints = [
+            models.CheckConstraint(condition=~models.Q(delta=0), name="loyalty_movement_delta_not_zero"),
+            models.CheckConstraint(
+                condition=~models.Q(kind="redeem") | models.Q(delta__lt=0),
+                name="loyalty_redeem_is_negative",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} {self.delta} · {self.program}"

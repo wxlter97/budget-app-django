@@ -17,6 +17,8 @@ from rest_framework.response import Response
 
 from apps.common.api import HasWorkspaceMembership
 
+from apps.accounts.models import Wallet
+
 from . import services
 from .models import (
     Bank,
@@ -24,6 +26,7 @@ from .models import (
     CategoryType,
     LoyaltyCategoryRate,
     LoyaltyEarning,
+    LoyaltyMovement,
     LoyaltyProgram,
     Merchant,
 )
@@ -172,12 +175,15 @@ class LoyaltyEarningSerializer(serializers.ModelSerializer):
     wallet = serializers.UUIDField(source="transaction.wallet_id", read_only=True)
     program_name = serializers.CharField(source="program.name", read_only=True)
     saved_amount = serializers.SerializerMethodField()
+    transaction_description = serializers.CharField(source="transaction.description", read_only=True)
+    transaction_date = serializers.DateField(source="transaction.date", read_only=True)
 
     class Meta:
         model = LoyaltyEarning
         fields = (
-            "id", "transaction", "wallet", "program", "program_name", "kind",
-            "points", "amount", "original_amount", "saved_amount", "created_at",
+            "id", "transaction", "transaction_description", "transaction_date", "wallet",
+            "program", "program_name", "kind", "points", "amount", "original_amount",
+            "saved_amount", "created_at",
         )
         read_only_fields = fields
 
@@ -201,7 +207,38 @@ class LoyaltyPeriodTotalSerializer(serializers.Serializer):
     discount_saved = serializers.DecimalField(max_digits=14, decimal_places=2)
 
 
+class LoyaltyProgramBalanceSerializer(serializers.Serializer):
+    """Un programa de una tarjeta: ganado, ajustado, canjeado y disponible, en su
+    unidad (`points` o `currency`, si es cashback)."""
+
+    program = serializers.UUIDField()
+    name = serializers.CharField()
+    kind = serializers.CharField()
+    unit = serializers.CharField()
+    is_active = serializers.BooleanField()
+    earned = serializers.DecimalField(max_digits=14, decimal_places=2)
+    adjusted = serializers.DecimalField(max_digits=14, decimal_places=2)
+    redeemed = serializers.DecimalField(max_digits=14, decimal_places=2)
+    available = serializers.DecimalField(max_digits=14, decimal_places=2)
+    point_value = serializers.DecimalField(max_digits=8, decimal_places=4, allow_null=True)
+    estimated_value = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True)
+    min_amount = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True)
+
+
+class LoyaltyWalletBalanceSerializer(serializers.Serializer):
+    wallet = serializers.UUIDField()
+    wallet_name = serializers.CharField()
+    currency = serializers.CharField()
+    bank = serializers.UUIDField()
+    bank_name = serializers.CharField()
+    product_name = serializers.CharField()
+    programs = LoyaltyProgramBalanceSerializer(many=True)
+    discount_saved = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_value = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
 class LoyaltySummarySerializer(serializers.Serializer):
+    wallets = LoyaltyWalletBalanceSerializer(many=True)
     points_balances = LoyaltyPointsBalanceSerializer(many=True)
     period_totals = LoyaltyPeriodTotalSerializer(many=True)
 
@@ -220,7 +257,11 @@ class LoyaltyEarningViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vi
         from apps.billing.services import require_feature_for_workspace
 
         require_feature_for_workspace(self.request.workspace, "loyalty")
-        return super().get_queryset().filter(workspace=self.request.workspace)
+        qs = super().get_queryset().filter(workspace=self.request.workspace)
+        wallet = self.request.query_params.get("wallet")
+        if wallet:
+            qs = qs.filter(transaction__wallet_id=wallet)
+        return qs.order_by("-transaction__date", "-created_at")
 
     @action(detail=False, methods=["get"])
     def summary(self, request):
@@ -235,3 +276,94 @@ class LoyaltyEarningViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vi
             request.query_params.get("date_before"),
         )
         return Response(LoyaltySummarySerializer(data).data)
+
+
+# ---------------------------------------------------------------------------
+# Canjes y ajustes (el libro de movimientos)
+# ---------------------------------------------------------------------------
+class LoyaltyMovementSerializer(serializers.ModelSerializer):
+    program_name = serializers.CharField(source="program.name", read_only=True)
+
+    class Meta:
+        model = LoyaltyMovement
+        fields = (
+            "id", "wallet", "program", "program_name", "kind", "delta", "cash_value",
+            "date", "note", "deposit_transaction", "created_at",
+        )
+        read_only_fields = fields
+
+
+class LoyaltyMovementCreateSerializer(serializers.Serializer):
+    """`quantity` es lo que se canjea (positivo), o el ajuste (con signo), en la unidad
+    del programa: puntos, o dinero si es cashback."""
+
+    wallet = serializers.PrimaryKeyRelatedField(queryset=Wallet.objects.all())
+    program = serializers.PrimaryKeyRelatedField(queryset=LoyaltyProgram.objects.all())
+    kind = serializers.ChoiceField(choices=LoyaltyMovement.KIND_CHOICES)
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=2)
+    date = serializers.DateField(required=False)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    # Sólo canjes.
+    cash_value = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+    deposit_wallet = serializers.PrimaryKeyRelatedField(
+        queryset=Wallet.objects.all(), required=False, allow_null=True
+    )
+
+    def validate(self, attrs):
+        if attrs["kind"] == LoyaltyMovement.KIND_ADJUST and (attrs.get("cash_value") or attrs.get("deposit_wallet")):
+            raise serializers.ValidationError("Un ajuste no tiene valor en dinero ni se deposita.")
+        return attrs
+
+
+class LoyaltyMovementUpdateSerializer(serializers.Serializer):
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    date = serializers.DateField(required=False)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+
+class LoyaltyMovementViewSet(
+    mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
+    mixins.UpdateModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet,
+):
+    """Canjear y ajustar las recompensas ya ganadas de una tarjeta. El disponible es
+    `ganado + movimientos` (ver `services.wallet_balances`): esto es lo único que se
+    edita; lo ganado sale de los gastos."""
+
+    serializer_class = LoyaltyMovementSerializer
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership]
+    queryset = LoyaltyMovement.objects.select_related("program").all()
+    filterset_fields = {"wallet": ["exact"], "program": ["exact"], "kind": ["exact"]}
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "loyalty")
+        return super().get_queryset().filter(workspace=self.request.workspace)
+
+    def create(self, request, *args, **kwargs):
+        ser = LoyaltyMovementCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        d = ser.validated_data
+        common = dict(
+            workspace=request.workspace, wallet=d["wallet"], program=d["program"],
+            date=d.get("date"), note=d.get("note", ""), user=request.user,
+        )
+        if d["kind"] == LoyaltyMovement.KIND_REDEEM:
+            movement = services.redeem(
+                quantity=d["quantity"], cash_value=d.get("cash_value"),
+                deposit_wallet=d.get("deposit_wallet"), **common,
+            )
+        else:
+            movement = services.adjust(quantity=d["quantity"], **common)
+        return Response(LoyaltyMovementSerializer(movement).data, status=201)
+
+    def partial_update(self, request, *args, **kwargs):
+        movement = self.get_object()
+        ser = LoyaltyMovementUpdateSerializer(data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        movement = services.update_movement(movement, **ser.validated_data)
+        return Response(LoyaltyMovementSerializer(movement).data)
+
+    def perform_destroy(self, instance):
+        services.undo_movement(instance)
