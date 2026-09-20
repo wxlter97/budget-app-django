@@ -321,6 +321,17 @@ nunca salen a internet desde GCS: los sirve el backend.
 
 ## 3. Frontend — Vercel o Cloudflare Pages
 
+> **Estado en producción (20-sep-2026):** el front corre en **Cloudflare Pages**
+> (proyecto `moneyapp-8jz`), no en Vercel. `money.wxlter.dev` es un CNAME hacia
+> `moneyapp-8jz.pages.dev` en el DNS del registrar; no hizo falta mover la zona a
+> Cloudflare. Variables del build: `EXPO_PUBLIC_API_URL` (la URL de Cloud Run con
+> `/api/v1`), `EXPO_PUBLIC_SENTRY_DSN`, `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` y
+> `NODE_VERSION=20`. Tiene que ser un proyecto de **Pages**, no un Worker: un Worker
+> con dominio propio exige la zona en Cloudflare. Para comprobar un build, buscar la
+> URL de la API en el bundle (`/_expo/static/js/web/entry-*.js`); si trae
+> `localhost:8000`, faltó la variable. El CORS del backend sólo acepta
+> `https://money.wxlter.dev`, así que el login no funciona en `*.pages.dev`.
+
 > **Ojo con el plan Hobby de Vercel: no permite uso comercial.** Desde el momento
 > en que se cobra una suscripción hay que pasar a Pro ($20/mes) o mover el front a
 > otro lado. El build es estático (`expo export -p web`, sin SSR ni funciones), así

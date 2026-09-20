@@ -85,6 +85,11 @@
       de un *sending domain* verificado en Mailgun, más `DJANGO_DEFAULT_FROM_EMAIL` y
       `INVITE_ACCEPT_URL_BASE`. Sin esto, en `DEBUG` los correos sólo se imprimen en consola
       y en producción las invitaciones no llegan (compartir workspace queda inservible).
+      **Estado al 20-sep-2026:** configurado en el servicio con el dominio `inbound.wxlter.dev`
+      (Mailgun sólo permite un dominio; SPF, DKIM y tracking ya estaban publicados). La
+      contraseña SMTP va en el secreto `mailgun-smtp-password` e `INVITE_ACCEPT_URL_BASE` es
+      `https://money.wxlter.dev/invite`. **(verificar)** con una invitación real: falta la prueba
+      de punta a punta.
 - [ ] **Catálogo de programas de lealtad.** `Bank`, `CardProduct`, `LoyaltyProgram` y
       `LoyaltyCategoryRate` son catálogo global editable sólo por staff, y no hay fixtures.
       Además cada `Category` del workspace tiene que quedar mapeada a un `CategoryType` para
@@ -130,6 +135,8 @@ aviso *fuera* de la app.
       SENTRY_DSN=sentry-dsn:latest`. Falta confirmar `EXPO_PUBLIC_SENTRY_DSN` en el front.
 - [ ] **Avisos de tickets de soporte.** `SUPPORT_WEBHOOK_URL` (webhook de un canal de Discord).
       Vacío = los tickets se guardan en la base pero nadie te avisa que entraron.
+      **Estado al 20-sep-2026:** `SUPPORT_WEBHOOK_URL` ya está en el servicio como el secreto
+      `support-webhook-url`. **(verificar)** creando un ticket de prueba desde la app.
 - [ ] **Dashboard externo (Villa Wxlter).** `DASHBOARD_API_TOKEN` y `DASHBOARD_WORKSPACE_ID`.
       Vacío = el endpoint `GET /api/v1/dashboard/balance/` rechaza todo.
 - [ ] **Atajo de Apple Shortcuts.** `EXPO_PUBLIC_SHORTCUT_URL`: hay que armar el Atajo una vez
