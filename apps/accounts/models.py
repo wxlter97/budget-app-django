@@ -229,7 +229,15 @@ class Wallet(BaseModel):
 
     @property
     def aggregated_balance(self):
-        """Saldo propio + el de todos los descendientes. Solo para mostrar."""
+        """Saldo propio + el de todos los descendientes. Solo para mostrar.
+
+        Recorre el árbol con una consulta por nodo. Si quien llama ya lo calculó
+        para todo el workspace (`services.aggregated_balances`, que es lo que hace
+        `WalletSerializer` en los listados) deja el resultado en
+        `_aggregated_balance` y se usa ese, sin consultar."""
+        precomputed = getattr(self, "_aggregated_balance", None)
+        if precomputed is not None:
+            return precomputed
         total = self.current_balance
         for child in self.children.all():
             total += child.aggregated_balance

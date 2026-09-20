@@ -14,6 +14,7 @@ from apps.workspaces.models import Membership
 
 from .models import Wallet, WalletCard
 from .services import (
+    aggregated_balances,
     credit_card_statement,
     credit_card_statements_summary,
     goal_projection,
@@ -102,6 +103,16 @@ class WalletSerializer(serializers.ModelSerializer):
         )
         # current_balance lo mantienen los signals / recompute, no el cliente.
         read_only_fields = ("id", "current_balance", "created_at", "updated_at")
+
+    def to_representation(self, instance):
+        # `aggregated_balance` recorre el árbol con una consulta por nodo. Se
+        # calcula una vez por workspace y por request (el contexto lo comparten
+        # todas las filas de un listado) y se le pasa a cada cartera.
+        cache = self.context.setdefault("_aggregated_balances", {})
+        if instance.workspace_id not in cache:
+            cache[instance.workspace_id] = aggregated_balances(instance.workspace_id)
+        instance._aggregated_balance = cache[instance.workspace_id].get(instance.id)
+        return super().to_representation(instance)
 
     def validate_owner(self, user):
         if user is None:
@@ -272,7 +283,13 @@ class WalletViewSet(WorkspaceScopedViewSet):
 
     serializer_class = WalletSerializer
     filterset_class = WalletFilter
-    queryset = Wallet.objects.select_related("workspace", "owner", "parent").all()
+    queryset = (
+        Wallet.objects.select_related(
+            "workspace", "owner", "parent", "bank_schema", "card_product__bank"
+        )
+        .prefetch_related("extra_cards")
+        .all()
+    )
 
     def get_queryset(self):
         user = self.request.user

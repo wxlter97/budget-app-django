@@ -28,6 +28,44 @@ from .models import Wallet
 _MONEY = DecimalField(max_digits=14, decimal_places=2)
 
 
+def aggregated_balances(workspace_id) -> dict:
+    """Saldo propio + el de todos los descendientes, de TODAS las carteras del
+    workspace, con una sola consulta: ``{wallet_id: saldo agregado}``.
+
+    Lo que hace `Wallet.aggregated_balance` cartera por cartera, pero sin una
+    consulta por nodo del árbol. En un listado eso eran decenas de consultas a
+    ~25 ms cada una (N+1 de /wallets/ en Sentry). Cuenta las mismas carteras que
+    `wallet.children` -- las no borradas, sin mirar visibilidad ni archivadas.
+    """
+    balance: dict = {}
+    children = defaultdict(list)
+    rows = Wallet.objects.filter(workspace_id=workspace_id).values_list(
+        "id", "parent_id", "current_balance"
+    )
+    for wallet_id, parent_id, current in rows:
+        balance[wallet_id] = current
+        children[parent_id].append(wallet_id)
+
+    totals: dict = {}
+
+    def total(wallet_id, trail):
+        if wallet_id in totals:
+            return totals[wallet_id]
+        if wallet_id in trail:  # un ciclo no debería existir (lo impide `validate_parent`)
+            return balance[wallet_id]
+        trail.add(wallet_id)
+        result = balance[wallet_id] + sum(
+            (total(child, trail) for child in children.get(wallet_id, ())), Decimal("0")
+        )
+        trail.discard(wallet_id)
+        totals[wallet_id] = result
+        return result
+
+    for wallet_id in balance:
+        total(wallet_id, set())
+    return totals
+
+
 def balance_deltas(txn) -> dict:
     """Efecto (con signo) de una transacción *viva* sobre el saldo de cada
     cartera implicada: ``{wallet_id: Decimal}``."""
