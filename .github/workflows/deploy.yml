@@ -33,15 +33,52 @@ jobs:
 
       # `--source .` reconstruye la imagen vía Cloud Build. No se pasan env vars
       # ni secrets: `gcloud run deploy` conserva los que ya tiene el servicio
-      # (incluido CORS_ALLOWED_ORIGINS). Las migraciones corren al arrancar el
-      # contenedor (entrypoint.sh, RUN_MIGRATIONS=1).
-      - name: Deploy to Cloud Run
+      # (incluido CORS_ALLOWED_ORIGINS).
+      #
+      # `--no-traffic`: la revisión nueva queda creada pero sin servir a nadie
+      # hasta que las migraciones hayan corrido (paso de abajo). Mientras el
+      # servicio tenga RUN_MIGRATIONS=1 (el valor por defecto) el contenedor
+      # también migra al arrancar y todo sigue como antes.
+      - name: Deploy to Cloud Run (sin tráfico)
         run: |
           gcloud run deploy budget-api \
             --project budget-wxlter \
             --region us-east1 \
             --source . \
+            --no-traffic \
             --quiet
+
+      # Migrar con un job aparte y no al arrancar el contenedor saca la carrera
+      # entre instancias y acelera el arranque en frío (DEPLOY.md §2.2). Usa la
+      # imagen de la revisión que acaba de crearse, así el esquema y el código
+      # que va a servir salen del mismo commit.
+      #
+      # Si el job no existe se omite: entonces migra el arranque del contenedor.
+      # Si la migración falla, el paso falla y el tráfico NO se mueve: sigue
+      # sirviendo la revisión anterior. `--wait` devuelve error si el job falla.
+      - name: Migrar la base (budget-migrate)
+        run: |
+          if ! gcloud run jobs describe budget-migrate --project budget-wxlter --region us-east1 >/dev/null 2>&1; then
+            echo "budget-migrate no existe, se omite (migra el arranque del contenedor)"
+            exit 0
+          fi
+          REV=$(gcloud run services describe budget-api --project budget-wxlter --region us-east1 \
+            --format='value(status.latestCreatedRevisionName)')
+          IMAGE=$(gcloud run revisions describe "$REV" --project budget-wxlter --region us-east1 \
+            --format='value(spec.containers[0].image)')
+          if [ -z "$IMAGE" ]; then
+            echo "No se pudo leer la imagen de la revisión $REV"; exit 1
+          fi
+          echo "migrando con: $IMAGE"
+          gcloud run jobs update budget-migrate --project budget-wxlter --region us-east1 --image "$IMAGE"
+          gcloud run jobs execute budget-migrate --project budget-wxlter --region us-east1 --wait
+
+      - name: Pasar el tráfico a la revisión nueva
+        run: |
+          gcloud run services update-traffic budget-api \
+            --project budget-wxlter \
+            --region us-east1 \
+            --to-latest
 
       - name: Smoke test
         run: |

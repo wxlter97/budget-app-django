@@ -1,0 +1,29 @@
+{
+  "displayName": "budget-cron: ejecución fallida",
+  "combiner": "OR",
+  "enabled": true,
+  "conditions": [
+    {
+      "displayName": "budget-cron terminó una ejecución con error",
+      "conditionThreshold": {
+        "filter": "metric.type=\"run.googleapis.com/job/completed_execution_count\" AND resource.type=\"cloud_run_job\" AND resource.label.job_name=\"budget-cron\" AND metric.label.result=\"failed\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": { "autoClose": "86400s" },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "El job diario `budget-cron` (recurrentes, cierres, recordatorios y backup) terminó con error tras agotar sus reintentos.\n\nQué mirar, en orden:\n1. `gcloud run jobs executions list --job budget-cron --region us-east1` para ver cuál falló.\n2. `gcloud run jobs executions logs read EXECUTION_ID --region us-east1` (RUNBOOK.md §4).\n3. Si dice `server version mismatch`: subir `PG_CLIENT_MAJOR` en el Dockerfile (RUNBOOK.md §9).\n4. Si dice `column ... does not exist` o `relation ... does not exist`: el job corre una imagen vieja, o la base cambió; ver CONFIG-PENDIENTE.md, tareas diarias."
+  }
+}
