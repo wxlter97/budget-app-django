@@ -18,8 +18,10 @@ Lo que a propósito NO está (no cabe en el modelo o no se pudo verificar):
   "7 % de ahorro", Tigo 20 %): los que sí están claros (Selectos, PriceSmart, San
   Nicolás, Avianca) se cargan como tasa de comercio (`merchants=` en cada programa);
 - tarjetas cuyo sitio sólo dice "hasta N" o no publica la tasa;
-- Cuscatlán MultiPuntos, Davivienda por producto, Industrial (salvo Premium),
-  ABANK y Apoyo Integral: sin datos verificables en su sitio.
+- Davivienda por producto, Industrial (salvo Premium), ABANK y Apoyo Integral:
+  sin datos verificables en su sitio. De Cuscatlán faltan las tarjetas cuya página
+  no se pudo abrir (Cash Back Mastercard, Black, MultiPuntos+ Clásica/Platinum,
+  lifemiles Real/Oro, Selectos Oro).
 """
 
 MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
@@ -81,6 +83,11 @@ MERCHANTS = [
     ("Spotify", "suscripciones", []),
     ("Disney+", "suscripciones", ["disney plus", "disney"]),
     ("Avianca", "viajes", []),
+    ("United Airlines", "viajes", ["united"]),
+    ("Tigo", "telefonia-internet", []),
+    # Sin rubro propio: un café en Pronto sigue siendo "Comida"; el comercio sólo
+    # sirve para el descuento de UNO.
+    ("Tiendas Pronto", None, ["pronto"]),
     # Sin gasolineras a propósito: un café en Puma o Shell se escribe con el nombre de
     # la gasolinera y caería en el rubro gasolina. Para eso ya está la categoría Gasolina.
     ("Amazon Prime", "suscripciones", ["prime video"]),
@@ -249,14 +256,58 @@ CATALOG = [
     {
         "bank": "Banco Cuscatlán",
         "products": [
-            prod("UNO", "visa", P("discount", 0.06, "Descuento UNO")),
-            prod("ePay", "mastercard", P("cashback", 0.01, "ePay")),
-            prod("NIU", "visa"),
+            # Fuente: bancocuscatlan.com/tarjetas/de-credito (septiembre 2026). Los
+            # bonos de bienvenida, Priority Pass, etc. no se modelan.
+            # --- de un solo comercio
+            # El 6 % es "en gasolineras UNO y tiendas Pronto". Las compras se anotan como
+            # "gasolina" (nunca "UNO"), así que el descuento se ata al rubro gasolina --
+            # aproxima bien porque casi toda la gasolina se carga en UNO -- y a Pronto.
+            prod("UNO", "visa",
+                 P("discount", 0, "Descuento UNO", [("gasolina", 0.06)],
+                   merchants=[("Tiendas Pronto", 0.06)]),
+                 P("points", 1, "MultiPuntos")),
+            prod("UNO Oro", "visa",
+                 P("discount", 0, "Descuento UNO", [("gasolina", 0.06)],
+                   merchants=[("Tiendas Pronto", 0.06)]),
+                 P("points", 1, "MultiPuntos")),
             prod("Selectos", "other",
                  P("discount", 0, "Descuento Selectos", merchants=[("Súper Selectos", 0.07)])),
+            prod("Cash Back Tigo", "other",
+                 P("cashback", 0, "Cash Back Tigo", merchants=[("Tigo", 0.20)])),
+            # --- cashback
+            prod("Cash Back Visa", "visa",
+                 P("cashback", 0, "Cash Back", [("gasolina", 0.05), ("restaurantes", 0.05)])),
             prod("PedidosYa", "visa",
                  P("cashback", 0, "Cashback PedidosYa",
                    [("delivery", 0.05), ("restaurantes", 0.05), ("comida-rapida", 0.05)])),
+            # Sólo lo que no depende de estar inscrito en Pagos Automáticos (el 5 % en
+            # servicios básicos lo exige y no se sabe de qué pagos se trata).
+            prod("ePay", "mastercard",
+                 P("cashback", 0.01, "ePay", [("suscripciones", 0.05), ("delivery", 0.05)])),
+            prod("NIU", "visa",
+                 P("cashback", 0, "Cashback NIU", [("restaurantes", 0.05)])),
+            # --- MultiPuntos
+            prod("MultiPuntos Visa Clásica", "visa", P("points", 1, "MultiPuntos")),
+            prod("MultiPuntos Visa Oro", "visa", P("points", 1, "MultiPuntos")),
+            prod("MultiPuntos Oro Mastercard", "mastercard", P("points", 1, "MultiPuntos")),
+            prod("MultiPuntos Visa Platinum", "visa",
+                 P("points", 1, "MultiPuntos",
+                   [("restaurantes", 2), ("comida-rapida", 2), ("cines", 2),
+                    ("conciertos-eventos", 2)])),
+            prod("MultiPuntos Plus Oro", "other", P("points", 2, "MultiPuntos")),
+            prod("Private Issue", "other", P("points", 2, "MultiPuntos")),
+            prod("Signature", "visa",
+                 P("points", 1, "MultiPuntos", [("viajes", 3), ("restaurantes", 2)])),
+            # --- millas
+            prod("lifemiles Infinite", "visa", P("points", 1, "LifeMiles")),
+            prod("United Platinum", "other",
+                 P("points", 1, "MileagePlus",
+                   [("restaurantes", 2), ("viajes", 2), ("cines", 2), ("conciertos-eventos", 2)],
+                   merchants=[("United Airlines", 2)])),
+            prod("United Signature", "other",
+                 P("points", 1, "MileagePlus",
+                   [("restaurantes", 2), ("viajes", 2), ("cines", 2), ("conciertos-eventos", 2)],
+                   merchants=[("United Airlines", 2)])),
         ],
     },
     {

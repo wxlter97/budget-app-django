@@ -65,7 +65,7 @@ class Command(BaseCommand):
             for name, slug, aliases in catalog.MERCHANTS:
                 merchants[name] = _upsert(
                     Merchant, {"name": name},
-                    {"category_type": types[slug], "aliases": "\n".join(aliases)},
+                    {"category_type": types[slug] if slug else None, "aliases": "\n".join(aliases)},
                     counts, "comercios",
                 )
 

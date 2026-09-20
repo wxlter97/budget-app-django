@@ -203,7 +203,7 @@ class CatalogMerchantDataTests(APITestCase):
         merchants = {name for name, _, _ in catalog.MERCHANTS}
         rubros = {slug for slug, _ in catalog.CATEGORY_TYPES}
         for _, slug, _ in catalog.MERCHANTS:
-            self.assertIn(slug, rubros)
+            self.assertTrue(slug is None or slug in rubros, slug)
         self.assertLessEqual(set(catalog.CATEGORY_TO_RUBRO.values()), rubros)
         for bank in catalog.CATALOG:
             for item in bank["products"]:
