@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common import periods
-from apps.common.api import HasWorkspaceMembership, WorkspaceScopedViewSet
+from apps.common.api import AtomicOnlyForWritesMixin, HasWorkspaceMembership, WorkspaceScopedViewSet
 
 from . import services
 from .models import MonthlySnapshot
@@ -169,7 +169,7 @@ class CategoryTrendsSerializer(serializers.Serializer):
 # ---------------------------------------------------------------------------
 # Endpoints de agregación (solo lectura, workspace del header)
 # ---------------------------------------------------------------------------
-class _BaseReportView(APIView):
+class _BaseReportView(AtomicOnlyForWritesMixin, APIView):
     permission_classes = [IsAuthenticated, HasWorkspaceMembership]
 
     def budget_period_start(self, request):

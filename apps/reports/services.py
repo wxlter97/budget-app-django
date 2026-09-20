@@ -48,7 +48,7 @@ def _visible(qs, user):
     return qs.filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
 
 
-def net_worth_breakdown(workspace, user=None) -> dict:
+def net_worth_breakdown(workspace, user=None, rate_map=None) -> dict:
     """
     Patrimonio neto + totales por tipo de cartera, convertidos a
     ``workspace.base_currency`` (ver ``apps.workspaces.currency``) -- una
@@ -64,7 +64,8 @@ def net_worth_breakdown(workspace, user=None) -> dict:
     wallets = list(
         _visible(Wallet.objects.filter(workspace=workspace), user)
     )
-    rate_map = get_rate_map(workspace)
+    # `rate_map` lo pasa quien ya lo tiene (ver `dashboard_summary`): son consultas de más.
+    rate_map = rate_map if rate_map is not None else get_rate_map(workspace)
     converted = [
         (w, convert(w.current_balance, w.currency, rate_map)) for w in wallets
     ]
@@ -94,8 +95,8 @@ _OUTFLOW_Q = Q(type=Transaction.TYPE_EXPENSE) | Q(
 )
 
 
-def spending_by_category(workspace, user, year, month):
-    rate_map = get_rate_map(workspace)
+def spending_by_category(workspace, user, year, month, rate_map=None):
+    rate_map = rate_map if rate_map is not None else get_rate_map(workspace)
     rows = (
         visible_transactions(workspace, user)
         .filter(date__year=year, date__month=month)
@@ -244,9 +245,9 @@ def _group_budget_rows(rows, cats):
     return result
 
 
-def monthly_cashflow(workspace, user, months=6, until=None):
+def monthly_cashflow(workspace, user, months=6, until=None, rate_map=None):
     until = (until or timezone.localdate()).replace(day=1)
-    rate_map = get_rate_map(workspace)
+    rate_map = rate_map if rate_map is not None else get_rate_map(workspace)
     periods = []
     cursor = until
     for _ in range(months):
@@ -320,16 +321,18 @@ def dashboard_summary(workspace, user, today=None):
     today = today or timezone.localdate()
     from apps.email_import.models import EmailImportLog
 
-    this_month = monthly_cashflow(workspace, user, months=1, until=today)[0]
+    # Una sola lectura de las tasas para las tres cuentas de abajo.
+    rate_map = get_rate_map(workspace)
+    this_month = monthly_cashflow(workspace, user, months=1, until=today, rate_map=rate_map)[0]
     return {
         "month": this_month,
-        "net_worth": net_worth_breakdown(workspace, user)["net"],
+        "net_worth": net_worth_breakdown(workspace, user, rate_map=rate_map)["net"],
         "base_currency": workspace.base_currency,
         "pending_email_imports": EmailImportLog.objects.filter(
             workspace=workspace, status=EmailImportLog.STATUS_PENDING
         ).count(),
         "top_expense_categories": spending_by_category(
-            workspace, user, today.year, today.month
+            workspace, user, today.year, today.month, rate_map=rate_map
         )[:5],
     }
 

@@ -1,5 +1,6 @@
 from django.conf import settings
 from drf_spectacular.utils import extend_schema
+from apps.common.api import AtomicOnlyForWritesMixin
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -76,7 +77,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 
 
 @extend_schema(tags=["billing"])
-class MyPlanView(APIView):
+class MyPlanView(AtomicOnlyForWritesMixin, APIView):
     """GET: el plan efectivo del usuario autenticado + su suscripción
     vigente (si tiene una). Sin suscripción activa, ``subscription`` es
     null y ``plan`` es el plan default (gratis)."""
