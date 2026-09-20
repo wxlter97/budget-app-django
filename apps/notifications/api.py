@@ -7,6 +7,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Notification, NotificationPreference, PushDevice
+from .services import send_test_push
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,15 @@ class PushDeviceViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
         en el navegador. Pública por diseño (viaja tal cual en la suscripción
         misma) -- no requiere estar autenticado."""
         return Response({"vapid_public_key": settings.VAPID_PUBLIC_KEY})
+
+    @action(detail=False, methods=["post"])
+    def test(self, request):
+        """Aviso de prueba a todos los dispositivos del usuario. Devuelve qué pasó
+        con cada uno, para distinguir "no hay dispositivos", "el servidor no pudo
+        enviarlo" y "salió bien" (si aun así no se ve, el problema es del
+        navegador)."""
+        results = send_test_push(request.user)
+        return Response({"devices": len(results), "results": results})
 
     @action(detail=False, methods=["post"])
     def unregister(self, request):

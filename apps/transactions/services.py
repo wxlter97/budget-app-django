@@ -170,6 +170,12 @@ def seed_default_categories(workspace) -> int:
                 )
                 order += 1
                 created += int(made)
+    # Rubro de lealtad de las categorías por defecto, para que las tarjetas con
+    # recompensas funcionen desde el primer gasto de un workspace nuevo. No hace
+    # nada si el catálogo de lealtad todavía no está cargado.
+    from apps.loyalty.services import map_categories_to_rubros
+
+    map_categories_to_rubros(Category.objects.filter(workspace=workspace))
     return created
 
 

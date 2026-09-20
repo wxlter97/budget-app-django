@@ -53,7 +53,10 @@ def _recompute(instance: Transaction) -> None:
         card_product_id=card_product_id, is_active=True, kind__in=_AUTO_KINDS
     ).prefetch_related("category_rates")
     for program in programs:
-        rate = program.rate_for(category_type, on, merchant)
+        # Compra mínima ("cashback a partir de $10"): por debajo, este programa no gana.
+        if not program.qualifies(instance.amount):
+            continue
+        rate = program.rate_for(category_type, on, merchant, instance.is_autopay)
         if not rate:
             continue
         earned = (instance.amount * rate).quantize(Decimal("0.01"))

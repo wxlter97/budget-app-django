@@ -173,6 +173,14 @@ class LoyaltyProgram(BaseModel):
         "valor de canje por punto (opcional)", max_digits=8, decimal_places=4, null=True, blank=True,
         help_text="Sólo puntos: valor estimado por punto (p. ej. 0.01 = 1 punto vale 1 centavo). Sólo referencia, no afecta ningún cálculo real.",
     )
+    min_amount = models.DecimalField(
+        "compra mínima (opcional)", max_digits=14, decimal_places=2, null=True, blank=True,
+        help_text=(
+            "Sólo las compras de este monto o más ganan (p. ej. 10 = \"a partir de $10\"). "
+            "Vacío = cualquier monto. Aplica a puntos y cashback; el descuento lo aplica "
+            "el propio cliente al registrar el gasto."
+        ),
+    )
     is_active = models.BooleanField("activo", default=True)
 
     class Meta:
@@ -183,7 +191,13 @@ class LoyaltyProgram(BaseModel):
     def __str__(self):
         return self.name or f"{self.card_product} ({self.get_kind_display()})"
 
-    def rate_for(self, category_type, on: date | None = None, merchant=None) -> Decimal:
+    def qualifies(self, amount: Decimal) -> bool:
+        """Si una compra de ese monto llega a la compra mínima del programa."""
+        return self.min_amount is None or amount >= self.min_amount
+
+    def rate_for(
+        self, category_type, on: date | None = None, merchant=None, autopay: bool = False
+    ) -> Decimal:
         """Tasa efectiva para una compra: gana la regla más específica.
 
         1. el comercio, ese día de la semana
@@ -193,19 +207,23 @@ class LoyaltyProgram(BaseModel):
         5. la `default_rate` del programa
 
         Sin `on`, las reglas que dependen del día no se consideran; sin
-        `merchant` (o si el programa no tiene reglas para él), se pasa a las del rubro."""
+        `merchant` (o si el programa no tiene reglas para él), se pasa a las del rubro.
+        Las reglas `requires_autopay` sólo cuentan si la compra es un cargo
+        automático (`autopay`), y en ese caso ganan a las de cualquier cargo."""
         rows = list(self.category_rates.all())
         day = on.weekday() if on is not None else None
 
         def pick(match):
             candidates = [r for r in rows if match(r)]
-            if day is not None:
-                for r in candidates:
-                    if r.weekday == day:
+            for autopay_rule in (True, False) if autopay else (False,):
+                pool = [r for r in candidates if r.requires_autopay == autopay_rule]
+                if day is not None:
+                    for r in pool:
+                        if r.weekday == day:
+                            return r.rate
+                for r in pool:
+                    if r.weekday is None:
                         return r.rate
-            for r in candidates:
-                if r.weekday is None:
-                    return r.rate
             return None
 
         if merchant is not None:
@@ -253,6 +271,14 @@ class LoyaltyCategoryRate(BaseModel):
         help_text="Si se indica, la tasa sólo aplica las compras hechas ese día (p. ej. 2 puntos los lunes en Supermercado). Vacío = todos los días. Gana a la tasa sin día.",
     )
 
+    requires_autopay = models.BooleanField(
+        "sólo cargos automáticos", default=False,
+        help_text=(
+            "La tasa aplica únicamente si el gasto es un cargo automático de la tarjeta "
+            "(Pagos Automáticos de servicios): el gasto lo marca así al registrarlo."
+        ),
+    )
+
     class Meta:
         verbose_name = "tasa por rubro o comercio"
         verbose_name_plural = "tasas por rubro o comercio"
@@ -268,22 +294,22 @@ class LoyaltyCategoryRate(BaseModel):
             # porque en Postgres los NULL no chocan entre sí: hace falta una por
             # cada combinación de "con día / sin día" y "rubro / comercio".
             models.UniqueConstraint(
-                fields=["program", "category_type", "weekday"],
+                fields=["program", "category_type", "weekday", "requires_autopay"],
                 condition=models.Q(category_type__isnull=False, weekday__isnull=False),
                 name="unique_rate_per_program_category_weekday",
             ),
             models.UniqueConstraint(
-                fields=["program", "category_type"],
+                fields=["program", "category_type", "requires_autopay"],
                 condition=models.Q(category_type__isnull=False, weekday__isnull=True),
                 name="unique_rate_per_program_category",
             ),
             models.UniqueConstraint(
-                fields=["program", "merchant", "weekday"],
+                fields=["program", "merchant", "weekday", "requires_autopay"],
                 condition=models.Q(merchant__isnull=False, weekday__isnull=False),
                 name="unique_rate_per_program_merchant_weekday",
             ),
             models.UniqueConstraint(
-                fields=["program", "merchant"],
+                fields=["program", "merchant", "requires_autopay"],
                 condition=models.Q(merchant__isnull=False, weekday__isnull=True),
                 name="unique_rate_per_program_merchant",
             ),

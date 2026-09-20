@@ -101,7 +101,7 @@ class MerchantViewSet(viewsets.ModelViewSet):
 class LoyaltyCategoryRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = LoyaltyCategoryRate
-        fields = ("id", "program", "category_type", "merchant", "rate", "weekday")
+        fields = ("id", "program", "category_type", "merchant", "rate", "weekday", "requires_autopay")
         read_only_fields = ("id",)
 
     def validate(self, attrs):
@@ -130,7 +130,7 @@ class LoyaltyProgramSerializer(serializers.ModelSerializer):
         model = LoyaltyProgram
         fields = (
             "id", "card_product", "kind", "name", "default_rate", "point_value",
-            "is_active", "category_rates", "created_at", "updated_at",
+            "min_amount", "is_active", "category_rates", "created_at", "updated_at",
         )
         read_only_fields = ("id", "category_rates", "created_at", "updated_at")
 

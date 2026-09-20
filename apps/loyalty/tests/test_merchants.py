@@ -276,3 +276,47 @@ class MapCategoriesCommandTests(APITestCase):
         self.assertIn("1 gasto(s) recalculado(s)", self._run("--recompute"))
         # Ya con rubro gasolina: el bono del miércoles.
         self.assertEqual(LoyaltyEarning.objects.get(transaction=txn).points, Decimal("100.00"))
+
+
+class RecomputeAndDefaultMappingTests(APITestCase):
+    def setUp(self):
+        call_command("seed_loyalty_catalog", stdout=StringIO())
+
+    def test_new_workspaces_get_their_default_categories_mapped(self):
+        from apps.transactions.services import seed_default_categories
+
+        ws = Workspace.objects.create(name="Nuevo")
+        seed_default_categories(ws)
+        by_name = {c.name: c.category_type for c in Category.objects.filter(workspace=ws)}
+        self.assertEqual(by_name["Gasolina"].slug, "gasolina")
+        self.assertEqual(by_name["Comida"].slug, "restaurantes")
+        self.assertEqual(by_name["Gimnasio"].slug, "gimnasio-deporte")
+        self.assertEqual(by_name["Teléfono"].slug, "telefonia-internet")
+        self.assertIsNone(by_name["Ropa"])
+
+    def test_seeding_categories_without_the_loyalty_catalog_does_nothing_odd(self):
+        from apps.transactions.services import seed_default_categories
+
+        CategoryType.objects.all().delete()
+        ws = Workspace.objects.create(name="Sin catálogo")
+        seed_default_categories(ws)
+        self.assertFalse(Category.objects.filter(workspace=ws, category_type__isnull=False).exists())
+
+    def test_recompute_registers_what_was_spent_before_the_catalog_existed(self):
+        ws = Workspace.objects.create(name="W")
+        product = CardProduct.objects.get(name="Tarjeta Dorada Visa")
+        card = Wallet.objects.create(
+            workspace=ws, name="Dorada", kind=Wallet.KIND_CREDIT,
+            credit_limit=Decimal("3000"), billing_cycle_day=15, card_product=product,
+        )
+        cat = Category.objects.create(workspace=ws, name="Ropa", type=Category.TYPE_EXPENSE)
+        txn = Transaction.objects.create(
+            wallet=card, category=cat, amount=Decimal("40.00"), date="2026-09-22"
+        )
+        LoyaltyEarning.objects.filter(transaction=txn).delete()  # como si nunca se hubiera calculado
+        out = StringIO()
+        call_command("recompute_loyalty_earnings", "--dry-run", stdout=out)
+        self.assertIn("SIMULACIÓN", out.getvalue())
+        self.assertFalse(LoyaltyEarning.objects.filter(transaction=txn).exists())
+        call_command("recompute_loyalty_earnings", stdout=StringIO())
+        self.assertEqual(LoyaltyEarning.objects.get(transaction=txn).points, Decimal("40.00"))

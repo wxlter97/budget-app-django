@@ -81,14 +81,22 @@ def _send_web_push(devices, *, title, body, data):
     `PushDeviceSerializer`). Sin VAPID configurado (`.env`, ver
     `.env.example`) no hay forma de firmar nada -- se omite con un aviso en
     vez de reventar, para no tumbar el resto de la corrida (nativo incluido)
-    en un deploy que todavía no lo configuró."""
+    en un deploy que todavía no lo configuró.
+
+    Devuelve un resultado por dispositivo (`{"device", "ok", "status", "detail"}`):
+    los avisos programados lo ignoran, pero el "aviso de prueba" (`send_test_push`)
+    lo muestra: un push que el servicio de Apple/Google acepta y el navegador no
+    muestra es indistinguible desde acá, así que al menos se ve que el servidor sí salió."""
     if not (settings.VAPID_PRIVATE_KEY and settings.VAPID_PUBLIC_KEY):
         logger.warning(
             "Push web sin VAPID configurado (%d dispositivos) -- ver VAPID_PUBLIC_KEY/"
             "VAPID_PRIVATE_KEY en .env. Se omite.",
             len(devices),
         )
-        return
+        return [
+            {"device": str(d.id), "ok": False, "status": None, "detail": "Servidor sin claves VAPID."}
+            for d in devices
+        ]
 
     # Import diferido: sólo hace falta si de verdad hay algo que mandar por
     # este canal, y evita que el resto del proyecto dependa de que
@@ -96,29 +104,56 @@ def _send_web_push(devices, *, title, body, data):
     from pywebpush import WebPushException, webpush
 
     payload = json.dumps({"title": title, "body": body, "data": data or {}})
+    results = []
     for device in devices:
         subscription_info = {
             "endpoint": device.token,
             "keys": {"p256dh": device.p256dh, "auth": device.auth},
         }
+        result = {"device": str(device.id), "ok": True, "status": None, "detail": "Entregado al servicio de push."}
         try:
-            webpush(
+            response = webpush(
                 subscription_info=subscription_info,
                 data=payload,
                 vapid_private_key=settings.VAPID_PRIVATE_KEY,
                 vapid_claims={"sub": settings.VAPID_SUBJECT},
                 timeout=10,
             )
+            result["status"] = getattr(response, "status_code", None)
         except WebPushException as exc:
-            if exc.status_code in (404, 410):
+            status = exc.response.status_code if getattr(exc, "response", None) is not None else None
+            result.update(ok=False, status=status, detail=str(exc)[:200])
+            if status in (404, 410):
                 # La suscripción ya no existe (permiso revocado, otro
                 # navegador, se limpiaron los datos del sitio...) -- no
                 # vale la pena reintentar nunca más.
                 device.delete()
+                result["detail"] = "La suscripción ya no existe (se eliminó); hay que volver a activarla."
             else:
                 logger.warning("Fallo enviando push web a %s: %s", device.id, exc)
         except OSError as exc:
             logger.warning("Fallo de red enviando push web a %s: %s", device.id, exc)
+            result.update(ok=False, detail=f"Fallo de red: {exc}"[:200])
+        results.append(result)
+    return results
+
+
+def send_test_push(user) -> list[dict]:
+    """Manda un aviso de prueba a todos los dispositivos del usuario y devuelve
+    qué pasó con cada uno (ver `_send_web_push`). Los nativos (Expo) sólo se
+    reportan como enviados: Expo responde de forma asíncrona."""
+    devices = _devices_for(user)
+    web = [d for d in devices if d.platform == PushDevice.PLATFORM_WEB]
+    native = [d for d in devices if d.platform != PushDevice.PLATFORM_WEB]
+    title, body = "Aviso de prueba", "Si ves esto, los avisos de este dispositivo funcionan."
+    results = _send_web_push(web, title=title, body=body, data={"type": "test"}) if web else []
+    if native:
+        _send_expo_push(native, title=title, body=body, data={"type": "test"})
+        results += [
+            {"device": str(d.id), "ok": True, "status": None, "detail": "Enviado a Expo."}
+            for d in native
+        ]
+    return results
 
 
 def _get_preference(user) -> NotificationPreference:

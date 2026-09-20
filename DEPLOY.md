@@ -167,18 +167,22 @@ gcloud run jobs execute budget-admin --region us-east1 --wait
 
 Si un banco cambia una tasa, se edita `catalog.py` y se vuelve a correr.
 
-Después, asignar el rubro de lealtad a las categorías de los workspaces (sin rubro,
-una categoría no genera puntos ni cashback). Sólo llena las que no tienen uno, nunca
-pisa lo elegido a mano; `--recompute` calcula lo que habrían ganado los gastos ya
-existentes de esas categorías:
+Después, tres pasos, siempre primero con `--dry-run`:
+
+1. `map_categories_to_rubros`: asigna el rubro de lealtad a las categorías que no
+   tienen uno (sin rubro, una categoría no gana tasas especiales). Nunca pisa uno
+   elegido a mano. Las categorías por defecto de un workspace nuevo ya nacen mapeadas.
+2. `recompute_loyalty_earnings`: calcula los puntos y el cashback de los gastos que
+   **ya existían**. La señal de lealtad sólo corre al guardar un gasto, así que sin
+   esto lo gastado antes de cargar el catálogo nunca aparece en "Recompensas".
+3. Revisar el resultado en la app: pantalla de la tarjeta y Herramientas → Recompensas.
 
 ```bash
-gcloud run jobs update budget-admin --region us-east1 \
-  --command python --args "manage.py,map_categories_to_rubros,--dry-run"
-gcloud run jobs execute budget-admin --region us-east1 --wait
-gcloud run jobs update budget-admin --region us-east1 \
-  --command python --args "manage.py,map_categories_to_rubros,--recompute"
-gcloud run jobs execute budget-admin --region us-east1 --wait
+for CMD in "map_categories_to_rubros,--dry-run" "map_categories_to_rubros" \
+           "recompute_loyalty_earnings,--dry-run" "recompute_loyalty_earnings"; do
+  gcloud run jobs update budget-admin --region us-east1 --command python --args "manage.py,$CMD"
+  gcloud run jobs execute budget-admin --region us-east1 --wait
+done
 ```
 
 ### 2.4 Planes de billing (una sola vez, la primera vez que se activa)

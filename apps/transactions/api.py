@@ -416,6 +416,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             "date",
             "has_receipt",
             "counts_toward_budget",
+            "is_autopay",
             "source",
             "is_recurring",
             "is_refundable",

@@ -556,6 +556,79 @@ class SendWebPushTests(TestCase):
         services.send_push([self.device], title="x", body="y")
 
 
+@override_settings(VAPID_PUBLIC_KEY="pub-key", VAPID_PRIVATE_KEY="priv-key")
+class SendTestPushTests(TestCase):
+    """El aviso de prueba dice qué pasó con cada dispositivo, para saber si el
+    problema está en el servidor o en el navegador."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("erin", "e@example.com", "pw")
+        self.device = PushDevice.objects.create(
+            user=self.user, token="https://push.example.com/sub/1",
+            platform=PushDevice.PLATFORM_WEB, p256dh="pkey", auth="akey",
+        )
+
+    @patch("pywebpush.webpush")
+    def test_reports_delivered(self, mock_webpush):
+        mock_webpush.return_value = type("Resp", (), {"status_code": 201})()
+        [result] = services.send_test_push(self.user)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], 201)
+        self.assertEqual(json.loads(mock_webpush.call_args.kwargs["data"])["title"], "Aviso de prueba")
+
+    @patch("pywebpush.webpush")
+    def test_reports_a_rejection_with_its_status(self, mock_webpush):
+        from pywebpush import WebPushException
+
+        mock_webpush.side_effect = WebPushException(
+            "forbidden", response=type("Resp", (), {"status_code": 403})()
+        )
+        [result] = services.send_test_push(self.user)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], 403)
+        self.assertTrue(PushDevice.objects.filter(id=self.device.id).exists())
+
+    @patch("pywebpush.webpush")
+    def test_an_expired_subscription_is_reported_and_removed(self, mock_webpush):
+        from pywebpush import WebPushException
+
+        mock_webpush.side_effect = WebPushException(
+            "gone", response=type("Resp", (), {"status_code": 410})()
+        )
+        [result] = services.send_test_push(self.user)
+        self.assertFalse(result["ok"])
+        self.assertIn("volver a activarla", result["detail"])
+        self.assertFalse(PushDevice.objects.filter(id=self.device.id).exists())
+
+    @override_settings(VAPID_PUBLIC_KEY="", VAPID_PRIVATE_KEY="")
+    def test_reports_missing_vapid(self):
+        [result] = services.send_test_push(self.user)
+        self.assertFalse(result["ok"])
+        self.assertIn("VAPID", result["detail"])
+
+    def test_without_devices_returns_nothing(self):
+        PushDevice.objects.all().delete()
+        self.assertEqual(services.send_test_push(self.user), [])
+
+    @patch("pywebpush.webpush")
+    def test_the_endpoint_only_touches_the_callers_devices(self, mock_webpush):
+        from rest_framework.test import APIClient
+
+        mock_webpush.return_value = type("Resp", (), {"status_code": 201})()
+        other = User.objects.create_user("zed", "z@example.com", "pw")
+        PushDevice.objects.create(
+            user=other, token="https://push.example.com/sub/2",
+            platform=PushDevice.PLATFORM_WEB, p256dh="p", auth="a",
+        )
+        client = APIClient()
+        self.assertEqual(client.post("/api/v1/push-devices/test/").status_code, 401)
+        client.force_authenticate(self.user)
+        res = client.post("/api/v1/push-devices/test/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["devices"], 1)
+        self.assertEqual(mock_webpush.call_count, 1)
+
+
 # ---------------------------------------------------------------------------
 # Centro de notificaciones -- API
 # ---------------------------------------------------------------------------

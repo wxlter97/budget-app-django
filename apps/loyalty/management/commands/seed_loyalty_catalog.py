@@ -106,6 +106,7 @@ class Command(BaseCommand):
             "default_rate": _dec(spec["default"]),
             "point_value": None if spec["point_value"] is None else _dec(spec["point_value"]),
             "is_active": spec["active"],
+            "min_amount": None if spec["min_amount"] is None else _dec(spec["min_amount"]),
         }
         if program is None:
             program = LoyaltyProgram.all_objects.create(
@@ -116,7 +117,7 @@ class Command(BaseCommand):
             changed = program.is_deleted
             for field, value in defaults.items():
                 # No pisar un valor de canje puesto a mano si el catálogo no trae uno.
-                if field == "point_value" and value is None:
+                if field in ("point_value", "min_amount") and value is None:
                     continue
                 if getattr(program, field) != value:
                     setattr(program, field, value)
@@ -129,9 +130,11 @@ class Command(BaseCommand):
         for rate in spec["rates"]:
             slug, value = rate[0], rate[1]
             weekday = rate[2] if len(rate) > 2 else None
+            autopay = rate[3] if len(rate) > 3 else False
             _upsert(
                 LoyaltyCategoryRate,
-                {"program": program, "category_type": types[slug], "merchant": None, "weekday": weekday},
+                {"program": program, "category_type": types[slug], "merchant": None,
+                 "weekday": weekday, "requires_autopay": autopay},
                 {"rate": _dec(value)}, counts, "tasas",
             )
         for rate in spec["merchants"]:
@@ -139,6 +142,7 @@ class Command(BaseCommand):
             weekday = rate[2] if len(rate) > 2 else None
             _upsert(
                 LoyaltyCategoryRate,
-                {"program": program, "category_type": None, "merchant": merchants[name], "weekday": weekday},
+                {"program": program, "category_type": None, "merchant": merchants[name],
+                 "weekday": weekday, "requires_autopay": False},
                 {"rate": _dec(value)}, counts, "tasas de comercio",
             )
