@@ -267,10 +267,12 @@ class MapCategoriesCommandTests(APITestCase):
             credit_limit=Decimal("3000"), billing_cycle_day=15, card_product=product,
         )
         gas = self._cat("Gasolina")
-        # Miércoles: 2 puntos por dólar en gasolina (Agrícola).
+        # Miércoles: 2 puntos por dólar en gasolina (Agrícola), 1 de base.
         txn = Transaction.objects.create(
             wallet=card, category=gas, amount=Decimal("50.00"), date="2026-09-23"
         )
-        self.assertFalse(LoyaltyEarning.objects.filter(transaction=txn).exists())
+        # Sin rubro sólo gana la tasa base.
+        self.assertEqual(LoyaltyEarning.objects.get(transaction=txn).points, Decimal("50.00"))
         self.assertIn("1 gasto(s) recalculado(s)", self._run("--recompute"))
+        # Ya con rubro gasolina: el bono del miércoles.
         self.assertEqual(LoyaltyEarning.objects.get(transaction=txn).points, Decimal("100.00"))

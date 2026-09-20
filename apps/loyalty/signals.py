@@ -46,8 +46,8 @@ def _recompute(instance: Transaction) -> None:
     category_type = (merchant.category_type if merchant else None) or (
         instance.category.category_type if instance.category_id else None
     )
-    if category_type is None and merchant is None:
-        return
+    # Sin rubro ni comercio no hay tasa especial que buscar, pero la tasa base del
+    # programa igual aplica: "1 punto por dólar" vale para cualquier compra.
 
     programs = LoyaltyProgram.objects.filter(
         card_product_id=card_product_id, is_active=True, kind__in=_AUTO_KINDS

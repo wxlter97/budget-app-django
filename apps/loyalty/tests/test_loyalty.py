@@ -149,14 +149,18 @@ class LoyaltyEarningSignalTests(APITestCase):
         )
         self.assertFalse(LoyaltyEarning.objects.filter(transaction=txn).exists())
 
-    def test_uncategorized_category_type_earns_nothing(self):
+    def test_category_without_rubro_still_earns_the_base_rate(self):
+        """"1 punto por dólar" vale para cualquier compra: sin rubro no hay tasa
+        especial que buscar, pero la base del programa aplica."""
         other_cat = Category.objects.create(
             workspace=self.ws, name="Otro", type=Category.TYPE_EXPENSE,
         )
         txn = Transaction.objects.create(
             wallet=self.card, category=other_cat, amount=Decimal("50.00"), date="2026-09-01",
         )
-        self.assertFalse(LoyaltyEarning.objects.filter(transaction=txn).exists())
+        earnings = {e.kind: e for e in LoyaltyEarning.objects.filter(transaction=txn)}
+        self.assertEqual(earnings[LoyaltyProgram.KIND_POINTS].points, Decimal("100.00"))  # 2/$
+        self.assertEqual(earnings[LoyaltyProgram.KIND_CASHBACK].amount, Decimal("0.50"))  # 1 %
 
     def test_income_does_not_earn(self):
         income_cat = Category.objects.create(
