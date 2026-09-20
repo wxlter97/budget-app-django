@@ -450,17 +450,33 @@ class TransactionSerializer(serializers.ModelSerializer):
         return bool(obj.receipt)
 
     def get_refund_transaction_id(self, obj) -> str | None:
-        refund = obj.refund_transactions.first()
+        # `.all()` y no `.first()`: `.first()` ignora el prefetch y consulta por
+        # fila. Con `refund_transactions` prefetcheado (ver el viewset) no hay
+        # consulta; sin prefetch es una sola. Mismo orden que `.first()` (el del Meta).
+        refund = next(iter(obj.refund_transactions.all()), None)
         return str(refund.id) if refund else None
+
+    def _loyalty_enabled(self) -> bool:
+        """El gate depende del workspace, no de la fila: `has_feature_for_workspace`
+        son ~3 consultas (owner, suscripción, plan por defecto), así que se calcula
+        una sola vez por request y se guarda en el contexto, que comparten todas
+        las filas de un listado. Calculado por fila fue el N+1 de /transactions/
+        (Sentry, release budget-api-00074)."""
+        from apps.billing.services import has_feature_for_workspace
+
+        context = self.context
+        if "_loyalty_enabled" not in context:
+            context["_loyalty_enabled"] = has_feature_for_workspace(
+                context["workspace"], "loyalty"
+            )
+        return context["_loyalty_enabled"]
 
     def get_loyalty_earnings(self, obj) -> list[dict]:
         """Puntos/cashback/descuento que generó esta transacción -- de sólo
         lectura, ver `apps.loyalty`. Mismo gate que `LoyaltyEarningViewSet`:
         sin la función Pro `loyalty`, la transacción sigue guardando sus
         earnings (por si más tarde se pasa a Pro), pero no los expone acá."""
-        from apps.billing.services import has_feature_for_workspace
-
-        if not has_feature_for_workspace(self.context["workspace"], "loyalty"):
+        if not self._loyalty_enabled():
             return []
         return [
             {
@@ -472,7 +488,9 @@ class TransactionSerializer(serializers.ModelSerializer):
                 "original_amount": e.original_amount,
                 "saved_amount": e.discount_saved_amount,
             }
-            for e in obj.loyalty_earnings.select_related("program").all()
+            # `.all()` sobre el manager prefetcheado; un `.select_related()`
+            # encima descarta el prefetch y consulta de nuevo por fila.
+            for e in obj.loyalty_earnings.all()
         ]
 
     def validate_tag_names(self, value):
@@ -711,7 +729,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
     filterset_class = TransactionFilter
     queryset = Transaction.objects.select_related(
         "wallet", "to_wallet", "category", "created_by", "paid_by"
-    ).prefetch_related("loyalty_earnings__program", "shares__person").all()
+    ).prefetch_related(
+        "loyalty_earnings__program", "shares__person", "tags", "refund_transactions"
+    ).all()
 
     def get_queryset(self):
         user = self.request.user
