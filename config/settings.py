@@ -489,8 +489,22 @@ INBOUND_MAILGUN_SIGNING_KEY = env("INBOUND_MAILGUN_SIGNING_KEY", default="")
 # Agregar un proveedor nuevo = una clase en providers.py + este nombre.
 DEFAULT_PAYMENT_PROVIDER = env("DEFAULT_PAYMENT_PROVIDER", default="wompi")
 
-WOMPI_API_KEY = env("WOMPI_API_KEY", default="")
-WOMPI_WEBHOOK_SECRET = env("WOMPI_WEBHOOK_SECRET", default="")
+# Wompi (docs.wompi.sv). `CLIENT_ID` es el «App ID» del negocio y `CLIENT_SECRET` su
+# «API Secret» (panel.wompi.sv → negocio → detalle): con ellos se pide el token OAuth
+# y, además, es la llave con la que Wompi firma los webhooks (header `wompi_hash`).
+WOMPI_CLIENT_ID = env("WOMPI_CLIENT_ID", default="")
+WOMPI_CLIENT_SECRET = env("WOMPI_CLIENT_SECRET", default="")
+WOMPI_API_URL = env("WOMPI_API_URL", default="https://api.wompi.sv")
+WOMPI_AUTH_URL = env("WOMPI_AUTH_URL", default="https://id.wompi.sv/connect/token")
+# URL pública de `billing/webhooks/wompi/`: se pasa en cada enlace de pago único. Los
+# enlaces recurrentes no la aceptan: para ésos, registrarla en el panel de Wompi.
+WOMPI_WEBHOOK_URL = env("WOMPI_WEBHOOK_URL", default="")
+# Un negocio en modo desarrollo manda cobros con `EsProductiva=false`, que no cobran
+# dinero real. En producción se ignoran; en pruebas se aceptan para poder activar.
+WOMPI_ACCEPT_TEST_PAYMENTS = env.bool("WOMPI_ACCEPT_TEST_PAYMENTS", default=False)
+# Sólo mientras se prueba: escribe en el log el cuerpo de cada webhook (trae nombre y
+# correo del cliente) para ver qué manda Wompi en los cobros recurrentes.
+WOMPI_LOG_WEBHOOKS = env.bool("WOMPI_LOG_WEBHOOKS", default=False)
 
 LOGGING = {
     "version": 1,

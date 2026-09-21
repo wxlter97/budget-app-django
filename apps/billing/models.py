@@ -273,3 +273,26 @@ class PromoCodeRedemption(BaseModel):
 
     def __str__(self):
         return f"{self.user} · {self.promo_code.code}"
+
+
+class ProcessedWebhookEvent(models.Model):
+    """
+    Avisos de proveedor ya aplicados. Los proveedores reintentan los webhooks: sin este
+    registro, un aviso repetido volvería a extender el período de una suscripción (y
+    cobraría "dos meses" por un solo pago). Sin soft delete a propósito: borrarlo
+    reabriría la puerta al doble conteo.
+    """
+
+    provider = models.CharField(max_length=20)
+    event_id = models.CharField(max_length=120)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "event_id"], name="unique_webhook_event_per_provider"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.provider}:{self.event_id}"

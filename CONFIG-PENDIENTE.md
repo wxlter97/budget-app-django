@@ -107,7 +107,7 @@
       Además cada `Category` del workspace tiene que quedar mapeada a un `CategoryType` para
       heredar la tasa. Sin cargar nada: los puntos, el cashback y el descuento sugerido nunca
       se calculan, aunque toda la lógica y la UI ya estén.
-- [ ] **Pagos y suscripciones (Wompi).** `WOMPI_API_KEY` + `WOMPI_WEBHOOK_SECRET`, más
+- [ ] **Pagos y suscripciones (Wompi).** `WOMPI_CLIENT_ID` + `WOMPI_CLIENT_SECRET` (`DEPLOY.md` §2.4b), más
       `manage.py seed_billing_plans` una sola vez (`DEPLOY.md` §2.4) y
       `manage.py grandfather_existing_users` si ya hay usuarios reales de antes. Sin esto no
       se puede cobrar y los planes quedan sin precio. Ojo con el webhook: si deja de llegar,
