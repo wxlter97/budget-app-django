@@ -9,6 +9,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.common.api import AtomicOnlyForWritesMixin
+
 from .models import Plan, PlanPrice, Subscription
 from .providers import WompiError, get_provider
 from .services import (
@@ -88,7 +90,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 
 
 @extend_schema(tags=["billing"])
-class MyPlanView(APIView):
+class MyPlanView(AtomicOnlyForWritesMixin, APIView):
     """GET: el plan efectivo del usuario autenticado + su suscripción
     vigente (si tiene una). Sin suscripción activa, ``subscription`` es
     null y ``plan`` es el plan default (gratis)."""

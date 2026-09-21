@@ -113,3 +113,19 @@ class CompressionTests(APITestCase):
         self.assertEqual(res["Content-Encoding"], "gzip")
         plain = self.client.get("/api/v1/transactions/", **{HEADER: str(ws.id)})
         self.assertNotIn("Content-Encoding", plain)
+
+
+class DashboardSummaryQueriesTests(APITestCase):
+    def test_reads_the_exchange_rates_once(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        user = User.objects.create_user("carol", "c@example.com", "pw")
+        ws = Workspace.objects.create(name="C")
+        Membership.objects.create(workspace=ws, user=user, role=Membership.ROLE_OWNER)
+        self.client.force_authenticate(user)
+        with CaptureQueriesContext(connection) as ctx:
+            res = self.client.get("/api/v1/reports/summary/", **{HEADER: str(ws.id)})
+        self.assertEqual(res.status_code, 200)
+        rate_reads = [q for q in ctx.captured_queries if "workspaces_exchangerate" in q["sql"]]
+        self.assertEqual(len(rate_reads), 1)

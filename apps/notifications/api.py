@@ -1,5 +1,6 @@
 from django.conf import settings
 from drf_spectacular.utils import extend_schema
+from apps.common.api import AtomicOnlyForWritesMixin
 from rest_framework import generics, mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -144,7 +145,7 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 @extend_schema(tags=["notifications"])
-class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+class NotificationViewSet(AtomicOnlyForWritesMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     Historial de notificaciones del usuario autenticado -- recordatorios
     programados que de verdad se mandaron, invitaciones a presupuestos y

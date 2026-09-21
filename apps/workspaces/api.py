@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from apps.common import periods
 from apps.common.api import (
+    AtomicOnlyForWritesMixin,
     HasWorkspaceMembership,
     IsWorkspaceOwner,
     WorkspaceScopedViewSet,
@@ -82,7 +83,7 @@ class WorkspaceOwnerOrReadOnly(IsAuthenticated):
         return membership.role == Membership.ROLE_OWNER
 
 
-class WorkspaceViewSet(viewsets.ModelViewSet):
+class WorkspaceViewSet(AtomicOnlyForWritesMixin, viewsets.ModelViewSet):
     """
     CRUD de workspaces del usuario. No usa el header X-Workspace-ID:
     la pertenencia se deduce de las Membership del usuario autenticado.
