@@ -15,6 +15,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
@@ -42,6 +43,8 @@ class WebhookEvent:
     # Id único del aviso en el proveedor (p. ej. el de la transacción): permite ignorar un
     # reintento del mismo aviso en vez de aplicarlo dos veces.
     event_id: str = ""
+    # Monto cobrado, si el proveedor lo informa: se compara con el precio antes de activar.
+    amount: Decimal | None = None
     raw: dict = dataclasses.field(default_factory=dict)
 
 
@@ -214,7 +217,11 @@ class WompiProvider(PaymentProvider):
                 "descripcionProducto": f"Suscripción mensual a {plan_name} (ref. {reference})",
             })
         else:
-            config = {"urlRedirect": success_url, "urlRetorno": cancel_url}
+            # Monto y cantidad NO editables: si no, se podría pagar menos que el precio.
+            config = {
+                "urlRedirect": success_url, "urlRetorno": cancel_url,
+                "esMontoEditable": False, "esCantidadEditable": False,
+            }
             if settings.WOMPI_WEBHOOK_URL:
                 config["urlWebhook"] = settings.WOMPI_WEBHOOK_URL
             data = self.request_api("POST", "/EnlacePago", {
@@ -256,12 +263,18 @@ class WompiProvider(PaymentProvider):
         if not approved or (is_test and not settings.WOMPI_ACCEPT_TEST_PAYMENTS):
             return WebhookEvent(kind="payment.ignored", raw=body)
 
+        try:
+            amount = Decimal(str(body["Monto"]))
+        except (KeyError, InvalidOperation):
+            amount = None
+
         link = body.get("EnlacePago") or {}
         return WebhookEvent(
             kind="subscription.activated",  # activar y renovar se aplican igual
             reference=str(link.get("IdentificadorEnlaceComercio") or ""),
             external_customer_id=str((body.get("cliente") or {}).get("Email") or ""),
             event_id=str(body.get("IdTransaccion") or ""),
+            amount=amount,
             raw=body,
         )
 

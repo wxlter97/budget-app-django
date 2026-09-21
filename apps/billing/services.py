@@ -6,7 +6,9 @@ necesita chequear un límite la lógica de "cuál suscripción cuenta".
 """
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
+from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import F
@@ -25,6 +27,9 @@ from .models import (
     Subscription,
 )
 from .providers import WebhookEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_default_plan() -> Plan | None:
@@ -195,6 +200,17 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
             ).first()
         if sub is None:
             return None
+
+        # Nunca activar por menos de lo que cuesta: un enlace con monto editable, o un aviso
+        # armado a mano por quien conozca la firma, no debe regalar el plan.
+        if event.amount is not None and sub.plan_price is not None:
+            expected = Decimal(sub.plan_price.amount_cents) / 100
+            if event.amount < expected:
+                logger.warning(
+                    "Pago de %s por %s (esperado %s): no se activa la suscripción %s.",
+                    provider_code, event.amount, expected, sub.pk,
+                )
+                return None
 
         if event.event_id:
             try:

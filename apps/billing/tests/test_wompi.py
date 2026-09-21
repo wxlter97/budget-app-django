@@ -41,10 +41,10 @@ def sign(body: bytes) -> str:
     return hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
 
 
-def approved_body(reference="", tx="tx-1", productive=True, result="ExitosaAprobada"):
+def approved_body(reference="", tx="tx-1", productive=True, result="ExitosaAprobada", amount=0.99):
     return {
         "IdTransaccion": tx, "ResultadoTransaccion": result, "EsProductiva": productive,
-        "Monto": 0.99, "EnlacePago": {"Id": 66, "IdentificadorEnlaceComercio": reference},
+        "Monto": amount, "EnlacePago": {"Id": 66, "IdentificadorEnlaceComercio": reference},
         "cliente": {"Nombre": "Ana", "Email": "ana@example.com"},
     }
 
@@ -140,6 +140,8 @@ class WompiHttpTests(TestCase):
         self.assertEqual(body["identificadorEnlaceComercio"], str(sub.checkout_reference))
         self.assertEqual(body["monto"], 9.99)
         self.assertEqual(body["configuracion"]["urlRedirect"], "https://money.wxlter.dev/pro/ok")
+        self.assertIs(body["configuracion"]["esMontoEditable"], False)
+        self.assertIs(body["configuracion"]["esCantidadEditable"], False)
         self.assertEqual(body["configuracion"]["urlWebhook"], "https://api.example/billing/webhooks/wompi/")
         sub.refresh_from_db()
         self.assertEqual(sub.external_subscription_id, "15")
@@ -226,6 +228,7 @@ class WompiWebhookParsingTests(TestCase):
         self.assertEqual(event.reference, "abc-ref")
         self.assertEqual(event.event_id, "tx-77")
         self.assertEqual(event.external_customer_id, "ana@example.com")
+        self.assertEqual(str(event.amount), "0.99")
 
     def test_a_declined_payment_is_ignored(self):
         body = json.dumps(approved_body("r", result="Rechazada")).encode()
@@ -309,6 +312,28 @@ class ApplyEventTests(TestCase):
         sub.refresh_from_db()
         self.assertEqual(sub.status, Subscription.STATUS_PENDING)
 
+    def test_paying_less_than_the_price_does_not_activate(self):
+        from decimal import Decimal
+        from apps.billing.providers import WebhookEvent
+        sub = self._sub(PlanPrice.BILLING_ANNUAL)  # $9.99
+        event = WebhookEvent(kind="subscription.activated", reference=str(sub.checkout_reference),
+                             event_id="tx-cheap", amount=Decimal("0.01"))
+        self.assertIsNone(apply_webhook_event(event, provider_code="wompi"))
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, Subscription.STATUS_PENDING)
+        # Y el aviso no queda marcado como procesado: uno correcto posterior sí cuenta.
+        self.assertFalse(ProcessedWebhookEvent.objects.filter(event_id="tx-cheap").exists())
+
+    def test_paying_the_exact_price_or_more_activates(self):
+        from decimal import Decimal
+        from apps.billing.providers import WebhookEvent
+        sub = self._sub(PlanPrice.BILLING_ANNUAL)
+        event = WebhookEvent(kind="subscription.activated", reference=str(sub.checkout_reference),
+                             event_id="tx-ok", amount=Decimal("9.99"))
+        apply_webhook_event(event, provider_code="wompi")
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, Subscription.STATUS_ACTIVE)
+
     def test_an_unknown_reference_is_a_no_op(self):
         from apps.billing.providers import WebhookEvent
         event = WebhookEvent(kind="subscription.activated", reference="00000000-0000-0000-0000-000000000000", event_id="x")
@@ -358,7 +383,7 @@ class WompiEndToEndTests(APITestCase):
         sub = Subscription.objects.get(user=self.user)
         self.client.force_authenticate(None)
 
-        body = json.dumps(approved_body(str(sub.checkout_reference), tx="tx-e2e")).encode()
+        body = json.dumps(approved_body(str(sub.checkout_reference), tx="tx-e2e", amount=9.99)).encode()
         resp = self.client.post(WEBHOOK, body, content_type="application/json", HTTP_WOMPI_HASH=sign(body))
 
         self.assertEqual(resp.status_code, 202)
