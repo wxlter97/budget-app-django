@@ -19,7 +19,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.models import Wallet
-from apps.common.api import HasWorkspaceMembership
+from apps.common.api import AtomicOnlyForWritesMixin, HasWorkspaceMembership
 from apps.transactions.services import RECEIPT_CONTENT_TYPES, RECEIPT_MAX_SIZE
 
 from . import parsing, receipts, services
@@ -46,7 +46,7 @@ class AIStatusSerializer(serializers.Serializer):
 
 
 @extend_schema(tags=["ai"], responses=AIStatusSerializer)
-class AIStatusView(APIView):
+class AIStatusView(AtomicOnlyForWritesMixin, APIView):
     """Si la IA está disponible y cuánta cuota le queda al usuario.
 
     No pide `X-Workspace-ID`: la cuota es por usuario, no por presupuesto —

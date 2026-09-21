@@ -9,15 +9,47 @@ workspace automáticamente.
 """
 import uuid
 
+from django.db import connection, transaction
+from django.utils.decorators import method_decorator
 from rest_framework import serializers, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.permissions import SAFE_METHODS, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .services import disabled_modules
 
 WORKSPACE_HEADER = "X-Workspace-ID"
+
+
+@method_decorator(transaction.non_atomic_requests, name="dispatch")
+class AtomicOnlyForWritesMixin:
+    """
+    Con ``ATOMIC_REQUESTS=True`` Django envuelve **cada** request en
+    ``BEGIN`` … ``COMMIT``. Con Neon cada uno es un viaje de red (~25 ms): un GET
+    de sólo lectura pagaba dos viajes extra sin ganar nada, porque una lectura no
+    tiene nada que deshacer. En los endpoints más livianos (categorías, avisos,
+    workspaces) eran el 40 % de sus consultas.
+
+    Este mixin saca esa transacción de los métodos seguros (GET/HEAD/OPTIONS) y
+    la conserva idéntica para los demás: el ``atomic`` se abre acá, dentro de
+    ``dispatch``, y DRF sigue marcando el rollback cuando una excepción de API
+    ocurre después de haber escrito (``set_rollback`` sólo mira que haya un bloque
+    atómico abierto).
+
+    Supone que **un GET no escribe**. Ver ``test_reads_are_read_only``, que lo
+    comprueba sobre los listados principales.
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        # Un GET sólo abre bloque si YA hay uno afuera (p. ej. dentro de un TestCase):
+        # así una respuesta 4xx, que DRF marca para rollback, se revierte en un
+        # savepoint propio y no arrastra la transacción de quien llamó. En producción
+        # no hay bloque afuera y el GET corre sin transacción.
+        if request.method in SAFE_METHODS and not connection.in_atomic_block:
+            return super().dispatch(request, *args, **kwargs)
+        with transaction.atomic():
+            return super().dispatch(request, *args, **kwargs)
 
 
 def resolve_workspace(request):
@@ -117,7 +149,7 @@ class WorkspaceScopedSerializerMixin:
         return super().create(validated_data)
 
 
-class WorkspaceScopedViewSet(viewsets.ModelViewSet):
+class WorkspaceScopedViewSet(AtomicOnlyForWritesMixin, viewsets.ModelViewSet):
     """
     Base para los viewsets de dominio.
 
@@ -156,7 +188,7 @@ class ModuleFlagsSerializer(serializers.Serializer):
     )
 
 
-class ModuleFlagsView(APIView):
+class ModuleFlagsView(AtomicOnlyForWritesMixin, APIView):
     """Lo que el cliente pregunta una vez para saber qué módulos están
     apagados a mano desde el admin, y esconder/avisar en consecuencia en vez
     de dejar que la persona los toque y se tope con un 503."""
