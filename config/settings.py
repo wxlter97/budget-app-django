@@ -505,6 +505,11 @@ WOMPI_ACCEPT_TEST_PAYMENTS = env.bool("WOMPI_ACCEPT_TEST_PAYMENTS", default=Fals
 # Sólo mientras se prueba: escribe en el log el cuerpo de cada webhook (trae nombre y
 # correo del cliente) para ver qué manda Wompi en los cobros recurrentes.
 WOMPI_LOG_WEBHOOKS = env.bool("WOMPI_LOG_WEBHOOKS", default=False)
+# Webhook de Discord para eventos de pago (nueva suscripción, renovación, vencida sin
+# renovarse) -- ver apps.billing.services.notify_billing_event. Separado de
+# SUPPORT_WEBHOOK_URL a propósito: son canales de audiencia distinta (soporte vs. plata).
+# Vacío (default) = no se manda nada, igual que SUPPORT_WEBHOOK_URL.
+BILLING_WEBHOOK_URL = env("BILLING_WEBHOOK_URL", default="")
 # Relay de salida SOLO para las llamadas a Wompi (id.wompi.sv/api.wompi.sv), no para el
 # resto del tráfico del backend. Existe porque el firewall de Wompi (Azure Application
 # Gateway) bloquea tráfico de IPs de datacenter/nube -- comprobado el 22-sep-2026 con

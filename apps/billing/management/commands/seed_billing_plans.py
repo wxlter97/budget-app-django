@@ -101,18 +101,24 @@ class Command(BaseCommand):
         )
 
         prices = [
-            (plus, PlanPrice.BILLING_MONTHLY, 99),
-            (plus, PlanPrice.BILLING_ANNUAL, 999),
-            (pro, PlanPrice.BILLING_MONTHLY, 199),
+            (plus, PlanPrice.BILLING_MONTHLY, 99, True),
+            (plus, PlanPrice.BILLING_ANNUAL, 999, True),
+            (pro, PlanPrice.BILLING_MONTHLY, 199, True),
             # Antes 1999 (19.99): descuento más agresivo en el anual para
             # empujar la conversión desde mensual (~4 meses gratis en vez de ~2).
-            (pro, PlanPrice.BILLING_ANNUAL, 1499),
-            (pro, PlanPrice.BILLING_LIFETIME, 1999),
+            (pro, PlanPrice.BILLING_ANNUAL, 1499, True),
+            # Desactivado (22-sep-2026, decisión de negocio): un pago único sin
+            # cobro recurrente detrás es la exposición real del negocio (ver
+            # ECONOMIA-POR-PLAN.md, tabla C) -- un usuario que lo usa al techo de
+            # Pro se paga solo en 1.6-2.4 años. Se deja la fila (no se borra) por
+            # si alguien ya lo compró; `is_active=False` sólo le quita el botón a
+            # los nuevos.
+            (pro, PlanPrice.BILLING_LIFETIME, 1999, False),
         ]
-        for plan, period, cents in prices:
+        for plan, period, cents, active in prices:
             PlanPrice.objects.update_or_create(
                 plan=plan, billing_period=period, currency="USD",
-                defaults={"amount_cents": cents, "is_active": True},
+                defaults={"amount_cents": cents, "is_active": active},
             )
 
         self.stdout.write(self.style.SUCCESS(
