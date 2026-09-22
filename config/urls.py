@@ -8,7 +8,7 @@ from drf_spectacular.views import (
 )
 from rest_framework_simplejwt.views import TokenVerifyView
 
-from apps.ai.api import AIStatusView, ParseTextView, ReceiptScanView
+from apps.ai.api import AIStatusView, ChatView, ParseTextView, ReceiptScanView, VoiceParseView
 from apps.common.api import ModuleFlagsView
 from apps.billing.api import (
     CancelSubscriptionView,
@@ -89,6 +89,8 @@ api_v1_patterns = [
     path("ai/status/", AIStatusView.as_view(), name="ai-status"),
     path("ai/receipt/", ReceiptScanView.as_view(), name="ai-receipt"),
     path("ai/parse/", ParseTextView.as_view(), name="ai-parse"),
+    path("ai/voice/", VoiceParseView.as_view(), name="ai-voice"),
+    path("ai/chat/", ChatView.as_view(), name="ai-chat"),
     path(
         "notification-preferences/",
         NotificationPreferenceView.as_view(),
