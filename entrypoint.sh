@@ -22,7 +22,13 @@ fi
 python manage.py check --deploy --tag caches --tag database --tag security || true
 
 # Cloud Run inyecta $PORT (8080). En local cae a 8000.
+#
+# `--header-map dangerous`: Wompi firma sus webhooks con la cabecera `wompi_hash` (con
+# guion bajo) y Gunicorn, por defecto, DESCARTA en silencio toda cabecera con guion bajo:
+# sin esto `verify_webhook` nunca la vería y rechazaría todos los avisos. No abre un hueco
+# nuevo: el webhook se autentica con la firma HMAC, no con la cabecera en sí.
 exec gunicorn config.wsgi:application \
+  --header-map dangerous \
   --bind "0.0.0.0:${PORT:-8000}" \
   --workers "${WEB_CONCURRENCY:-2}" \
   --threads "${GUNICORN_THREADS:-4}" \

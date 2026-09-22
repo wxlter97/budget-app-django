@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -87,19 +88,25 @@ class CheckoutViewTests(APITestCase):
         body.update(overrides)
         return self.client.post(CHECKOUT, body)
 
-    def test_price_without_provider_ref_is_rejected(self):
-        # `self.monthly` no tiene `external_refs["wompi"]` cargado todavía.
-        resp = self._checkout()
+    def test_price_without_provider_ref_is_rejected_when_the_provider_needs_one(self):
+        # Wompi crea el enlace en cada compra y no necesita el precio dado de alta; un
+        # proveedor que sí lo necesita (un catálogo de planes propio) rechaza el precio.
+        from apps.billing import providers
+
+        class NeedsRef(providers.ManualProvider):
+            code = "needsref"
+            needs_external_ref = True
+
+        with mock.patch.dict(providers._PROVIDERS, {"needsref": NeedsRef}):
+            resp = self._checkout(provider="needsref")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("plan_price", resp.data)
         # No debe quedar una Subscription huérfana en `pending`.
         self.assertFalse(Subscription.objects.exists())
 
-    def test_wompi_checkout_fails_loudly_while_unimplemented(self):
-        self.monthly.external_refs = {"wompi": "plan_test_123"}
-        self.monthly.save()
+    def test_wompi_checkout_without_credentials_is_a_502_and_leaves_no_orphan(self):
         resp = self._checkout(provider="wompi")
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.status_code, status.HTTP_502_BAD_GATEWAY)
         self.assertFalse(Subscription.objects.exists())
 
     def test_manual_provider_has_no_checkout(self):
@@ -150,15 +157,16 @@ class CancelSubscriptionViewTests(APITestCase):
         sub.refresh_from_db()
         self.assertTrue(sub.is_in_force)  # sigue contando como Pro hasta la fecha
 
-    def test_wompi_subscription_cancel_fails_loudly_while_unimplemented(self):
+    def test_wompi_subscription_without_a_recurring_link_just_stops_renewing(self):
         Subscription.objects.create(
             user=self.user, plan=self.pro, provider="wompi", status=Subscription.STATUS_ACTIVE,
         )
         resp = self.client.post(CANCEL)
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(resp.data["canceled_at"])
 
 
 class WompiWebhookViewTests(APITestCase):
-    def test_fails_with_501_while_signature_verification_is_unimplemented(self):
+    def test_an_unsigned_webhook_is_rejected(self):
         resp = self.client.post(WEBHOOK_WOMPI, {"anything": "goes"}, format="json")
-        self.assertEqual(resp.status_code, 501)
+        self.assertEqual(resp.status_code, 403)

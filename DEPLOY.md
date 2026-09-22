@@ -217,6 +217,59 @@ gcloud run jobs update budget-admin --region us-east1 \
 gcloud run jobs execute budget-admin --region us-east1 --wait
 ```
 
+### 2.4b Wompi (credenciales y pruebas en sandbox)
+
+Wompi da dos valores por negocio (panel.wompi.sv → el negocio → detalle): el **App ID**
+(`WOMPI_CLIENT_ID`) y el **API Secret** (`WOMPI_CLIENT_SECRET`). El mismo secreto firma los
+webhooks (`wompi_hash`). Con el negocio en **modo desarrollo** no se cobra dinero real.
+
+```bash
+# 1. Los secretos: se piden por teclado para que no queden en el historial ni en el chat.
+read -rs "WID?App ID: "; echo; printf '%s' "$WID" | gcloud secrets create wompi-client-id --data-file=- ; unset WID
+read -rs "WSEC?API Secret: "; echo; printf '%s' "$WSEC" | gcloud secrets create wompi-client-secret --data-file=- ; unset WSEC
+
+# 2. Permiso para la service account de Cloud Run (la del servicio y la de los jobs).
+PN=$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')
+for s in wompi-client-id wompi-client-secret; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:${PN}-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
+
+# 3. Al servicio y al job de administración. Las dos banderas de prueba se APAGAN al terminar.
+URL=$(gcloud run services describe budget-api --region us-east1 --format='value(status.url)')
+gcloud run services update budget-api --region us-east1 \
+  --update-secrets "WOMPI_CLIENT_ID=wompi-client-id:latest,WOMPI_CLIENT_SECRET=wompi-client-secret:latest" \
+  --update-env-vars "WOMPI_WEBHOOK_URL=${URL}/api/v1/billing/webhooks/wompi/,WOMPI_ACCEPT_TEST_PAYMENTS=true,WOMPI_LOG_WEBHOOKS=true"
+gcloud run jobs update budget-admin --region us-east1 \
+  --update-secrets "WOMPI_CLIENT_ID=wompi-client-id:latest,WOMPI_CLIENT_SECRET=wompi-client-secret:latest" \
+  --update-env-vars "WOMPI_WEBHOOK_URL=${URL}/api/v1/billing/webhooks/wompi/"
+```
+
+En el panel de Wompi, en el detalle del negocio, poner la misma URL en **«Notifica via Webhook»**:
+los enlaces recurrentes no aceptan una URL propia, sólo los de pago único.
+
+Probar (`adm` = el job `budget-admin`):
+
+```bash
+adm wompi_probe                      # ¿sirven las credenciales? (sólo pide el token)
+adm wompi_probe --pago 1.00          # enlace de pago único: abrirlo y pagar con una tarjeta de prueba
+adm wompi_probe --recurrente 0.99    # enlace recurrente: abrirlo y afiliarse
+adm wompi_probe --suscriptores ID    # quién quedó suscrito (ID = idEnlace del paso anterior)
+adm wompi_probe --desactivar ID      # desactiva un enlace recurrente de prueba
+```
+
+Con `WOMPI_LOG_WEBHOOKS=true` el cuerpo de cada aviso queda en el log del servicio
+(`gcloud run services logs read budget-api --region us-east1 --limit 100 | grep "Webhook de Wompi"`):
+ahí se ve qué manda Wompi en un cobro recurrente. **Al terminar**, quitar las dos banderas de
+prueba: `WOMPI_ACCEPT_TEST_PAYMENTS` haría que un cobro de prueba active suscripciones, y
+`WOMPI_LOG_WEBHOOKS` deja nombre y correo de los clientes en los logs.
+
+```bash
+gcloud run services update budget-api --region us-east1 \
+  --remove-env-vars "WOMPI_ACCEPT_TEST_PAYMENTS,WOMPI_LOG_WEBHOOKS"
+```
+
 ### 2.5 Bucket de GCS — recibos y backups (una sola vez)
 
 Un solo bucket privado cubre las dos cosas que hoy no tienen dónde vivir:

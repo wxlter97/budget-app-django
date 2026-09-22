@@ -6,15 +6,30 @@ necesita chequear un límite la lógica de "cuál suscripción cuenta".
 """
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
+from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from .models import PROVIDER_MANUAL, Plan, PromoCode, PromoCodeRedemption, Subscription
+from dateutil.relativedelta import relativedelta
+
+from .models import (
+    PROVIDER_MANUAL,
+    Plan,
+    PlanPrice,
+    ProcessedWebhookEvent,
+    PromoCode,
+    PromoCodeRedemption,
+    Subscription,
+)
 from .providers import WebhookEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_default_plan() -> Plan | None:
@@ -141,6 +156,25 @@ def require_feature_for_workspace(workspace, key: str) -> None:
 # ---------------------------------------------------------------------------
 # Webhooks
 # ---------------------------------------------------------------------------
+_PERIOD_MONTHS = {PlanPrice.BILLING_MONTHLY: 1, PlanPrice.BILLING_ANNUAL: 12}
+
+
+def _paid_period_end(sub: Subscription):
+    """
+    Hasta cuándo queda pagada `sub` tras un cobro nuevo: un período más, contado desde
+    lo que ya tenía pagado si todavía no vencía (renovar antes no pierde días) o desde
+    hoy si ya había vencido. Sin `plan_price` no se sabe la duración: se deja como está.
+    """
+    if sub.plan_price is None:
+        return sub.current_period_end
+    months = _PERIOD_MONTHS.get(sub.plan_price.billing_period)
+    if months is None:
+        return None  # de por vida: no vence
+    now = timezone.now()
+    base = sub.current_period_end if sub.current_period_end and sub.current_period_end > now else now
+    return base + relativedelta(months=months)
+
+
 def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscription | None:
     """
     Aplica un `WebhookEvent` ya normalizado a la Subscription
@@ -149,37 +183,63 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
     si no, por `external_subscription_id` (renovaciones/cancelaciones
     posteriores). Sin ninguna coincidencia, no hace nada y devuelve None
     -- p. ej. un evento de prueba del lado del proveedor.
+
+    Idempotente por `event.event_id`: los proveedores reintentan los avisos, y aplicar dos
+    veces el mismo cobro extendería el período de más.
     """
-    sub = None
-    if event.reference:
-        sub = Subscription.objects.filter(checkout_reference=event.reference).first()
-    if sub is None and event.external_subscription_id:
-        sub = Subscription.objects.filter(
-            provider=provider_code, external_subscription_id=event.external_subscription_id
-        ).first()
-    if sub is None:
+    if event.kind == "payment.ignored":
         return None
 
-    if event.external_subscription_id:
-        sub.external_subscription_id = event.external_subscription_id
-    if event.external_customer_id:
-        sub.external_customer_id = event.external_customer_id
+    with transaction.atomic():
+        sub = None
+        if event.reference:
+            sub = Subscription.objects.filter(checkout_reference=event.reference).first()
+        if sub is None and event.external_subscription_id:
+            sub = Subscription.objects.filter(
+                provider=provider_code, external_subscription_id=event.external_subscription_id
+            ).first()
+        if sub is None:
+            return None
 
-    if event.kind in ("subscription.activated", "subscription.renewed"):
-        sub.status = Subscription.STATUS_ACTIVE
-        if event.current_period_end:
-            sub.current_period_end = event.current_period_end
-    elif event.kind == "subscription.failed":
-        sub.status = Subscription.STATUS_PAST_DUE
-    elif event.kind == "subscription.canceled":
-        sub.status = Subscription.STATUS_CANCELED
-        sub.canceled_at = timezone.now()
+        # Nunca activar por menos de lo que cuesta: un enlace con monto editable, o un aviso
+        # armado a mano por quien conozca la firma, no debe regalar el plan.
+        if event.amount is not None and sub.plan_price is not None:
+            expected = Decimal(sub.plan_price.amount_cents) / 100
+            if event.amount < expected:
+                logger.warning(
+                    "Pago de %s por %s (esperado %s): no se activa la suscripción %s.",
+                    provider_code, event.amount, expected, sub.pk,
+                )
+                return None
 
-    sub.save(update_fields=[
-        "status", "current_period_end", "canceled_at",
-        "external_subscription_id", "external_customer_id", "updated_at",
-    ])
-    return sub
+        if event.event_id:
+            try:
+                with transaction.atomic():
+                    ProcessedWebhookEvent.objects.create(
+                        provider=provider_code, event_id=event.event_id
+                    )
+            except IntegrityError:
+                return sub  # ya se aplicó este aviso
+
+        if event.external_subscription_id:
+            sub.external_subscription_id = event.external_subscription_id
+        if event.external_customer_id:
+            sub.external_customer_id = event.external_customer_id
+
+        if event.kind in ("subscription.activated", "subscription.renewed"):
+            sub.status = Subscription.STATUS_ACTIVE
+            sub.current_period_end = event.current_period_end or _paid_period_end(sub)
+        elif event.kind == "subscription.failed":
+            sub.status = Subscription.STATUS_PAST_DUE
+        elif event.kind == "subscription.canceled":
+            sub.status = Subscription.STATUS_CANCELED
+            sub.canceled_at = timezone.now()
+
+        sub.save(update_fields=[
+            "status", "current_period_end", "canceled_at",
+            "external_subscription_id", "external_customer_id", "updated_at",
+        ])
+        return sub
 
 
 # ---------------------------------------------------------------------------

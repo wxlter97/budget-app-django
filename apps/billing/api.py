@@ -1,15 +1,18 @@
+import logging
+
 from django.conf import settings
 from drf_spectacular.utils import extend_schema
-from apps.common.api import AtomicOnlyForWritesMixin
-from rest_framework import mixins, serializers, viewsets
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework import mixins, serializers, status, viewsets
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.common.api import AtomicOnlyForWritesMixin
+
 from .models import Plan, PlanPrice, Subscription
-from .providers import get_provider
+from .providers import WompiError, get_provider
 from .services import (
     active_subscription_for,
     apply_webhook_event,
@@ -17,6 +20,16 @@ from .services import (
     redeem_promo_code,
     start_trial,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class PaymentProviderUnavailable(APIException):
+    """El proveedor de pago falló o no contestó: no es culpa de quien hizo la petición."""
+
+    status_code = status.HTTP_502_BAD_GATEWAY
+    default_detail = "No pudimos comunicarnos con el proveedor de pagos. Intentá de nuevo en un rato."
+    default_code = "payment_provider_unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -120,15 +133,15 @@ class CheckoutView(APIView):
         plan_price = data["plan_price"]
         provider_code = data["provider"] or settings.DEFAULT_PAYMENT_PROVIDER
 
-        if provider_code != "manual" and not plan_price.external_ref(provider_code):
-            raise ValidationError(
-                {"plan_price": f"Este precio todavía no está habilitado para '{provider_code}'."}
-            )
-
         try:
             provider = get_provider(provider_code)
         except ValueError as exc:
             raise ValidationError({"provider": str(exc)})
+
+        if provider.needs_external_ref and not plan_price.external_ref(provider_code):
+            raise ValidationError(
+                {"plan_price": f"Este precio todavía no está habilitado para '{provider_code}'."}
+            )
 
         subscription = Subscription.objects.create(
             user=request.user, plan=plan_price.plan, plan_price=plan_price,
@@ -142,6 +155,10 @@ class CheckoutView(APIView):
         except NotImplementedError as exc:
             subscription.delete()
             raise ValidationError({"provider": str(exc)})
+        except WompiError as exc:
+            subscription.delete()
+            logger.error("Checkout de Wompi falló: %s", exc)
+            raise PaymentProviderUnavailable()
 
         if session.external_customer_id:
             subscription.external_customer_id = session.external_customer_id
@@ -212,6 +229,9 @@ class CancelSubscriptionView(APIView):
             provider.cancel_subscription(sub)
         except NotImplementedError as exc:
             raise ValidationError({"provider": str(exc)})
+        except WompiError as exc:
+            logger.error("Cancelación en Wompi falló: %s", exc)
+            raise PaymentProviderUnavailable()
 
         sub.refresh_from_db()
         return Response(SubscriptionSerializer(sub).data)
@@ -227,11 +247,10 @@ class WompiWebhookView(APIView):
     renovada / cancelada / fallida) y actualiza la ``Subscription``
     correspondiente vía `services.apply_webhook_event`.
 
-    NOTA: `WompiProvider.verify_webhook`/`parse_webhook_event` son un
-    esqueleto sin confirmar contra la documentación real de Wompi todavía
-    -- este endpoint falla con 501 hasta que se complete esa parte (ver
-    ``apps/billing/providers.py``). No apuntar el webhook de Wompi acá en
-    producción antes de eso.
+    La firma (`wompi_hash`, HMAC-SHA256 del cuerpo con el API Secret) se
+    verifica con `WompiProvider.verify_webhook`. Ojo: es una cabecera con guion
+    bajo y Gunicorn las descarta salvo con `--header-map dangerous` (ver
+    `entrypoint.sh`).
     """
 
     authentication_classes = []

@@ -9,9 +9,19 @@ en `_PROVIDERS`, sin tocar modelos ni vistas.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import hmac
+import json
+import logging
+import time
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
+import requests
 from django.conf import settings
+from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
@@ -30,6 +40,11 @@ class WebhookEvent:
     external_subscription_id: str = ""
     external_customer_id: str = ""
     current_period_end: datetime | None = None
+    # Id único del aviso en el proveedor (p. ej. el de la transacción): permite ignorar un
+    # reintento del mismo aviso en vez de aplicarlo dos veces.
+    event_id: str = ""
+    # Monto cobrado, si el proveedor lo informa: se compara con el precio antes de activar.
+    amount: Decimal | None = None
     raw: dict = dataclasses.field(default_factory=dict)
 
 
@@ -37,6 +52,9 @@ class PaymentProvider:
     """Interfaz que implementa cada proveedor concreto."""
 
     code: str
+    # Si el precio tiene que estar dado de alta de antemano en el proveedor (con su id en
+    # `PlanPrice.external_refs`). Wompi crea el enlace en cada compra: no lo necesita.
+    needs_external_ref = True
 
     def create_checkout(self, *, user, plan_price, subscription, success_url: str, cancel_url: str) -> CheckoutSession:
         raise NotImplementedError
@@ -61,6 +79,7 @@ class ManualProvider(PaymentProvider):
     """
 
     code = "manual"
+    needs_external_ref = False
 
     def create_checkout(self, *, user, plan_price, subscription, success_url, cancel_url):
         raise NotImplementedError(
@@ -92,51 +111,181 @@ class ManualProvider(PaymentProvider):
             subscription.save(update_fields=["canceled_at", "updated_at"])
 
 
+class WompiError(Exception):
+    """Wompi respondió con un error, no contestó, o mandó algo que no entendemos."""
+
+
+# Token OAuth en memoria del proceso: dura ~1 h (`expires_in`) y la propia documentación
+# pide no pedir uno por cada llamada.
+_token_cache: dict = {"value": "", "expires_at": 0.0}
+
+
 class WompiProvider(PaymentProvider):
     """
-    ESQUELETO SIN VERIFICAR. La forma general (enlace de pago hosteado +
-    notificación por webhook) surge de la documentación pública de Wompi,
-    pero el shape exacto del payload y el algoritmo de firma NO están
-    confirmados todavía -- hace falta acceso a docs.wompi.sv con
-    credenciales reales (o al sandbox) para completar los tres métodos de
-    abajo. Hasta entonces, cualquier intento de checkout/webhook con este
-    proveedor falla con un error claro en vez de fallar silenciosamente o
-    inventar un comportamiento.
+    Wompi El Salvador (docs.wompi.sv).
 
-    Cuando se complete, `create_checkout` debe pasar
-    `subscription.checkout_reference` como referencia/metadata del enlace
-    de pago para que `parse_webhook_event` la pueda leer de vuelta y
-    devolverla en `WebhookEvent.reference` -- así se correlaciona el
-    webhook con esta fila incluso antes de conocer el id de suscripción de
-    Wompi (ver `services.apply_webhook_event`).
+    - Autenticación: OAuth 2.0 *client credentials* con el App ID y el API Secret del negocio.
+    - Plan **mensual**: un `EnlacePagoRecurrente` *por compra* (no uno compartido por plan).
+      Así el enlace corresponde a una sola persona: su `idEnlace` queda en
+      `Subscription.external_subscription_id` y cancelar es desactivar ese enlace. El día de
+      cobro es el día de la compra (tope 28). Wompi no acepta una referencia nuestra en estos
+      enlaces, por eso la referencia va en el texto del producto y la correspondencia real es
+      el id del enlace.
+    - Plan **anual / de por vida**: un `EnlacePago` único con `identificadorEnlaceComercio` =
+      nuestra `checkout_reference`, que vuelve en el webhook. Se renueva pagando otro enlace.
+    - Webhook: firmado con `wompi_hash` = HMAC-SHA256 hex del cuerpo crudo con el API Secret.
+      Sólo avisa de cobros exitosos: un cobro recurrente fallido no manda nada, y la
+      suscripción simplemente deja de renovarse y vence sola.
+
+    Lo que la documentación no dice (primer cobro, forma exacta del aviso de un cobro
+    recurrente) se descubre en el sandbox: `manage.py wompi_probe` y `WOMPI_LOG_WEBHOOKS`.
     """
 
     code = "wompi"
+    needs_external_ref = False
+    TIMEOUT = 15
 
     def __init__(self):
-        self.api_key = settings.WOMPI_API_KEY
-        self.webhook_secret = settings.WOMPI_WEBHOOK_SECRET
+        self.client_id = settings.WOMPI_CLIENT_ID
+        self.client_secret = settings.WOMPI_CLIENT_SECRET
 
+    # -- HTTP -----------------------------------------------------------------
+    def _token(self) -> str:
+        if _token_cache["value"] and time.time() < _token_cache["expires_at"]:
+            return _token_cache["value"]
+        if not (self.client_id and self.client_secret):
+            raise WompiError("Faltan WOMPI_CLIENT_ID / WOMPI_CLIENT_SECRET.")
+        try:
+            res = requests.post(
+                settings.WOMPI_AUTH_URL,
+                data={
+                    "grant_type": "client_credentials",
+                    "audience": "wompi_api",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                },
+                timeout=self.TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            raise WompiError(f"No se pudo contactar a Wompi para autenticar: {exc}") from exc
+        if res.status_code != 200:
+            raise WompiError(f"Wompi rechazó las credenciales ({res.status_code}).")
+        data = res.json()
+        token = data.get("access_token")
+        if not token:
+            raise WompiError("Wompi no devolvió un access_token.")
+        # Un minuto de margen para no usar un token que caduca a mitad de la llamada.
+        _token_cache["value"] = token
+        _token_cache["expires_at"] = time.time() + max(int(data.get("expires_in", 3600)) - 60, 0)
+        return token
+
+    def request_api(self, method: str, path: str, payload: dict | None = None):
+        """Llama a la API de Wompi con el token vigente. Devuelve el JSON (o None si no hay cuerpo)."""
+        try:
+            res = requests.request(
+                method,
+                f"{settings.WOMPI_API_URL}{path}",
+                json=payload,
+                headers={"authorization": f"Bearer {self._token()}"},
+                timeout=self.TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            raise WompiError(f"No se pudo contactar a Wompi: {exc}") from exc
+        if res.status_code == 401:
+            _token_cache["value"] = ""  # el token pudo haber caducado antes de lo previsto
+        if not 200 <= res.status_code < 300:
+            raise WompiError(f"Wompi respondió {res.status_code}: {res.text[:300]}")
+        if not res.content:
+            return None
+        try:
+            return res.json()
+        except ValueError as exc:
+            raise WompiError("Wompi respondió algo que no es JSON.") from exc
+
+    # -- PaymentProvider ------------------------------------------------------
     def create_checkout(self, *, user, plan_price, subscription, success_url, cancel_url):
-        raise NotImplementedError(
-            "Falta conectar contra la API real de Wompi (crear el enlace de pago) -- "
-            "pendiente de credenciales/sandbox, ver docs.wompi.sv."
-        )
+        reference = str(subscription.checkout_reference)
+        amount = round(plan_price.amount_cents / 100, 2)
+        plan_name = plan_price.plan.name
+
+        if plan_price.billing_period == plan_price.BILLING_MONTHLY:
+            data = self.request_api("POST", "/EnlacePagoRecurrente", {
+                "diaDePago": min(timezone.localdate().day, 28),
+                "nombre": f"{plan_name} · mensual",
+                "idAplicativo": self.client_id,
+                "monto": amount,
+                "descripcionProducto": f"Suscripción mensual a {plan_name} (ref. {reference})",
+            })
+        else:
+            # Monto y cantidad NO editables: si no, se podría pagar menos que el precio.
+            config = {
+                "urlRedirect": success_url, "urlRetorno": cancel_url,
+                "esMontoEditable": False, "esCantidadEditable": False,
+            }
+            if settings.WOMPI_WEBHOOK_URL:
+                config["urlWebhook"] = settings.WOMPI_WEBHOOK_URL
+            data = self.request_api("POST", "/EnlacePago", {
+                "identificadorEnlaceComercio": reference,
+                "monto": amount,
+                "nombreProducto": f"{plan_name} · {plan_price.get_billing_period_display().lower()}",
+                "configuracion": config,
+            })
+
+        url = (data or {}).get("urlEnlace") or (data or {}).get("urlEnlaceLargo")
+        if not url:
+            raise WompiError("Wompi no devolvió la URL del enlace de pago.")
+        subscription.external_subscription_id = str((data or {}).get("idEnlace", ""))
+        subscription.save(update_fields=["external_subscription_id", "updated_at"])
+        return CheckoutSession(checkout_url=url)
 
     def verify_webhook(self, request) -> bool:
-        raise NotImplementedError(
-            "Falta confirmar el algoritmo de firma real de Wompi para webhooks."
-        )
+        signature = request.META.get("HTTP_WOMPI_HASH", "").strip().lower()
+        if not signature or not self.client_secret:
+            return False
+        expected = hmac.new(
+            self.client_secret.encode(), request.body, hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected, signature)
 
     def parse_webhook_event(self, request) -> WebhookEvent:
-        raise NotImplementedError(
-            "Falta confirmar el shape real del payload de webhook de Wompi."
+        if settings.WOMPI_LOG_WEBHOOKS:
+            logger.warning("Webhook de Wompi: %s", request.body.decode("utf-8", "replace"))
+        try:
+            body = json.loads(request.body)
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        approved = str(body.get("ResultadoTransaccion", "")).lower().startswith("exitosa")
+        productive = body.get("EsProductiva", body.get("esProductiva"))
+        is_test = productive is False
+        if not approved or (is_test and not settings.WOMPI_ACCEPT_TEST_PAYMENTS):
+            return WebhookEvent(kind="payment.ignored", raw=body)
+
+        try:
+            amount = Decimal(str(body["Monto"]))
+        except (KeyError, InvalidOperation):
+            amount = None
+
+        link = body.get("EnlacePago") or {}
+        return WebhookEvent(
+            kind="subscription.activated",  # activar y renovar se aplican igual
+            reference=str(link.get("IdentificadorEnlaceComercio") or ""),
+            external_customer_id=str((body.get("cliente") or {}).get("Email") or ""),
+            event_id=str(body.get("IdTransaccion") or ""),
+            amount=amount,
+            raw=body,
         )
 
     def cancel_subscription(self, subscription) -> None:
-        raise NotImplementedError(
-            "Falta el endpoint real de cancelación de Wompi."
-        )
+        plan_price = subscription.plan_price
+        recurring = plan_price is not None and plan_price.billing_period == plan_price.BILLING_MONTHLY
+        if recurring and subscription.external_subscription_id:
+            # Desactiva el enlace recurrente de esta persona: no se le cobra el mes siguiente.
+            self.request_api("POST", f"/EnlacePagoRecurrente/{subscription.external_subscription_id}")
+        # Con o sin enlace, el acceso sigue hasta el fin del período ya pagado.
+        ManualProvider().cancel_subscription(subscription)
 
 
 _PROVIDERS: dict[str, type[PaymentProvider]] = {
