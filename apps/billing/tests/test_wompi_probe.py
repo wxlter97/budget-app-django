@@ -69,6 +69,33 @@ class DiagnosticoRedCommandTests(TestCase):
         out = self._run(ok, ("200", '{"access_token":"x"}'))
         self.assertIn("Ninguno fue bloqueado", out)
 
+    @override_settings(WOMPI_PROXY_URL="http://user:pass@relay.example:3128")
+    def test_also_tries_the_configured_relay_and_reports_if_it_gets_through(self):
+        ok_direct = mock.Mock(status_code=403, text="Microsoft-Azure-Application-Gateway")
+        ok_relay = mock.Mock(status_code=200, text='{"access_token":"x"}')
+        out = StringIO()
+        with mock.patch("requests.post", side_effect=[ok_direct, ok_relay]), \
+             mock.patch(
+                 "apps.billing.management.commands.wompi_probe.curl_post_form",
+                 return_value=("403", "Microsoft-Azure-Application-Gateway"),
+             ):
+            call_command("wompi_probe", "--diagnostico-red", stdout=out)
+        text = out.getvalue()
+        self.assertIn("requests vía WOMPI_PROXY_URL: 200", text)
+        self.assertIn("El relay (WOMPI_PROXY_URL) SÍ pasa", text)
+
+    @override_settings(WOMPI_PROXY_URL="http://user:pass@relay.example:3128")
+    def test_reports_clearly_when_the_relay_is_also_blocked(self):
+        blocked = mock.Mock(status_code=403, text="Microsoft-Azure-Application-Gateway")
+        out = StringIO()
+        with mock.patch("requests.post", return_value=blocked), \
+             mock.patch(
+                 "apps.billing.management.commands.wompi_probe.curl_post_form",
+                 return_value=("403", "Microsoft-Azure-Application-Gateway"),
+             ):
+            call_command("wompi_probe", "--diagnostico-red", stdout=out)
+        self.assertIn("también fue bloqueado", out.getvalue())
+
     def test_without_credentials_it_refuses_clearly(self):
         out = StringIO()
         with override_settings(WOMPI_CLIENT_ID="", WOMPI_CLIENT_SECRET=""):
