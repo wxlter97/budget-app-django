@@ -262,6 +262,27 @@ def _recurring_description(rec) -> str:
     return f"Transferencia a {rec.to_wallet.name} (recurrente)"
 
 
+def register_manual_recurring_occurrence(rec, date):
+    """Avanza `next_due_date` cuando el usuario registra a mano (desde la
+    tarjeta "Programado") una ocurrencia de un recurrente antes de que corra
+    el job automático.
+
+    Sin esto, `next_due_date` se queda como estaba y
+    `generate_recurring_transactions` la vuelve a crear al día siguiente --
+    el alta manual sólo prellenaba el formulario, nunca tocaba la regla (ver
+    `openScheduledItem` en el frontend). `select_for_update` evita la
+    carrera con ese mismo job si corren a la vez.
+    """
+    with db_transaction.atomic():
+        rec = RecurringExpense.objects.select_for_update().get(pk=rec.pk)
+        due = rec.next_due_date
+        while due <= date:
+            due = _advance(due, rec.frequency)
+        if due != rec.next_due_date:
+            rec.next_due_date = due
+            rec.save(update_fields=["next_due_date", "updated_at"])
+
+
 def generate_recurring_transactions(as_of=None):
     """Crea una Transaction por cada período vencido de cada gasto recurrente activo.
 
