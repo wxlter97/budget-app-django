@@ -73,6 +73,11 @@ class NotificationPreference(BaseModel):
     # behavior_insights`) -- un solo toggle para los seis, no uno por
     # patrón.
     warn_insights = models.BooleanField(default=True)
+    # Resumen mensual (ver `apps.ai.summary` + `services.notify_monthly_summary`):
+    # un mensaje que conecta los mismos patrones de `behavior_insights` una
+    # vez al mes, en vez de reavisarlos sueltos. Toggle propio y no atado a
+    # `warn_insights` a propósito, para poder apagar uno sin el otro.
+    warn_monthly_summary = models.BooleanField(default=True)
 
     def __str__(self):
         return f"Preferencias de {self.user}"
@@ -88,6 +93,11 @@ class NotificationLog(BaseModel):
     # services.behavior_insights`) -- un solo kind para los seis patrones,
     # el detalle va en `title`/`body`.
     KIND_INSIGHT = "insight"
+    # Resumen mensual (ver `apps.ai.summary`): un mensaje que conecta los
+    # mismos patrones de arriba, redactado por IA (o el texto de respaldo si
+    # no está disponible). Kind propio, no `KIND_INSIGHT`, para que se pueda
+    # apagar aparte (ver `NotificationPreference.warn_monthly_summary`).
+    KIND_MONTHLY_SUMMARY = "monthly_summary"
     KIND_CHOICES = [
         (KIND_RECURRING_DUE, "Recurrente por vencer"),
         (KIND_INSTALLMENT_DUE, "Cuota por vencer"),
@@ -95,6 +105,7 @@ class NotificationLog(BaseModel):
         (KIND_LOW_BALANCE, "Saldo bajo"),
         (KIND_STATEMENT_DUE, "Estado de cuenta por vencer"),
         (KIND_INSIGHT, "Patrón de gasto detectado"),
+        (KIND_MONTHLY_SUMMARY, "Resumen mensual"),
     ]
 
     user = models.ForeignKey(
@@ -159,6 +170,7 @@ class Notification(BaseModel):
     KIND_LOW_BALANCE = NotificationLog.KIND_LOW_BALANCE
     KIND_STATEMENT_DUE = NotificationLog.KIND_STATEMENT_DUE
     KIND_INSIGHT = NotificationLog.KIND_INSIGHT
+    KIND_MONTHLY_SUMMARY = NotificationLog.KIND_MONTHLY_SUMMARY
     KIND_CHOICES = [
         (KIND_INVITATION, "Invitación a un presupuesto"),
         (KIND_EMAIL_IMPORT_PENDING, "Correo bancario por revisar"),

@@ -22,7 +22,7 @@ from apps.accounts.models import Wallet
 from apps.common.api import AtomicOnlyForWritesMixin, HasWorkspaceMembership
 from apps.transactions.services import RECEIPT_CONTENT_TYPES, RECEIPT_MAX_SIZE
 
-from . import parsing, receipts, services
+from . import chat, parsing, receipts, services
 from .client import AIUnavailable
 
 
@@ -268,3 +268,99 @@ class ParseTextView(APIView):
             )
 
         return Response(ParseCandidateSerializer(candidate).data)
+
+
+# ---------------------------------------------------------------------------
+# Voz / dictado
+# ---------------------------------------------------------------------------
+class VoiceRequestSerializer(serializers.Serializer):
+    """Sólo para el esquema: el parseo real lo hace la vista, que necesita el
+    archivo crudo."""
+
+    file = serializers.FileField(help_text="WAV, MP3, AAC, OGG o FLAC, hasta 15 MB.")
+    wallet = serializers.UUIDField(
+        required=False,
+        help_text="Opcional. Si viene, la respuesta trae los posibles duplicados de esa cartera.",
+    )
+
+
+@extend_schema(tags=["ai"], request=VoiceRequestSerializer, responses={200: ParseCandidateSerializer})
+class VoiceParseView(APIView):
+    """Convierte un dictado en una candidata editable. **No crea nada.**
+
+    Mismo contrato que `/ai/parse/`: el audio se transcribe y se interpreta
+    en una sola llamada a Gemini (sin un proveedor de transcripción aparte),
+    y sale por el mismo parser -- ver `parsing.parse_audio`.
+    """
+
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership]
+    parser_classes = [MultiPartParser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "ai"
+
+    def post(self, request):
+        file = request.FILES.get("file")
+        if not file:
+            raise ValidationError({"file": "Requerido."})
+        if file.size > parsing.AUDIO_MAX_SIZE:
+            raise ValidationError({"file": "El audio pesa más de 15 MB."})
+        if file.content_type not in parsing.AUDIO_CONTENT_TYPES:
+            raise ValidationError({"file": "Formato no soportado (usá WAV, MP3, AAC, OGG o FLAC)."})
+
+        try:
+            candidate = parsing.parse_audio(
+                user=request.user,
+                workspace=request.workspace,
+                audio_bytes=file.read(),
+                content_type=file.content_type,
+                wallet=_wallet_from(request),
+            )
+        except AIUnavailable:
+            raise AIServiceUnavailable(
+                "No se pudo procesar el audio ahora mismo. Probá de nuevo o escribilo a mano."
+            )
+
+        return Response(ParseCandidateSerializer(candidate).data)
+
+
+# ---------------------------------------------------------------------------
+# Chat sobre las finanzas del workspace
+# ---------------------------------------------------------------------------
+class ChatRequestSerializer(serializers.Serializer):
+    question = serializers.CharField(max_length=chat.MAX_QUESTION_LENGTH)
+
+
+class ChatResponseSerializer(serializers.Serializer):
+    answer = serializers.CharField()
+    # Nombre de la función que se llamó para responder (ver `chat._FUNCTIONS`),
+    # o `null` si la pregunta no daba para llamar ninguna. Informativo: el
+    # cliente no necesita validarlo contra una lista cerrada.
+    function_used = serializers.CharField(allow_null=True)
+
+
+@extend_schema(tags=["ai"], request=ChatRequestSerializer, responses={200: ChatResponseSerializer})
+class ChatView(APIView):
+    """Responde una pregunta sobre las finanzas del workspace activo.
+
+    La IA nunca toca la base directo ni genera SQL -- elige una función ya
+    existente de `apps.reports.services` y sólo redacta la respuesta con lo
+    que esa función devuelve. Ver `apps.ai.chat` para el detalle.
+    """
+
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "ai"
+
+    def post(self, request):
+        question = (request.data.get("question") or "").strip()
+        if not question:
+            raise ValidationError({"question": "Requerido."})
+        if len(question) > chat.MAX_QUESTION_LENGTH:
+            raise ValidationError({"question": f"Máximo {chat.MAX_QUESTION_LENGTH} caracteres."})
+
+        try:
+            result = chat.ask(user=request.user, workspace=request.workspace, question=question)
+        except AIUnavailable:
+            raise AIServiceUnavailable("No se pudo responder ahora mismo. Probá de nuevo en un momento.")
+
+        return Response(ChatResponseSerializer(result).data)
