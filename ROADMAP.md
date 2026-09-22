@@ -21,19 +21,21 @@
   lealtad, y los arreglos de escala de backend y frontend.
 - La Fase 0 está prácticamente cerrada: backup diario a GCS, Cloud Scheduler/job diario, Sentry,
   push web, correo saliente, alertas y Cloudflare Pages como hosting del front (ver la tabla de
-  Fase 0 arriba). La Fase 1 avanzó fuerte: Wompi tiene relay por Cloudflare Worker, cobro
-  recurrente, avisos de vencimiento, y su tarifa real ya está confirmada (1.1); 1.4 y 1.5 están
-  cerrados.
+  Fase 0 arriba). La Fase 1 avanzó fuerte: `WompiProvider` está implementado y probado (relay por
+  Cloudflare Worker, cobro recurrente, avisos de vencimiento, tarifa real confirmada); 1.1, 1.4 y
+  1.5 están cerrados. Lo único que falta para cobrar de verdad es configuración (credenciales
+  reales de Wompi) y probar de punta a punta (1.3), no código.
 - **De la Fase 2, ya están la base de IA con su cuota por plan (2.1), el escaneo de recibos
-  (2.2), la entrada por texto libre (2.3), la voz/dictado (2.5), el resumen mensual (2.9) y el
-  chat de finanzas (2.10)** — código y tests, pendiente sólo de crédito de prepago en AI Studio y
-  de que se prenda el interruptor `ai` del admin. Telegram (2.4), el DTE por correo (2.7) y el QR
-  de factura (2.8) quedaron **diferidos por decisión** (22-sep-2026), no por bloqueo técnico.
+  (2.2), la entrada por texto libre (2.3), la voz/dictado (2.5), la analítica sin cookies (2.6),
+  el resumen mensual (2.9) y el chat de finanzas (2.10)** — código y tests, pendiente sólo de
+  crédito de prepago en AI Studio y de que se prenda el interruptor `ai` del admin (y, para 2.6,
+  de crear la cuenta de Umami). Telegram (2.4), el DTE por correo (2.7) y el QR de factura (2.8)
+  quedaron **diferidos por decisión** (22-sep-2026), no por bloqueo técnico.
 - La app corre en web (Cloudflare Pages). **No hay build nativo publicado** y no hay
   `extra.eas.projectId`.
-- 1134 tests en el backend, 385 en el front, todos pasando.
-- Lo que falta no es código de producto para abrir y cobrar: es configuración y las funciones de
-  la Fase 2 que quedaron diferidas.
+- 1134 tests en el backend, 388 en el front, todos pasando.
+- Lo que falta para producto no es código: es configuración (Wompi, GCS, Umami) y las tres
+  funciones de la Fase 2 que quedaron diferidas por decisión.
 
 ---
 
@@ -91,13 +93,13 @@ Orden pensado para que cada pieza apoye la siguiente.
 | 2.3 | ~~**Entrada por texto libre (NLP)**~~ — **hecho**: `POST /ai/parse/` devuelve la misma candidata que los recibos, más el tipo y la cartera si la frase los nombra. Al modelo se le pasan los nombres reales de carteras y categorías para que elija de una lista cerrada. En la app, un campo de una línea en el alta | 🤖 ✅ | — |
 | 2.4 | **Canal de Telegram** — bot, webhook, vinculación de cuenta con token de un uso. Ya entra por `/ai/parse/`: no lleva parser propio. **Diferido por decisión (22-sep-2026):** no es prioridad ahora | 🤖 + 🧑 | 1 jornada |
 | 2.5 | ~~**Voz / dictado**~~ — **hecho (22-sep-2026)**: `apps/ai/parsing.py` se separó en `_build_context`/`_candidate_from_response` compartidos y `parse_audio()`, que manda el audio como `inline_data` con `has_audio=True` (mismo precio de audio que ya tenía `pricing.py`). `POST /ai/voice/` comparte la cuota de `parse`, no es una operación aparte. En la app, `VoiceInputButton` con `expo-audio`: graba a `.m4a`/AAC en nativo, y en web sólo aparece si el navegador sabe grabar `audio/mp4` (Safari sí, Chrome/Firefox de escritorio no — ahí no se muestra el botón, en vez de grabar en un formato que el backend rechaza) | 🤖 ✅ | — |
-| 2.6 | **Analítica** — decidir primero entre sin-cookies, GA4+Clarity con banner, o métricas propias; implementar web | 🧑 luego 🤖 | 0.5 jornada |
+| 2.6 | ~~**Analítica**~~ — **hecha (22-sep-2026)**: se decidió sin cookies (Umami Cloud). `src/lib/analytics.ts` (envoltorio `track()`) + script inyectado en `scripts/pwa-postbuild.js` (no en `app/+html.tsx`, que `web.output: "single"` ignora — confirmado con un build real). Eventos: alta de transacción por canal, presupuesto creado, invitación aceptada, inicio de trial, y el par inicio/fin de onboarding como proxy de abandono. La política de privacidad sigue siendo cierta tal cual está (Umami no usa cookies ni identifica personas): sin banner de consentimiento | 🧑 ✅ + 🤖 ✅ | — |
 | 2.7 | **DTE por correo (JSON)** — reusa `apps/email_import` entero; es el que da datos más ricos (ítems, IVA). **Diferido por decisión (22-sep-2026):** no es prioridad ahora | 🤖 | 1.5 jornadas |
 | 2.8 | **QR de factura** — captura y validación contra el portal de Hacienda. **Diferido por decisión (22-sep-2026):** no es prioridad ahora | 🤖 | 0.5 jornada |
 | 2.9 | ~~**Resumen y consejos mensuales**~~ — **hecho (22-sep-2026)**: `apps/ai/summary.py` conecta los patrones de `behavior_insights()` (que sigue siendo 100% determinista) en un solo texto por Gemini; si la IA no responde, `notifications.services._monthly_summary_text` cae al texto armado a mano con los mismos datos. Corre una vez al mes (día 1, para el mes que terminó), kind propio (`monthly_summary`) y toggle propio (`warn_monthly_summary`) en Ajustes → Notificaciones, independiente del de "Patrones de gasto". No consume cuota (lo dispara el servidor, no el usuario) | 🤖 ✅ | — |
 | 2.10 | ~~**Chat sobre tus finanzas**~~ — **hecho (22-sep-2026)**: `POST /ai/chat/` (`apps/ai/chat.py`) nunca toca la base ni genera SQL — dos llamadas a Gemini (elegir una función cerrada de `apps.reports.services` o ninguna, y sólo redactar con lo que esa función devuelve), contadas como **una sola** unidad de la cuota de chat aunque sean dos llamadas reales. Pantalla nueva "Chat de finanzas" en Herramientas → Análisis, historial sólo en memoria de la pantalla (no se guarda en el servidor, backlog punto 5) | 🤖 ✅ | — |
 
-**Subtotal: ~3 jornadas** (eran 6.5–8.5; 2.1, 2.2, 2.3, 2.5, 2.9 y 2.10 ya están — quedan 2.4, 2.6, 2.7 y 2.8, y las tres primeras están diferidas por decisión).
+**Subtotal: ~2 jornadas** (eran 6.5–8.5; 2.1, 2.2, 2.3, 2.5, 2.6, 2.9 y 2.10 ya están — quedan 2.4, 2.7 y 2.8, las tres diferidas por decisión).
 
 ---
 
@@ -142,9 +144,9 @@ documentar), no un día de calendario.
 |---|---|---|
 | 0 — Producción sólida | ~1.5 jornadas (prácticamente cerrada) | casi todo |
 | 1 — Antes de cobrar | ~1.5–2 jornadas (1.1 tarifa confirmada, 1.4 y 1.5 cerrados) | la mitad |
-| 2 — Funciones nuevas | ~3 jornadas (2.1, 2.2, 2.3, 2.5, 2.9 y 2.10 ya están) | poco |
+| 2 — Funciones nuevas | ~2 jornadas (2.1, 2.2, 2.3, 2.5, 2.6, 2.9 y 2.10 ya están) | poco |
 | 3 — Nativo y tiendas | ~3–4 jornadas | la mitad |
-| **Total** | **~9–10.5 jornadas** | |
+| **Total** | **~8–9.5 jornadas** | |
 
 **Traducido a calendario:** a 2–3 jornadas por semana son **3 a 5 semanas** para todo lo que
 queda (bajó de 7–10 al cerrarse gran parte de la Fase 2). El recorte que sigue importando: **las
