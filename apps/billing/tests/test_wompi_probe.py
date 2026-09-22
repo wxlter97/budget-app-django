@@ -69,7 +69,7 @@ class DiagnosticoRedCommandTests(TestCase):
         out = self._run(ok, ("200", '{"access_token":"x"}'))
         self.assertIn("Ninguno fue bloqueado", out)
 
-    @override_settings(WOMPI_PROXY_URL="http://user:pass@relay.example:3128")
+    @override_settings(WOMPI_RELAY_URL="https://wompi-relay.example.workers.dev", WOMPI_RELAY_SECRET="s3cr3t")
     def test_also_tries_the_configured_relay_and_reports_if_it_gets_through(self):
         ok_direct = mock.Mock(status_code=403, text="Microsoft-Azure-Application-Gateway")
         ok_relay = mock.Mock(status_code=200, text='{"access_token":"x"}')
@@ -81,10 +81,11 @@ class DiagnosticoRedCommandTests(TestCase):
              ):
             call_command("wompi_probe", "--diagnostico-red", stdout=out)
         text = out.getvalue()
-        self.assertIn("requests vía WOMPI_PROXY_URL: 200", text)
-        self.assertIn("El relay (WOMPI_PROXY_URL) SÍ pasa", text)
+        self.assertIn("requests vía WOMPI_RELAY_URL", text)
+        self.assertIn(": 200", text)
+        self.assertIn("El relay (WOMPI_RELAY_URL) SÍ pasa", text)
 
-    @override_settings(WOMPI_PROXY_URL="http://user:pass@relay.example:3128")
+    @override_settings(WOMPI_RELAY_URL="https://wompi-relay.example.workers.dev", WOMPI_RELAY_SECRET="s3cr3t")
     def test_reports_clearly_when_the_relay_is_also_blocked(self):
         blocked = mock.Mock(status_code=403, text="Microsoft-Azure-Application-Gateway")
         out = StringIO()

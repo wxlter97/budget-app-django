@@ -108,23 +108,33 @@ class WompiHttpTests(TestCase):
         with self.assertRaisesRegex(WompiError, "400"):
             WompiProvider().request_api("POST", "/EnlacePago", {})
 
-    def test_by_default_no_proxy_is_used(self):
+    def test_by_default_calls_wompi_directly_with_no_relay_header(self):
         post = self._token_ok()
         request = mock.Mock(return_value=FakeResponse(200, {"ok": True}))
         self._calls(post, request)
         WompiProvider().request_api("GET", "/algo")
-        self.assertIsNone(post.call_args.kwargs["proxies"])
-        self.assertIsNone(request.call_args.kwargs["proxies"])
+        self.assertEqual(post.call_args.args[0], "https://id.wompi.sv/connect/token")
+        self.assertEqual(request.call_args.args[1], "https://api.wompi.sv/algo")
+        self.assertNotIn("X-Relay-Secret", post.call_args.kwargs["headers"])
+        self.assertNotIn("X-Relay-Secret", request.call_args.kwargs["headers"])
 
-    @override_settings(WOMPI_PROXY_URL="http://user:pass@relay.example:3128")
-    def test_with_wompi_proxy_url_set_every_call_goes_through_it(self):
+    @override_settings(WOMPI_RELAY_URL="https://wompi-relay.example.workers.dev", WOMPI_RELAY_SECRET="s3cr3t")
+    def test_with_a_relay_configured_urls_are_rewritten_and_secret_is_sent(self):
         post = self._token_ok()
         request = mock.Mock(return_value=FakeResponse(200, {"ok": True}))
         self._calls(post, request)
-        WompiProvider().request_api("GET", "/algo")
-        expected = {"http": "http://user:pass@relay.example:3128", "https": "http://user:pass@relay.example:3128"}
-        self.assertEqual(post.call_args.kwargs["proxies"], expected)
-        self.assertEqual(request.call_args.kwargs["proxies"], expected)
+        WompiProvider().request_api("GET", "/EnlacePago/1")
+        self.assertEqual(post.call_args.args[0], "https://wompi-relay.example.workers.dev/id/connect/token")
+        self.assertEqual(post.call_args.kwargs["headers"]["X-Relay-Secret"], "s3cr3t")
+        self.assertEqual(request.call_args.args[1], "https://wompi-relay.example.workers.dev/api/EnlacePago/1")
+        self.assertEqual(request.call_args.kwargs["headers"]["X-Relay-Secret"], "s3cr3t")
+
+    @override_settings(WOMPI_RELAY_URL="https://wompi-relay.example.workers.dev/", WOMPI_RELAY_SECRET="s3cr3t")
+    def test_a_trailing_slash_on_the_relay_url_does_not_produce_a_double_slash(self):
+        post = self._token_ok()
+        self._calls(post, mock.Mock(return_value=FakeResponse(200, {})))
+        WompiProvider()._token()
+        self.assertEqual(post.call_args.args[0], "https://wompi-relay.example.workers.dev/id/connect/token")
 
     def test_monthly_checkout_creates_one_recurring_link_per_purchase(self):
         request = mock.Mock(return_value=FakeResponse(200, {

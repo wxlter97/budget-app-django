@@ -153,8 +153,23 @@ class WompiProvider(PaymentProvider):
         self.client_secret = settings.WOMPI_CLIENT_SECRET.strip()
 
     # -- HTTP -----------------------------------------------------------------
-    def _proxies(self) -> dict | None:
-        return {"http": settings.WOMPI_PROXY_URL, "https": settings.WOMPI_PROXY_URL} if settings.WOMPI_PROXY_URL else None
+    def _relay_headers(self) -> dict:
+        return {"X-Relay-Secret": settings.WOMPI_RELAY_SECRET} if settings.WOMPI_RELAY_URL else {}
+
+    def _auth_url(self) -> str:
+        """URL real de `id.wompi.sv/connect/token`, o su equivalente detrás del relay
+        (`{WOMPI_RELAY_URL}/id/connect/token`) cuando hay uno configurado."""
+        if not settings.WOMPI_RELAY_URL:
+            return settings.WOMPI_AUTH_URL
+        path = settings.WOMPI_AUTH_URL.split("id.wompi.sv", 1)[1]
+        return f"{settings.WOMPI_RELAY_URL.rstrip('/')}/id{path}"
+
+    def _api_url(self, path: str) -> str:
+        """URL real de `api.wompi.sv{path}`, o su equivalente detrás del relay
+        (`{WOMPI_RELAY_URL}/api{path}`) cuando hay uno configurado."""
+        if not settings.WOMPI_RELAY_URL:
+            return f"{settings.WOMPI_API_URL}{path}"
+        return f"{settings.WOMPI_RELAY_URL.rstrip('/')}/api{path}"
 
     def _token(self) -> str:
         if _token_cache["value"] and time.time() < _token_cache["expires_at"]:
@@ -163,14 +178,14 @@ class WompiProvider(PaymentProvider):
             raise WompiError("Faltan WOMPI_CLIENT_ID / WOMPI_CLIENT_SECRET.")
         try:
             res = requests.post(
-                settings.WOMPI_AUTH_URL,
+                self._auth_url(),
                 data={
                     "grant_type": "client_credentials",
                     "audience": "wompi_api",
                     "client_id": self.client_id,
                     "client_secret": self.client_secret,
                 },
-                proxies=self._proxies(),
+                headers=self._relay_headers(),
                 timeout=self.TIMEOUT,
             )
         except requests.RequestException as exc:
@@ -196,10 +211,9 @@ class WompiProvider(PaymentProvider):
         try:
             res = requests.request(
                 method,
-                f"{settings.WOMPI_API_URL}{path}",
+                self._api_url(path),
                 json=payload,
-                headers={"authorization": f"Bearer {self._token()}"},
-                proxies=self._proxies(),
+                headers={"authorization": f"Bearer {self._token()}", **self._relay_headers()},
                 timeout=self.TIMEOUT,
             )
         except requests.RequestException as exc:

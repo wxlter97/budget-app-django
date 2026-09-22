@@ -86,17 +86,18 @@ class Command(BaseCommand):
         curl_code, curl_body = curl_post_form(settings.WOMPI_AUTH_URL, form)
         self.stdout.write(f"\ncurl: {curl_code}\n{curl_body}\n")
 
-        proxy_code = None
-        if settings.WOMPI_PROXY_URL:
+        relay_code = None
+        if settings.WOMPI_RELAY_URL:
+            relay_url = f"{settings.WOMPI_RELAY_URL.rstrip('/')}/id/connect/token"
             try:
                 res = requests.post(
-                    settings.WOMPI_AUTH_URL, data=form, timeout=15,
-                    proxies={"http": settings.WOMPI_PROXY_URL, "https": settings.WOMPI_PROXY_URL},
+                    relay_url, data=form, timeout=15,
+                    headers={"X-Relay-Secret": settings.WOMPI_RELAY_SECRET},
                 )
-                proxy_code, proxy_body = str(res.status_code), res.text[:400]
+                relay_code, relay_body = str(res.status_code), res.text[:400]
             except requests.RequestException as exc:
-                proxy_code, proxy_body = None, str(exc)
-            self.stdout.write(f"\nrequests vía WOMPI_PROXY_URL: {proxy_code}\n{proxy_body}\n")
+                relay_code, relay_body = None, str(exc)
+            self.stdout.write(f"\nrequests vía WOMPI_RELAY_URL ({relay_url}): {relay_code}\n{relay_body}\n")
 
         py_blocked = py_code != "200" and "Application-Gateway" in (py_body or "")
         curl_blocked = curl_code != "200" and "Application-Gateway" in (curl_body or "")
@@ -111,11 +112,11 @@ class Command(BaseCommand):
             self.stdout.write("Ninguno fue bloqueado en esta corrida.")
         else:
             self.stdout.write("Resultado mixto e inesperado -- revisar los cuerpos de arriba.")
-        if settings.WOMPI_PROXY_URL:
-            if proxy_code == "200":
-                self.stdout.write(self.style.SUCCESS("El relay (WOMPI_PROXY_URL) SÍ pasa: sirve."))
+        if settings.WOMPI_RELAY_URL:
+            if relay_code == "200":
+                self.stdout.write(self.style.SUCCESS("El relay (WOMPI_RELAY_URL) SÍ pasa: sirve."))
             else:
-                self.stdout.write(self.style.ERROR("El relay (WOMPI_PROXY_URL) también fue bloqueado o falló."))
+                self.stdout.write(self.style.ERROR("El relay (WOMPI_RELAY_URL) también fue bloqueado o falló."))
 
     def handle(self, *args, **options):
         if options["diagnostico_red"]:
