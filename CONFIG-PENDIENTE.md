@@ -158,6 +158,13 @@ aviso *fuera* de la app.
 - [ ] **Deploy automático al mergear a `main`.** GitHub Actions + Workload Identity Federation
       para el backend y la integración de Git de Vercel para el front (`DEPLOY.md` §9).
       **(verificar)**
+- [ ] **Analítica (Umami Cloud).** `EXPO_PUBLIC_UMAMI_WEBSITE_ID` en el build del front. Vacío =
+      no se inyecta ningún script (`scripts/pwa-postbuild.js` en `moneyapp`) y `track()`
+      (`src/lib/analytics.ts`) no hace nada — la política de privacidad sigue siendo cierta tal
+      cual está, sin banner de consentimiento. **Estado al 22-sep-2026:** cuenta de Umami creada
+      con su Website ID; falta agregar la variable en Cloudflare Pages → el proyecto del front →
+      *Settings → Environment variables* (Production, y Preview si se quiere), junto al resto de
+      `EXPO_PUBLIC_*` (`DEPLOY.md` §3).
 
 ## No es configuración tuya, pero conviene saberlo
 
