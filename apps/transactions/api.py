@@ -398,6 +398,14 @@ class TransactionSerializer(serializers.ModelSerializer):
     pre_discount_amount = serializers.DecimalField(
         max_digits=14, decimal_places=2, write_only=True, required=False, allow_null=True,
     )
+    # Sólo lo manda el cliente al registrar a mano una ocurrencia de
+    # "Programado" (ver `openScheduledItem`/`ScheduledItem.source_id` en el
+    # frontend, `kind: "recurring"`): avanza `next_due_date` de la regla para
+    # que el job automático no la vuelva a crear al día siguiente.
+    recurring_expense = serializers.PrimaryKeyRelatedField(
+        queryset=RecurringExpense.objects.filter(is_active=True),
+        write_only=True, required=False, allow_null=True,
+    )
     loyalty_earnings = serializers.SerializerMethodField()
     paid_by_name = serializers.CharField(source="paid_by.name", read_only=True, default=None)
     shares = TransactionShareSerializer(many=True, read_only=True)
@@ -438,6 +446,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             "tag_names",
             "discount_program",
             "pre_discount_amount",
+            "recurring_expense",
             "loyalty_earnings",
             "created_by",
             "created_at",
@@ -592,6 +601,12 @@ class TransactionSerializer(serializers.ModelSerializer):
                 )
             attrs["to_wallet"] = None
 
+        recurring_expense = attrs.get("recurring_expense")
+        if recurring_expense is not None and recurring_expense.workspace_id != workspace.id:
+            raise serializers.ValidationError(
+                {"recurring_expense": "Es de otro workspace."}
+            )
+
         discount_program = attrs.get("discount_program")
         pre_discount_amount = attrs.get("pre_discount_amount")
         if discount_program is not None or pre_discount_amount is not None:
@@ -629,16 +644,22 @@ class TransactionSerializer(serializers.ModelSerializer):
         tag_names = validated_data.pop("tag_names", None)
         discount_program = validated_data.pop("discount_program", None)
         pre_discount_amount = validated_data.pop("pre_discount_amount", None)
+        recurring_expense = validated_data.pop("recurring_expense", None)
         instance = super().create(validated_data)
         if tag_names is not None:
             instance.tags.set(self._resolve_tags(tag_names))
         self._sync_discount(instance, discount_program, pre_discount_amount)
+        if recurring_expense is not None:
+            services.register_manual_recurring_occurrence(recurring_expense, instance.date)
         return instance
 
     def update(self, instance, validated_data):
         tag_names = validated_data.pop("tag_names", None)
         discount_program = validated_data.pop("discount_program", None)
         pre_discount_amount = validated_data.pop("pre_discount_amount", None)
+        # Editar una transacción ya creada no debe volver a avanzar la regla
+        # recurrente -- sólo aplica al alta (ver `create`).
+        validated_data.pop("recurring_expense", None)
         instance = super().update(instance, validated_data)
         if tag_names is not None:
             instance.tags.set(self._resolve_tags(tag_names))

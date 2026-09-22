@@ -5,7 +5,11 @@ from django.test import TestCase
 
 from apps.accounts.models import Wallet
 from apps.transactions.models import Category, RecurringExpense, Transaction
-from apps.transactions.services import generate_recurring_transactions, installment_amounts
+from apps.transactions.services import (
+    generate_recurring_transactions,
+    installment_amounts,
+    register_manual_recurring_occurrence,
+)
 from apps.workspaces.models import Workspace
 
 
@@ -73,6 +77,55 @@ class RecurringExpenseGenerationTests(TestCase):
         self.assertEqual(len(created), 1)
         rec.refresh_from_db()
         self.assertEqual(rec.next_due_date, dt.date(2026, 6, 1))
+
+
+class RegisterManualRecurringOccurrenceTests(TestCase):
+    """Bug reportado: registrar a mano (desde "Programado") una ocurrencia un
+    día antes de que corra el job automático la duplicaba, porque el alta
+    manual sólo prellenaba el formulario y nunca tocaba `next_due_date`."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.ws = Workspace.objects.create(name="W")
+        cls.account = Wallet.objects.create(
+            workspace=cls.ws, name="C", purpose=Wallet.PURPOSE_SPENDING
+        )
+        cls.category = Category.objects.create(
+            workspace=cls.ws, name="Netflix", type=Category.TYPE_EXPENSE
+        )
+
+    def _recurring(self, next_due, **kw):
+        return RecurringExpense.objects.create(
+            workspace=self.ws, wallet=self.account, category=self.category,
+            amount=Decimal("15.00"), next_due_date=next_due, **kw,
+        )
+
+    def test_advances_next_due_date_past_the_registered_occurrence(self):
+        rec = self._recurring(dt.date(2026, 2, 1))
+        register_manual_recurring_occurrence(rec, dt.date(2026, 2, 1))
+        rec.refresh_from_db()
+        self.assertEqual(rec.next_due_date, dt.date(2026, 3, 1))
+
+    def test_the_automatic_job_no_longer_duplicates_after_a_manual_registration(self):
+        rec = self._recurring(dt.date(2026, 2, 1))
+        # El usuario registra a mano un día antes de que corra el job.
+        register_manual_recurring_occurrence(rec, dt.date(2026, 2, 1))
+        Transaction.objects.create(
+            type=Transaction.TYPE_EXPENSE, wallet=self.account, category=self.category,
+            amount=Decimal("15.00"), date=dt.date(2026, 2, 1), source=Transaction.SOURCE_RECURRING,
+        )
+        # Al día siguiente corre el job automático: no debe generar otra.
+        created = generate_recurring_transactions(as_of=dt.date(2026, 2, 2))
+        self.assertEqual(created, [])
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_skips_multiple_missed_occurrences_up_to_the_registered_date(self):
+        # El usuario registra a mano una ocurrencia vieja que se le había
+        # pasado, saltándose una anterior también vencida.
+        rec = self._recurring(dt.date(2026, 1, 1))
+        register_manual_recurring_occurrence(rec, dt.date(2026, 3, 1))
+        rec.refresh_from_db()
+        self.assertEqual(rec.next_due_date, dt.date(2026, 4, 1))
 
 
 class InstallmentAmountsTests(TestCase):
