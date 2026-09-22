@@ -56,6 +56,12 @@ class Command(BaseCommand):
             help="Pide el token con requests y con curl, y compara -- para saber si un "
             "bloqueo es por IP (falla con los dos) o por el cliente HTTP (sólo con uno).",
         )
+        parser.add_argument(
+            "--credenciales-falsas", action="store_true",
+            help="Con --diagnostico-red: usa client_id=x/client_secret=y en vez de las reales. "
+            "Aísla si el bloqueo depende del origen (IP/red) o de la cuenta/App ID -- alguna "
+            "restricción de origen puesta en el panel de Wompi para ese negocio en particular.",
+        )
         parser.add_argument("--pago", type=float, metavar="MONTO", help="Crea un enlace de pago único.")
         parser.add_argument("--recurrente", type=float, metavar="MONTO", help="Crea un enlace recurrente.")
         parser.add_argument("--suscriptores", metavar="ID", help="Lista los suscritos a un enlace recurrente.")
@@ -65,13 +71,23 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(title))
         self.stdout.write(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
-    def _diagnostico_red(self):
-        if not (settings.WOMPI_CLIENT_ID and settings.WOMPI_CLIENT_SECRET):
-            raise CommandError("Faltan WOMPI_CLIENT_ID / WOMPI_CLIENT_SECRET.")
-        form = {
-            "grant_type": "client_credentials", "audience": "wompi_api",
-            "client_id": settings.WOMPI_CLIENT_ID.strip(), "client_secret": settings.WOMPI_CLIENT_SECRET.strip(),
-        }
+    def _diagnostico_red(self, fake_credentials=False):
+        if fake_credentials:
+            form = {
+                "grant_type": "client_credentials", "audience": "wompi_api",
+                "client_id": "x", "client_secret": "y",
+            }
+            self.stdout.write(self.style.WARNING(
+                "Usando credenciales FALSAS (client_id=x) a propósito -- esto compara el "
+                "origen, no la cuenta.\n"
+            ))
+        else:
+            if not (settings.WOMPI_CLIENT_ID and settings.WOMPI_CLIENT_SECRET):
+                raise CommandError("Faltan WOMPI_CLIENT_ID / WOMPI_CLIENT_SECRET.")
+            form = {
+                "grant_type": "client_credentials", "audience": "wompi_api",
+                "client_id": settings.WOMPI_CLIENT_ID.strip(), "client_secret": settings.WOMPI_CLIENT_SECRET.strip(),
+            }
 
         self.stdout.write(f"Probando {settings.WOMPI_AUTH_URL} con dos clientes HTTP distintos...\n")
 
@@ -120,7 +136,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if options["diagnostico_red"]:
-            self._diagnostico_red()
+            self._diagnostico_red(fake_credentials=options["credenciales_falsas"])
             return
 
         provider = WompiProvider()

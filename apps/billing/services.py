@@ -10,6 +10,7 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
@@ -193,7 +194,15 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
     with transaction.atomic():
         sub = None
         if event.reference:
-            sub = Subscription.objects.filter(checkout_reference=event.reference).first()
+            try:
+                sub = Subscription.objects.filter(checkout_reference=event.reference).first()
+            except (DjangoValidationError, ValueError):
+                # La referencia no tiene forma de UUID -- p. ej. un enlace de prueba creado
+                # con `wompi_probe --pago` (referencia "probe-<uuid>"), o cualquier otro valor
+                # ajeno. No es nuestro, se ignora como cualquier referencia sin match, en vez
+                # de tirar 500 -- Wompi reintenta un webhook fallido, así que sin esto un solo
+                # enlace de prueba deja reintentando (y fallando) para siempre.
+                sub = None
         if sub is None and event.external_subscription_id:
             sub = Subscription.objects.filter(
                 provider=provider_code, external_subscription_id=event.external_subscription_id
