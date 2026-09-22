@@ -108,6 +108,24 @@ class WompiHttpTests(TestCase):
         with self.assertRaisesRegex(WompiError, "400"):
             WompiProvider().request_api("POST", "/EnlacePago", {})
 
+    def test_by_default_no_proxy_is_used(self):
+        post = self._token_ok()
+        request = mock.Mock(return_value=FakeResponse(200, {"ok": True}))
+        self._calls(post, request)
+        WompiProvider().request_api("GET", "/algo")
+        self.assertIsNone(post.call_args.kwargs["proxies"])
+        self.assertIsNone(request.call_args.kwargs["proxies"])
+
+    @override_settings(WOMPI_PROXY_URL="http://user:pass@relay.example:3128")
+    def test_with_wompi_proxy_url_set_every_call_goes_through_it(self):
+        post = self._token_ok()
+        request = mock.Mock(return_value=FakeResponse(200, {"ok": True}))
+        self._calls(post, request)
+        WompiProvider().request_api("GET", "/algo")
+        expected = {"http": "http://user:pass@relay.example:3128", "https": "http://user:pass@relay.example:3128"}
+        self.assertEqual(post.call_args.kwargs["proxies"], expected)
+        self.assertEqual(request.call_args.kwargs["proxies"], expected)
+
     def test_monthly_checkout_creates_one_recurring_link_per_purchase(self):
         request = mock.Mock(return_value=FakeResponse(200, {
             "idEnlace": "rec-123", "urlEnlace": "https://lk.wompi.sv/abc", "estaProductivo": False,

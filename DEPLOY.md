@@ -223,6 +223,15 @@ Wompi da dos valores por negocio (panel.wompi.sv → el negocio → detalle): el
 (`WOMPI_CLIENT_ID`) y el **API Secret** (`WOMPI_CLIENT_SECRET`). El mismo secreto firma los
 webhooks (`wompi_hash`). Con el negocio en **modo desarrollo** no se cobra dinero real.
 
+**22-sep-2026 -- bloqueo de red descubierto:** el firewall de Wompi (Azure Application
+Gateway) rechaza con 403 la IP de salida compartida de Cloud Run, confirmado con
+`wompi_probe --diagnostico-red` (bloquea igual dos clientes HTTP distintos -- es la red,
+no la petición). Hasta que se resuelva con Wompi o con un relay, las llamadas reales a la
+API de Wompi (no sólo la prueba) fallan en producción. `WompiProvider` ya soporta salir
+por un proxy: `WOMPI_PROXY_URL=http://usuario:clave@host:puerto` (vacío = directo, como
+hoy). `wompi_probe --diagnostico-red` prueba también ese proxy si está configurado, antes
+de darlo por bueno.
+
 ```bash
 # 1. Los secretos: se piden por teclado para que no queden en el historial ni en el chat.
 read -rs "WID?App ID: "; echo; printf '%s' "$WID" | gcloud secrets create wompi-client-id --data-file=- ; unset WID

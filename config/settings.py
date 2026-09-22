@@ -505,6 +505,14 @@ WOMPI_ACCEPT_TEST_PAYMENTS = env.bool("WOMPI_ACCEPT_TEST_PAYMENTS", default=Fals
 # Sólo mientras se prueba: escribe en el log el cuerpo de cada webhook (trae nombre y
 # correo del cliente) para ver qué manda Wompi en los cobros recurrentes.
 WOMPI_LOG_WEBHOOKS = env.bool("WOMPI_LOG_WEBHOOKS", default=False)
+# Proxy de salida SOLO para las llamadas a Wompi (id.wompi.sv/api.wompi.sv), no para el
+# resto del tráfico del backend. Existe porque el firewall de Wompi (Azure Application
+# Gateway) bloquea la IP compartida de salida de Cloud Run -- comprobado el 22-sep-2026
+# con `wompi_probe --diagnostico-red` (mismo bloqueo con dos clientes HTTP distintos, o
+# sea que es la red, no la petición). Formato: "http://usuario:clave@host:puerto" (las
+# credenciales del proxy, si las tiene, van en la URL -- `requests` las lee de ahí solo).
+# Vacío (default) = sin proxy, tráfico directo, comportamiento actual sin cambios.
+WOMPI_PROXY_URL = env("WOMPI_PROXY_URL", default="")
 
 LOGGING = {
     "version": 1,

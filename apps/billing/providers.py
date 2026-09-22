@@ -153,6 +153,9 @@ class WompiProvider(PaymentProvider):
         self.client_secret = settings.WOMPI_CLIENT_SECRET.strip()
 
     # -- HTTP -----------------------------------------------------------------
+    def _proxies(self) -> dict | None:
+        return {"http": settings.WOMPI_PROXY_URL, "https": settings.WOMPI_PROXY_URL} if settings.WOMPI_PROXY_URL else None
+
     def _token(self) -> str:
         if _token_cache["value"] and time.time() < _token_cache["expires_at"]:
             return _token_cache["value"]
@@ -167,6 +170,7 @@ class WompiProvider(PaymentProvider):
                     "client_id": self.client_id,
                     "client_secret": self.client_secret,
                 },
+                proxies=self._proxies(),
                 timeout=self.TIMEOUT,
             )
         except requests.RequestException as exc:
@@ -195,6 +199,7 @@ class WompiProvider(PaymentProvider):
                 f"{settings.WOMPI_API_URL}{path}",
                 json=payload,
                 headers={"authorization": f"Bearer {self._token()}"},
+                proxies=self._proxies(),
                 timeout=self.TIMEOUT,
             )
         except requests.RequestException as exc:
