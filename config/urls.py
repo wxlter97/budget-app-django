@@ -9,6 +9,7 @@ from drf_spectacular.views import (
 from rest_framework_simplejwt.views import TokenVerifyView
 
 from apps.ai.api import AIStatusView, ChatView, ParseTextView, ReceiptScanView, VoiceParseView
+from apps.common import docs_views
 from apps.common.api import ModuleFlagsView
 from apps.billing.api import (
     CancelSubscriptionView,
@@ -108,6 +109,11 @@ api_v1_patterns = [
 urlpatterns = [
     path("healthz/", lambda _request: JsonResponse({"status": "ok"}), name="healthz"),
     path("admin/", admin.site.urls),
+    # Docs técnicas privadas (staff-only, mismo login que /admin/) -- ver
+    # apps/common/docs_views.py y docs/reference/*.md.
+    path("docs/", docs_views.docs_index, name="docs-index"),
+    path("docs/changelog/", docs_views.docs_changelog, name="docs-changelog"),
+    path("docs/<slug:slug>/", docs_views.docs_page, name="docs-page"),
     path("api/v1/", include((api_v1_patterns, "v1"), namespace="v1")),
     # Esquema OpenAPI + Swagger UI
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
