@@ -500,7 +500,9 @@ nunca salen a internet desde GCS: los sirve el backend.
 > con dominio propio exige la zona en Cloudflare. Para comprobar un build, buscar la
 > URL de la API en el bundle (`/_expo/static/js/web/entry-*.js`); si trae
 > `localhost:8000`, faltó la variable. El CORS del backend sólo acepta
-> `https://money.wxlter.dev`, así que el login no funciona en `*.pages.dev`.
+> `https://money.wxlter.dev`, así que el login no funciona en `*.pages.dev`. Analítica sin
+> cookies (Umami Cloud, `EXPO_PUBLIC_UMAMI_WEBSITE_ID`, ver `CONFIG-PENDIENTE.md`): agregarla
+> a las variables del build cuando se cree la cuenta -- vacía, el front no inyecta nada.
 
 > **Ojo con el plan Hobby de Vercel: no permite uso comercial.** Desde el momento
 > en que se cobra una suscripción hay que pasar a Pro ($20/mes) o mover el front a

@@ -30,10 +30,12 @@ redondeo. Si la tarifa real compone distinto (p. ej. IVA del 13% sobre la comisi
 además del 2% de anticipo), hay que volver a correr el script con esos flags — la fórmula exacta
 de `comision()` está comentada en `scripts/economia_por_plan.py`.
 
-**Pendiente de confirmar:** si Wompi permite cobros recurrentes con tarjeta guardada — sigue sin
-verificar (ver `ROADMAP.md` 1.1 y `apps/billing/providers.py`, `WompiProvider` es un esqueleto).
-Sin eso, un plan mensual obliga a pagar a mano cada mes, y eso importa más que cualquier decimal
-de la comisión.
+**Corrección (22-sep-2026):** este documento decía que no se sabía si Wompi permite cobros
+recurrentes y que `WompiProvider` era un esqueleto — ambas cosas están **resueltas desde antes de
+esta sesión** (`apps/billing/providers.py`, commit `b000e21`): sí soporta cobro recurrente vía un
+`EnlacePagoRecurrente` por compra (no compartido por plan, así que cancelar una persona no afecta
+a las demás), con 49 tests pasando. Ver `ROADMAP.md` 1.1/1.3: lo único que falta es tener
+credenciales reales de un negocio en modo desarrollo para probarlo de punta a punta.
 
 ## Lo que dicen los números
 
@@ -131,10 +133,9 @@ Ingreso neto de comisión: $18.89. Meses hasta que el costo acumulado lo iguala:
 
 ## Lo que no se sabe, y cambia las cuentas
 
-- **Si Wompi permite cobros recurrentes con tarjeta guardada.** Sigue sin verificar —
-  `WompiProvider` es un esqueleto (sus cuatro métodos levantan `NotImplementedError`) y el diseño
-  parte de un *enlace de pago hosteado*. Es más importante que cualquier decimal de la comisión:
-  sin cobro recurrente, un plan mensual obliga al usuario a volver a pagar a mano cada mes.
+- ~~Si Wompi permite cobros recurrentes con tarjeta guardada~~ — **resuelto**: sí, vía un
+  `EnlacePagoRecurrente` por compra (ver la corrección arriba). Sólo falta probarlo con
+  credenciales reales (`ROADMAP.md` 1.3).
 - **Los costos fijos reales.** El piso de $5 al mes es un supuesto (Cloud Run, Neon, Cloudflare,
   Sentry y Mailgun en sus capas gratis, más el dominio). Hay que mirarlo contra la factura real
   de Google Cloud y de los demás servicios.
