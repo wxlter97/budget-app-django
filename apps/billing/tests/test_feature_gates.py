@@ -27,6 +27,13 @@ WORKSPACE_HEADER = "HTTP_X_WORKSPACE_ID"
 ALL_FEATURES = [
     "import_email", "import_excel", "net_worth_history", "advanced_reports",
     "export", "backup", "loyalty", "multi_currency", "quick_add",
+    # Restricción del gratis del 22-sep-2026 (ver seed_billing_plans y
+    # ECONOMIA-POR-PLAN.md) -- "calendar" y "transaction_duplicate" están acá
+    # (para que FeatureResolutionTests las cubra) aunque no tengan gate de
+    # backend propio, ver el comentario en seed_billing_plans.py.
+    "calendar", "notifications", "wallet_split", "transaction_duplicate",
+    "refunds", "split_categories", "split_people", "installments",
+    "statements", "net_worth",
 ]
 
 
@@ -314,3 +321,241 @@ class LoyaltyGateTests(_WorkspaceGateTestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
         self.assertEqual(len(resp.data["loyalty_earnings"]), 1)
         self.assertEqual(resp.data["loyalty_earnings"][0]["kind"], LoyaltyProgram.KIND_CASHBACK)
+
+
+# ---------------------------------------------------------------------------
+# Restricción del gratis del 22-sep-2026 -- ver ECONOMIA-POR-PLAN.md y
+# seed_billing_plans.py. Cada gate de acá abajo es nuevo (antes, ninguna de
+# estas acciones chequeaba el plan).
+# ---------------------------------------------------------------------------
+class WalletSplitGateTests(_WorkspaceGateTestCase):
+    def setUp(self):
+        super().setUp()
+        self.wallet = Wallet.objects.create(workspace=self.ws, name="Multimoney")
+
+    def test_free_cannot_split_a_wallet(self):
+        resp = self.client.post(
+            f"/api/v1/wallets/{self.wallet.id}/split/", {"name": "Ahorro"}, **self.headers
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+        self.assertFalse(Wallet.objects.filter(parent=self.wallet).exists())
+
+    def test_pro_can_split_a_wallet(self):
+        self.upgrade_to_pro()
+        resp = self.client.post(
+            f"/api/v1/wallets/{self.wallet.id}/split/", {"name": "Ahorro"}, **self.headers
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+
+class StatementsGateTests(_WorkspaceGateTestCase):
+    def setUp(self):
+        super().setUp()
+        self.card = Wallet.objects.create(
+            workspace=self.ws, name="Visa", kind=Wallet.KIND_CREDIT,
+            credit_limit=Decimal("1000"), billing_cycle_day=15,
+        )
+
+    def test_free_cannot_see_a_single_statement(self):
+        resp = self.client.get(f"/api/v1/wallets/{self.card.id}/statement/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_free_cannot_see_the_statements_list(self):
+        resp = self.client.get("/api/v1/wallets/statements/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_pro_can_see_a_statement(self):
+        self.upgrade_to_pro()
+        resp = self.client.get(f"/api/v1/wallets/{self.card.id}/statement/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+
+class RefundGateTests(_WorkspaceGateTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.transactions.models import Category, Transaction
+
+        self.wallet = Wallet.objects.create(workspace=self.ws, name="Cuenta")
+        self.food = Category.objects.create(
+            workspace=self.ws, name="Comida", type=Category.TYPE_EXPENSE
+        )
+        self.txn = Transaction.objects.create(
+            wallet=self.wallet, category=self.food, amount=Decimal("50.00"),
+            date="2026-05-01", type=Transaction.TYPE_EXPENSE,
+        )
+
+    def test_free_cannot_register_a_refund(self):
+        resp = self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/register-refund/",
+            {"amount": "50.00", "date": "2026-05-10"}, **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+        self.txn.refresh_from_db()
+        self.assertFalse(self.txn.is_refunded)
+
+    def test_pro_can_register_a_refund(self):
+        self.upgrade_to_pro()
+        resp = self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/register-refund/",
+            {"amount": "50.00", "date": "2026-05-10"}, **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+
+class SplitCategoriesGateTests(_WorkspaceGateTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.transactions.models import Category, Transaction
+
+        self.wallet = Wallet.objects.create(workspace=self.ws, name="Cuenta")
+        self.food = Category.objects.create(
+            workspace=self.ws, name="Comida", type=Category.TYPE_EXPENSE
+        )
+        self.hygiene = Category.objects.create(
+            workspace=self.ws, name="Higiene", type=Category.TYPE_EXPENSE
+        )
+        self.txn = Transaction.objects.create(
+            wallet=self.wallet, category=self.food, amount=Decimal("50.00"),
+            date="2026-05-01", type=Transaction.TYPE_EXPENSE,
+        )
+
+    def test_free_cannot_split_by_category(self):
+        resp = self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/split/",
+            {"parts": [
+                {"category": str(self.food.id), "amount": "30.00"},
+                {"category": str(self.hygiene.id), "amount": "20.00"},
+            ]},
+            format="json", **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_pro_can_split_by_category(self):
+        self.upgrade_to_pro()
+        resp = self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/split/",
+            {"parts": [
+                {"category": str(self.food.id), "amount": "30.00"},
+                {"category": str(self.hygiene.id), "amount": "20.00"},
+            ]},
+            format="json", **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+
+class SplitPeopleGateTests(_WorkspaceGateTestCase):
+    """`split_people` cubre la persona (`PersonViewSet`), la acción
+    `split-people`, `settle-share`, `balances` y `settle-balance` -- todas
+    partes de la misma función (dividir gastos con gente)."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.transactions.models import Category, Person, Transaction
+
+        self.wallet = Wallet.objects.create(workspace=self.ws, name="Cuenta")
+        self.food = Category.objects.create(
+            workspace=self.ws, name="Comida", type=Category.TYPE_EXPENSE
+        )
+        self.txn = Transaction.objects.create(
+            wallet=self.wallet, category=self.food, amount=Decimal("50.00"),
+            date="2026-05-01", type=Transaction.TYPE_EXPENSE,
+        )
+        self.friend = None  # se crea con Pro en cada test que lo necesita
+        self._Person = Person
+
+    def test_free_cannot_create_a_person(self):
+        resp = self.client.post("/api/v1/people/", {"name": "Ana"}, **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_free_cannot_split_between_people(self):
+        from apps.billing.models import Subscription
+
+        # `friend` se crea con Pro activo (crearla también está detrás de este
+        # mismo gate, ver `test_free_cannot_create_a_person`) y luego se
+        # vuelve a gratis, para aislar el gate de la acción `split-people` en
+        # sí misma, no el de crear la persona.
+        self.upgrade_to_pro()
+        friend = self._Person.objects.create(workspace=self.ws, name="Ana")
+        Subscription.objects.filter(user=self.owner).update(status=Subscription.STATUS_CANCELED)
+        resp = self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/split-people/",
+            {"participants": [{"person": str(friend.id), "amount": "20.00"}]},
+            format="json", **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_free_cannot_see_balances(self):
+        resp = self.client.get("/api/v1/transactions/balances/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_pro_can_create_a_person_and_split_between_people(self):
+        self.upgrade_to_pro()
+        friend = self._Person.objects.create(workspace=self.ws, name="Ana")
+        resp = self.client.post(
+            f"/api/v1/transactions/{self.txn.id}/split-people/",
+            {"participants": [{"person": str(friend.id), "amount": "20.00"}]},
+            format="json", **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+        resp = self.client.get("/api/v1/transactions/balances/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+
+class InstallmentsGateTests(_WorkspaceGateTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.transactions.models import Category
+
+        self.card = Wallet.objects.create(
+            workspace=self.ws, name="Visa", kind=Wallet.KIND_CREDIT,
+            credit_limit=Decimal("1000"), billing_cycle_day=15,
+        )
+        self.category = Category.objects.create(
+            workspace=self.ws, name="Tecnología", type=Category.TYPE_EXPENSE
+        )
+
+    def test_free_cannot_create_an_installment_purchase(self):
+        resp = self.client.post(
+            "/api/v1/installment-purchases/",
+            {
+                "wallet": str(self.card.id), "category": str(self.category.id),
+                "description": "Laptop", "total_amount": "1200.00",
+                "installments_total": 12, "start_date": "2026-05-01",
+            },
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_pro_can_create_an_installment_purchase(self):
+        self.upgrade_to_pro()
+        resp = self.client.post(
+            "/api/v1/installment-purchases/",
+            {
+                "wallet": str(self.card.id), "category": str(self.category.id),
+                "description": "Laptop", "total_amount": "1200.00",
+                "installments_total": 12, "start_date": "2026-05-01",
+            },
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+
+class NetWorthGateTests(_WorkspaceGateTestCase):
+    def test_free_cannot_see_net_worth_breakdown(self):
+        resp = self.client.get("/api/v1/reports/net-worth/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
+    def test_free_dashboard_summary_hides_net_worth_but_still_works(self):
+        resp = self.client.get("/api/v1/reports/summary/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertIsNone(resp.data["net_worth"])
+
+    def test_pro_can_see_net_worth_breakdown_and_dashboard_figure(self):
+        self.upgrade_to_pro()
+        resp = self.client.get("/api/v1/reports/net-worth/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+        resp = self.client.get("/api/v1/reports/summary/", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertIsNotNone(resp.data["net_worth"])

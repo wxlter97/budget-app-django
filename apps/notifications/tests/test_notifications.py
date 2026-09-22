@@ -218,6 +218,52 @@ class NotifyDueItemsTests(NotificationServicesTestCase):
         mock_send.assert_not_called()
 
 
+class NotifyRespectsPlanGateTests(NotificationServicesTestCase):
+    """`notifications` es una de las funciones fuera del gratis desde el
+    22-sep-2026 (ver seed_billing_plans.py) -- el gate vive en `_notify`
+    (apps/notifications/services.py), no en `notify_user`, para no tocar
+    invitaciones ni avisos de suscripción (esos siguen en el gratis)."""
+
+    def setUp(self):
+        super().setUp()
+        self.tomorrow = timezone.localdate() + timedelta(days=1)
+        self.recurring = RecurringExpense.objects.create(
+            workspace=self.workspace, category=self.category, wallet=self.wallet,
+            amount=Decimal("50.00"), frequency=RecurringExpense.FREQUENCY_MONTHLY,
+            next_due_date=self.tomorrow,
+        )
+
+    @patch("apps.notifications.services.send_push")
+    def test_free_workspace_gets_no_reminder_push_nor_log(self, mock_send):
+        from apps.billing.models import Plan
+
+        Plan.objects.create(
+            code="free", name="Gratis", is_default=True, features={"notifications": False}
+        )
+        services.notify_due_items()
+        mock_send.assert_not_called()
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.user, kind=Notification.KIND_RECURRING_DUE
+            ).exists()
+        )
+        self.assertFalse(
+            NotificationLog.objects.filter(
+                user=self.user, kind=NotificationLog.KIND_RECURRING_DUE
+            ).exists()
+        )
+
+    @patch("apps.notifications.services.send_push")
+    def test_plan_with_the_feature_still_gets_reminders(self, mock_send):
+        from apps.billing.models import Plan
+
+        Plan.objects.create(
+            code="free", name="Gratis", is_default=True, features={"notifications": True}
+        )
+        services.notify_due_items()
+        mock_send.assert_called_once()
+
+
 class NotifyBudgetThresholdsTests(NotificationServicesTestCase):
     def _spend(self, amount):
         Transaction.objects.create(

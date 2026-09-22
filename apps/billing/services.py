@@ -110,6 +110,21 @@ def can_add_member(workspace) -> bool:
     return current < plan.max_members_per_workspace
 
 
+def can_add_recurring(workspace) -> bool:
+    """Si activar UN recurrente más (crear uno nuevo activo, o reactivar uno
+    pausado) todavía entra en `plan.max_active_recurring`. En el gratis vale
+    0: no es "menos recurrentes", es la función entera fuera (ver
+    `seed_billing_plans` y el directorio del 22-sep-2026 de restringir el
+    plan gratis)."""
+    from apps.transactions.models import RecurringExpense
+
+    plan = plan_for_workspace(workspace)
+    if plan is None or plan.max_active_recurring is None:
+        return True
+    current = RecurringExpense.objects.filter(workspace=workspace, is_active=True).count()
+    return current < plan.max_active_recurring
+
+
 # ---------------------------------------------------------------------------
 # Feature flags -- convención de claves en `Plan.features`, ver `models.py`
 # y `seed_billing_plans`. Mismo fail-open que los límites de arriba: sin
@@ -127,6 +142,16 @@ FEATURE_UPGRADE_MESSAGES = {
     "loyalty": "El seguimiento de puntos y cashback es una función Pro -- pasate a Pro para activarlo.",
     "multi_currency": "Múltiples monedas con conversión es una función Pro -- pasate a Pro para activarla.",
     "quick_add": "Los atajos de carga rápida son una función Pro -- pasate a Pro para crear uno.",
+    "calendar": "El calendario financiero es parte de Plus -- pasate a Plus para verlo.",
+    "notifications": "Los avisos y recordatorios son parte de Plus -- pasate a Plus para activarlos.",
+    "wallet_split": "Dividir una cartera en varias es parte de Plus -- pasate a Plus para hacerlo.",
+    "transaction_duplicate": "Duplicar una transacción es parte de Plus -- pasate a Plus para usarlo.",
+    "refunds": "Registrar reembolsos es parte de Plus -- pasate a Plus para hacerlo.",
+    "split_categories": "Dividir una transacción entre categorías es parte de Plus -- pasate a Plus para hacerlo.",
+    "split_people": "Dividir gastos entre personas es parte de Plus -- pasate a Plus para hacerlo.",
+    "installments": "Las compras a plazo son parte de Plus -- pasate a Plus para registrarlas.",
+    "statements": "Los estados de cuenta de tarjeta son parte de Plus -- pasate a Plus para verlos.",
+    "net_worth": "El patrimonio neto es parte de Plus -- pasate a Plus para verlo.",
 }
 
 

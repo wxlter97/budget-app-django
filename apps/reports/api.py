@@ -140,7 +140,12 @@ class SpendRowSerializer(serializers.Serializer):
 
 class DashboardSummarySerializer(serializers.Serializer):
     month = CashflowPointSerializer()
-    net_worth = _Money()
+    # `allow_null`: en el gratis (sin la feature "net_worth", ver
+    # DashboardSummaryView.get) el patrimonio neto no se calcula ni se manda
+    # -- el cliente lo trata como "sin patrimonio en tu plan", no como 0.
+    net_worth = serializers.DecimalField(
+        max_digits=16, decimal_places=2, read_only=True, allow_null=True
+    )
     base_currency = serializers.CharField()
     pending_email_imports = serializers.IntegerField()
     top_expense_categories = SpendRowSerializer(many=True)
@@ -203,6 +208,9 @@ class NetWorthView(_BaseReportView):
 
     @extend_schema(responses=NetWorthSerializer)
     def get(self, request):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "net_worth")
         data = services.net_worth_breakdown(request.workspace, request.user)
         return Response(NetWorthSerializer(data).data)
 
@@ -252,7 +260,14 @@ class DashboardSummaryView(_BaseReportView):
 
     @extend_schema(responses=DashboardSummarySerializer)
     def get(self, request):
+        from apps.billing.services import has_feature_for_workspace
+
         data = services.dashboard_summary(request.workspace, request.user)
+        # El resto del resumen (mes, pendientes, top gastos) es del gratis --
+        # sólo el patrimonio neto se calló acá (no se elimina todo el
+        # endpoint, que sería tirar el resumen entero por una sola cifra).
+        if not has_feature_for_workspace(request.workspace, "net_worth"):
+            data["net_worth"] = None
         return Response(DashboardSummarySerializer(data).data)
 
 
@@ -263,6 +278,12 @@ class ScheduledView(_BaseReportView):
     `?until=YYYY-MM-DD` (default: fin del mes actual), `?since=YYYY-MM-DD`
     (default: hoy) -- cualquier rango, no sólo hacia adelante (lo usa
     también el calendario financiero para navegar meses).
+
+    Sin gate de `"calendar"` a propósito: alimenta también la tarjeta
+    "PROGRAMADO" y los marcadores de la lista normal, que SÍ están en el
+    gratis -- gatearla acá rompería esas dos cosas para todo el mundo. La
+    pestaña Calendario del gratis se gatea sólo del lado del frontend (ver
+    moneyapp, dashboard.tsx).
     """
 
     @extend_schema(

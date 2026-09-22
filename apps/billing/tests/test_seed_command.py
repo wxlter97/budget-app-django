@@ -83,3 +83,27 @@ class SeedBillingPlansTests(TestCase):
         call_command("seed_billing_plans")
         self.assertEqual(Plan.objects.count(), 3)
         self.assertEqual(PlanPrice.objects.count(), 5)
+
+    def test_free_plan_is_restrictive_since_22_sep_2026(self):
+        """Un solo miembro (el owner, sin invitados) y cero recurrentes
+        activos -- decisión de negocio: es la única palanca de
+        monetización que hay, sin publicidad ni venta de datos de por
+        medio. Ver ECONOMIA-POR-PLAN.md."""
+        call_command("seed_billing_plans")
+        free = Plan.objects.get(code="free")
+        self.assertEqual(free.max_members_per_workspace, 1)
+        self.assertEqual(free.max_active_recurring, 0)
+
+        restricted_out_of_free = [
+            "calendar", "notifications", "wallet_split", "transaction_duplicate",
+            "refunds", "split_categories", "split_people", "installments",
+            "statements", "net_worth",
+        ]
+        for key in restricted_out_of_free:
+            self.assertFalse(free.features.get(key), key)
+
+        plus = Plan.objects.get(code="plus")
+        pro = Plan.objects.get(code="pro")
+        for key in restricted_out_of_free:
+            self.assertTrue(plus.features.get(key), key)
+            self.assertTrue(pro.features.get(key), key)

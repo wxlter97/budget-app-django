@@ -213,7 +213,18 @@ def _notify(user, workspace, kind, dedupe_key, *, title, body, data, devices):
     tiene algún dispositivo registrado -- las tres cosas juntas para no
     repetir esta secuencia en cada ``notify_*`` de abajo. A propósito NO
     depende de que haya dispositivos: sin ninguno, igual queda visible en
-    la app -- sólo se omite el push en sí."""
+    la app -- sólo se omite el push en sí.
+
+    Gatea la feature "notifications" del plan del workspace -- pero SÓLO
+    acá, no en ``notify_user`` (genérico, lo usan también invitaciones y
+    avisos de suscripción, que no son "recordatorios" y siguen en el
+    gratis). Sin ``_mark_sent`` (deduplicación) de por medio: un workspace
+    sin la feature nunca deja fila en ``NotificationLog`` para no dejar un
+    "ya se mandó" fantasma si más tarde se pasa a un plan que sí la tiene."""
+    from apps.billing.services import has_feature_for_workspace
+
+    if workspace is not None and not has_feature_for_workspace(workspace, "notifications"):
+        return
     if _mark_sent(user, workspace, kind, dedupe_key):
         return
     notify_user(user, kind=kind, title=title, body=body, workspace=workspace, data=data)

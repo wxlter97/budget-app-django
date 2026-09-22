@@ -190,3 +190,104 @@ class WorkspaceMemberLimitTests(APITestCase):
             User.objects.create_user(f"user{i}", f"user{i}@example.com", "pw")
             resp = self._invite(f"user{i}@example.com")
             self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+
+class RecurringExpenseLimitTests(APITestCase):
+    """Gate de `max_active_recurring` -- `RecurringExpenseSerializer.validate`
+    (apps/transactions/api.py). Antes del 22-sep-2026 este límite estaba
+    declarado en `Plan` pero sin ningún chequeo real (ver `can_add_recurring`,
+    apps/billing/services.py)."""
+
+    URL = "/api/v1/recurring-expenses/"
+    HEADER = "HTTP_X_WORKSPACE_ID"
+
+    def setUp(self):
+        from apps.accounts.models import Wallet
+        from apps.transactions.models import Category
+
+        self.free = Plan.objects.create(
+            code="free", name="Gratis", is_default=True, max_active_recurring=0,
+        )
+        self.plus = Plan.objects.create(code="plus", name="Plus", max_active_recurring=1)
+        self.owner = User.objects.create_user("alice", "alice@example.com", "pw")
+        self.ws = Workspace.objects.create(name="Casa")
+        Membership.objects.create(workspace=self.ws, user=self.owner, role=Membership.ROLE_OWNER)
+        self.wallet = Wallet.objects.create(workspace=self.ws, name="Cuenta")
+        self.category = Category.objects.create(
+            workspace=self.ws, name="Netflix", type=Category.TYPE_EXPENSE
+        )
+        self.client.force_authenticate(self.owner)
+        self.headers = {self.HEADER: str(self.ws.id)}
+
+    def _payload(self, **overrides):
+        payload = {
+            "category": str(self.category.id), "wallet": str(self.wallet.id),
+            "amount": "12.99", "frequency": "monthly", "next_due_date": "2026-10-01",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_free_cannot_create_an_active_recurring(self):
+        resp = self.client.post(self.URL, self._payload(), format="json", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.data)
+        self.assertIn("Plus", str(resp.data))
+
+    def test_free_can_create_an_inactive_recurring(self):
+        # Guardado en pausa: no suma a la cuenta de activos (mismo criterio
+        # que "editar uno ya activo sin tocar is_active").
+        resp = self.client.post(
+            self.URL, self._payload(is_active=False), format="json", **self.headers
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+    def test_plus_can_create_up_to_its_limit(self):
+        Subscription.objects.create(user=self.owner, plan=self.plus, status=Subscription.STATUS_ACTIVE)
+        resp = self.client.post(self.URL, self._payload(), format="json", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+
+    def test_plus_rejects_going_over_its_limit(self):
+        from apps.transactions.models import RecurringExpense
+
+        Subscription.objects.create(user=self.owner, plan=self.plus, status=Subscription.STATUS_ACTIVE)
+        RecurringExpense.objects.create(
+            workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
+            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date="2026-10-01",
+        )
+        resp = self.client.post(self.URL, self._payload(), format="json", **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.data)
+
+    def test_reactivating_a_paused_one_counts_against_the_limit(self):
+        from apps.transactions.models import RecurringExpense
+
+        Subscription.objects.create(user=self.owner, plan=self.plus, status=Subscription.STATUS_ACTIVE)
+        active = RecurringExpense.objects.create(
+            workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
+            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date="2026-10-01",
+        )
+        paused = RecurringExpense.objects.create(
+            workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
+            wallet=self.wallet, amount="5.00", frequency="monthly", next_due_date="2026-10-01",
+            is_active=False,
+        )
+        resp = self.client.patch(
+            f"{self.URL}{paused.id}/", {"is_active": True}, format="json", **self.headers
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.data)
+        active.is_active = False
+        active.save(update_fields=["is_active"])
+        resp = self.client.patch(
+            f"{self.URL}{paused.id}/", {"is_active": True}, format="json", **self.headers
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+    def test_editing_an_already_active_one_is_not_blocked(self):
+        from apps.transactions.models import RecurringExpense
+
+        active = RecurringExpense.objects.create(
+            workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
+            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date="2026-10-01",
+        )
+        resp = self.client.patch(
+            f"{self.URL}{active.id}/", {"amount": "15.00"}, format="json", **self.headers
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
