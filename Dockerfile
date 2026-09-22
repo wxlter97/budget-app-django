@@ -46,10 +46,7 @@ RUN set -eux; \
         || apt-get install -y --no-install-recommends postgresql-client; \
     fi; \
     pg_dump --version; \
-    # `curl` se queda instalado A PROPÓSITO por ahora (normalmente se purga acá):
-    # `wompi_probe --diagnostico-red` lo necesita para distinguir un bloqueo por IP de
-    # uno por la huella TLS del cliente Python. Revertir (volver a purgarlo) en cuanto
-    # se resuelva el bloqueo de Wompi -- ver budget-app-django, PR de este commit.
+    apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
