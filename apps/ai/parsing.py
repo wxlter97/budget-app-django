@@ -18,6 +18,8 @@ recibe la fecha de hoy en el prompt; `normalize.date` después la acota.
 """
 from __future__ import annotations
 
+import base64
+
 from django.db.models import Q
 from django.utils import timezone
 
@@ -38,6 +40,22 @@ MAX_CONTEXT_NAMES = 60
 # Frases más largas que esto no son una transacción: es alguien pegando un
 # correo entero o probando qué pasa. Cortar antes del modelo acota el gasto.
 MAX_TEXT_LENGTH = 500
+
+# Límite de un dictado: no es un archivo subido, es lo que graba el
+# micrófono en la propia pantalla -- más que esto ya no es "una frase".
+AUDIO_MAX_SIZE = 15 * 1024 * 1024  # 15 MB
+
+# Los que documenta Gemini para audio inline (verificar si esto cambia):
+# wav, mp3, aiff, aac, ogg, flac. `audio/mp4`/`audio/x-m4a` (lo que graba
+# `expo-audio` en iOS/Android, AAC en contenedor MP4) no está en esa lista
+# pero es el mismo códec que `audio/aac` y funciona en la práctica.
+# `audio/webm` (lo que graba un navegador de escritorio con `MediaRecorder`
+# si no se le pide otro `mimeType`) NO está soportado -- el cliente tiene
+# que pedir un `mimeType` de esta lista al grabar en web.
+AUDIO_CONTENT_TYPES = {
+    "audio/wav", "audio/mpeg", "audio/mp3", "audio/aiff", "audio/aac",
+    "audio/ogg", "audio/flac", "audio/mp4", "audio/x-m4a",
+}
 
 RESPONSE_SCHEMA = {
     "type": "object",
@@ -117,7 +135,45 @@ def parse(*, user, workspace, text: str, wallet=None) -> dict:
     usa para buscar duplicados cuando la frase no nombra ninguna.
     """
     text = (text or "").strip()[:MAX_TEXT_LENGTH]
+    context = _build_context(user, workspace)
+    response = run(
+        user=user,
+        workspace=workspace,
+        operation=m.OP_PARSE,
+        parts=[{"text": text}],
+        system_instruction=_system_instruction(context),
+        response_schema=RESPONSE_SCHEMA,
+    )
+    return _candidate_from_response(response, context=context, wallet=wallet)
 
+
+def parse_audio(*, user, workspace, audio_bytes: bytes, content_type: str, wallet=None) -> dict:
+    """Igual que `parse`, pero a partir de un dictado en vez de texto escrito.
+
+    El audio va directo a Gemini -- no hace falta un proveedor de
+    transcripción aparte -- y sale por el mismo parser y el mismo contrato
+    que el texto libre (backlog, punto 3.2): la app muestra las dos entradas
+    con la misma pantalla.
+    """
+    context = _build_context(user, workspace)
+    response = run(
+        user=user,
+        workspace=workspace,
+        operation=m.OP_PARSE,
+        parts=[
+            {"inline_data": {"mime_type": content_type, "data": base64.b64encode(audio_bytes).decode()}},
+            {"text": "Transcribí el audio y convertilo a los datos de la transacción."},
+        ],
+        system_instruction=_system_instruction(context),
+        response_schema=RESPONSE_SCHEMA,
+        has_audio=True,
+    )
+    return _candidate_from_response(response, context=context, wallet=wallet)
+
+
+def _build_context(user, workspace):
+    """Carteras y categorías que se le pasan al modelo -- una sola consulta
+    para las dos entradas (texto y voz), armada acá para no repetirla."""
     # Las carteras privadas de las que el usuario no es dueño no entran ni al
     # prompt ni al resultado: que el modelo las viera sería filtrarlas, y es el
     # mismo criterio que aplica el resto del API.
@@ -130,22 +186,28 @@ def parse(*, user, workspace, text: str, wallet=None) -> dict:
         Category.objects.filter(workspace=workspace, parent__isnull=False)
         .order_by("name")[:MAX_CONTEXT_NAMES]
     )
+    return {
+        "workspace": workspace,
+        "wallets": wallets,
+        "categories": categories,
+        "today": timezone.localdate(),
+    }
 
-    today = timezone.localdate()
-    response = run(
-        user=user,
-        workspace=workspace,
-        operation=m.OP_PARSE,
-        parts=[{"text": text}],
-        system_instruction=_SYSTEM_TEMPLATE.format(
-            today=today.isoformat(),
-            weekday=_WEEKDAYS[today.weekday()],
-            wallets=_name_list(wallets),
-            categories=_name_list(categories),
-        ),
-        response_schema=RESPONSE_SCHEMA,
+
+def _system_instruction(context):
+    today = context["today"]
+    return _SYSTEM_TEMPLATE.format(
+        today=today.isoformat(),
+        weekday=_WEEKDAYS[today.weekday()],
+        wallets=_name_list(context["wallets"]),
+        categories=_name_list(context["categories"]),
     )
+
+
+def _candidate_from_response(response, *, context, wallet) -> dict:
     raw = response.json()
+    workspace = context["workspace"]
+    wallets, categories, today = context["wallets"], context["categories"], context["today"]
 
     txn_type = _type(raw.get("type"))
     amount = normalize.amount(raw.get("amount"))

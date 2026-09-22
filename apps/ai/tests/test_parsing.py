@@ -15,6 +15,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.accounts.models import Wallet
+from apps.ai import models as m_ai
 from apps.ai import parsing
 from apps.ai.client import GeminiResponse
 from apps.billing.models import Plan
@@ -214,3 +215,41 @@ class DuplicadosTests(ParseTestBase):
     def test_sin_cartera_de_ningun_lado_no_hay_contra_que_comparar(self):
         self._con_transaccion(self.efectivo)
         self.assertEqual(self._parse({**_CRUDO, "wallet_hint": ""})["possible_duplicates"], [])
+
+
+class ParseAudioTests(ParseTestBase):
+    """`parse_audio` comparte toda la normalización y resolución con `parse`
+    (probadas arriba) -- acá sólo lo que le es propio: manda el audio como
+    `inline_data`, no como texto, y pasa `has_audio=True` para que `services.
+    run` lo cueste con el precio de audio en vez del de texto."""
+
+    def test_manda_el_audio_como_inline_data_y_marca_has_audio(self):
+        with patch(_RUN, return_value=_respuesta(_CRUDO)) as run:
+            parsing.parse_audio(
+                user=self.user, workspace=self.ws,
+                audio_bytes=b"un-audio-cualquiera", content_type="audio/aac",
+            )
+        self.assertTrue(run.call_args[1]["has_audio"])
+        parts = run.call_args[1]["parts"]
+        self.assertEqual(parts[0]["inline_data"]["mime_type"], "audio/aac")
+        self.assertEqual(run.call_args[1]["operation"], m_ai.OP_PARSE)
+
+    def test_devuelve_la_misma_candidata_que_el_texto(self):
+        with patch(_RUN, return_value=_respuesta(_CRUDO)):
+            c = parsing.parse_audio(
+                user=self.user, workspace=self.ws,
+                audio_bytes=b"un-audio-cualquiera", content_type="audio/aac",
+            )
+        self.assertEqual(c["amount"], Decimal("12.50"))
+        self.assertEqual(c["wallet"], self.tarjeta.id)
+        self.assertEqual(c["category"], self.comida.id)
+
+    def test_le_pasa_al_modelo_los_mismos_nombres_reales(self):
+        with patch(_RUN, return_value=_respuesta(_CRUDO)) as run:
+            parsing.parse_audio(
+                user=self.user, workspace=self.ws,
+                audio_bytes=b"audio", content_type="audio/aac",
+            )
+        prompt = run.call_args[1]["system_instruction"]
+        self.assertIn("- Tarjeta", prompt)
+        self.assertIn("- Comida fuera", prompt)
