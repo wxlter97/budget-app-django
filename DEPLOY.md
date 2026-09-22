@@ -224,13 +224,12 @@ Wompi da dos valores por negocio (panel.wompi.sv → el negocio → detalle): el
 webhooks (`wompi_hash`). Con el negocio en **modo desarrollo** no se cobra dinero real.
 
 **22-sep-2026 -- bloqueo de red descubierto:** el firewall de Wompi (Azure Application
-Gateway) rechaza con 403 la IP de salida compartida de Cloud Run, confirmado con
-`wompi_probe --diagnostico-red` (bloquea igual dos clientes HTTP distintos -- es la red,
-no la petición). Hasta que se resuelva con Wompi o con un relay, las llamadas reales a la
-API de Wompi (no sólo la prueba) fallan en producción. `WompiProvider` ya soporta salir
-por un proxy: `WOMPI_PROXY_URL=http://usuario:clave@host:puerto` (vacío = directo, como
-hoy). `wompi_probe --diagnostico-red` prueba también ese proxy si está configurado, antes
-de darlo por bueno.
+Gateway) rechaza con 403 el tráfico de IPs de datacenter/nube -- confirmado con
+`wompi_probe --diagnostico-red` contra Cloud Run (Google) y una VM de Oracle Cloud, las
+dos bloqueadas igual (mismo 403, misma huella con dos clientes HTTP distintos: es la red,
+no la petición ni el proveedor). Una IP residencial y un **Cloudflare Worker** sí pasan.
+Hasta que se resuelva con Wompi o con un relay, las llamadas reales a la API (no sólo la
+prueba) fallan en producción. Ver §2.4c para el relay con Worker.
 
 ```bash
 # 1. Los secretos: se piden por teclado para que no queden en el historial ni en el chat.
@@ -278,6 +277,73 @@ prueba: `WOMPI_ACCEPT_TEST_PAYMENTS` haría que un cobro de prueba active suscri
 gcloud run services update budget-api --region us-east1 \
   --remove-env-vars "WOMPI_ACCEPT_TEST_PAYMENTS,WOMPI_LOG_WEBHOOKS"
 ```
+
+### 2.4c Relay con Cloudflare Worker (si Wompi sigue bloqueando la IP de Cloud Run)
+
+El Worker no es un proxy HTTP clásico: reescribe la URL. `{WOMPI_RELAY_URL}/id/...` reenvía a
+`id.wompi.sv/...`, `{WOMPI_RELAY_URL}/api/...` a `api.wompi.sv/...`. `WompiProvider` ya sabe
+usarlo cuando `WOMPI_RELAY_URL` está configurada; vacío (default) = tráfico directo, sin cambios.
+
+**1. Cuenta de Cloudflare** (gratis): `dash.cloudflare.com/sign-up`.
+
+**2. Crear el Worker:** *Workers & Pages → Create → Create Worker* (cualquier nombre, p. ej.
+`wompi-relay`) → *Edit code* → reemplazar todo por:
+
+```javascript
+export default {
+  async fetch(request, env) {
+    if (request.headers.get("X-Relay-Secret") !== env.RELAY_SECRET) {
+      return new Response("forbidden", { status: 403 });
+    }
+    const url = new URL(request.url);
+    let target;
+    if (url.pathname.startsWith("/id/")) target = "https://id.wompi.sv" + url.pathname.slice(3);
+    else if (url.pathname.startsWith("/api/")) target = "https://api.wompi.sv" + url.pathname.slice(4);
+    else return new Response("not found", { status: 404 });
+    target += url.search;
+
+    const headers = new Headers(request.headers);
+    headers.delete("X-Relay-Secret");
+    headers.delete("host");
+
+    const res = await fetch(target, {
+      method: request.method,
+      headers,
+      body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(),
+    });
+    return new Response(res.body, { status: res.status, headers: res.headers });
+  },
+};
+```
+
+*Save and deploy*. Anota la URL pública que da (`https://wompi-relay.TU-USUARIO.workers.dev`).
+
+**3. El secreto del relay:** en el Worker, *Settings → Variables and Secrets → Add → tipo
+"Secret"*, nombre `RELAY_SECRET`, valor generado con:
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+```
+Sin este secreto, cualquiera que adivine la URL del Worker podría usarlo para pegarle a Wompi
+a través de tu cuenta.
+
+**4. Conectarlo al backend:**
+```bash
+printf 'https://wompi-relay.TU-USUARIO.workers.dev' | gcloud secrets create wompi-relay-url --data-file=-
+printf 'TU_CLAVE_GENERADA' | gcloud secrets create wompi-relay-secret --data-file=-
+PN=$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')
+for s in wompi-relay-url wompi-relay-secret; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:${PN}-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
+gcloud run services update budget-api --region us-east1 \
+  --update-secrets "WOMPI_RELAY_URL=wompi-relay-url:latest,WOMPI_RELAY_SECRET=wompi-relay-secret:latest"
+gcloud run jobs update budget-admin --region us-east1 \
+  --update-secrets "WOMPI_RELAY_URL=wompi-relay-url:latest,WOMPI_RELAY_SECRET=wompi-relay-secret:latest"
+```
+
+**5. Confirmar:** `adm wompi_probe --diagnostico-red` -- con `WOMPI_RELAY_URL` puesta, prueba
+también el relay y dice si pasa.
 
 ### 2.5 Bucket de GCS — recibos y backups (una sola vez)
 

@@ -505,14 +505,18 @@ WOMPI_ACCEPT_TEST_PAYMENTS = env.bool("WOMPI_ACCEPT_TEST_PAYMENTS", default=Fals
 # Sólo mientras se prueba: escribe en el log el cuerpo de cada webhook (trae nombre y
 # correo del cliente) para ver qué manda Wompi en los cobros recurrentes.
 WOMPI_LOG_WEBHOOKS = env.bool("WOMPI_LOG_WEBHOOKS", default=False)
-# Proxy de salida SOLO para las llamadas a Wompi (id.wompi.sv/api.wompi.sv), no para el
+# Relay de salida SOLO para las llamadas a Wompi (id.wompi.sv/api.wompi.sv), no para el
 # resto del tráfico del backend. Existe porque el firewall de Wompi (Azure Application
-# Gateway) bloquea la IP compartida de salida de Cloud Run -- comprobado el 22-sep-2026
-# con `wompi_probe --diagnostico-red` (mismo bloqueo con dos clientes HTTP distintos, o
-# sea que es la red, no la petición). Formato: "http://usuario:clave@host:puerto" (las
-# credenciales del proxy, si las tiene, van en la URL -- `requests` las lee de ahí solo).
-# Vacío (default) = sin proxy, tráfico directo, comportamiento actual sin cambios.
-WOMPI_PROXY_URL = env("WOMPI_PROXY_URL", default="")
+# Gateway) bloquea tráfico de IPs de datacenter/nube -- comprobado el 22-sep-2026 con
+# `wompi_probe --diagnostico-red` contra Google Cloud (Cloud Run) y Oracle Cloud, las dos
+# bloqueadas igual; una IP residencial y un Cloudflare Worker sí pasan. No es un proxy
+# HTTP clásico (CONNECT): es un Worker que reescribe la URL -- `{WOMPI_RELAY_URL}/id/...`
+# reenvía a `id.wompi.sv/...`, `{WOMPI_RELAY_URL}/api/...` a `api.wompi.sv/...` (ver
+# DEPLOY.md §2.4c para el código del Worker). `WOMPI_RELAY_SECRET` va en la cabecera
+# `X-Relay-Secret`; sin ella cualquiera con la URL del Worker podría usarlo. Vacío
+# (default) = sin relay, tráfico directo, comportamiento actual sin cambios.
+WOMPI_RELAY_URL = env("WOMPI_RELAY_URL", default="")
+WOMPI_RELAY_SECRET = env("WOMPI_RELAY_SECRET", default="")
 
 LOGGING = {
     "version": 1,
