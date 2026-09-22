@@ -520,6 +520,91 @@ class NotifyInsightsTests(NotificationServicesTestCase):
         mock_insights.assert_not_called()
 
 
+class NotifyMonthlySummaryTests(NotificationServicesTestCase):
+    """Mismo criterio que `NotifyInsightsTests`: `behavior_insights` se
+    mockea (ya se prueba aparte), acá sólo importa que `notify_monthly_summary`
+    dispare el día correcto, respete la preferencia, dedupee por mes y arme
+    el texto con lo que devuelva `apps.ai.summary.generate` (o el respaldo si
+    no está disponible)."""
+
+    FIRST_OF_MONTH = dt.date(2026, 4, 1)
+
+    INSIGHTS = [
+        {"dedupe_key": "ws:weekend:2026-W13", "title": "Gastás más los fines de semana", "body": "..."},
+        {"dedupe_key": "ws:peak_day:2026-W13", "title": "Tenés un día pico", "body": "..."},
+    ]
+
+    @patch("apps.ai.summary.generate")
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_creates_notification_with_ai_generated_text(self, mock_insights, mock_send, mock_generate):
+        mock_insights.return_value = self.INSIGHTS
+        mock_generate.return_value = {"title": "Tu marzo", "body": "Gastaste más los fines de semana."}
+        services.notify_monthly_summary(today=self.FIRST_OF_MONTH)
+
+        mock_insights.assert_called_once_with(self.workspace, self.user, today=dt.date(2026, 3, 31))
+        mock_send.assert_called_once()
+        notif = Notification.objects.get(user=self.user, kind=Notification.KIND_MONTHLY_SUMMARY)
+        self.assertEqual(notif.title, "Tu marzo")
+        self.assertEqual(notif.body, "Gastaste más los fines de semana.")
+        self.assertTrue(
+            NotificationLog.objects.filter(
+                user=self.user, kind=NotificationLog.KIND_MONTHLY_SUMMARY, dedupe_key=f"{self.workspace.id}:2026-03"
+            ).exists()
+        )
+
+    @patch("apps.ai.summary.generate")
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_falls_back_to_handwritten_text_when_ai_unavailable(self, mock_insights, mock_send, mock_generate):
+        from apps.ai.client import AIUnavailable
+
+        mock_insights.return_value = self.INSIGHTS
+        mock_generate.side_effect = AIUnavailable("no_api_key")
+        services.notify_monthly_summary(today=self.FIRST_OF_MONTH)
+
+        mock_send.assert_called_once()
+        notif = Notification.objects.get(user=self.user, kind=Notification.KIND_MONTHLY_SUMMARY)
+        self.assertEqual(notif.title, "Tu resumen del mes")
+        self.assertIn("Gastás más los fines de semana", notif.body)
+        self.assertIn("Tenés un día pico", notif.body)
+
+    @patch("apps.notifications.services.behavior_insights")
+    def test_does_not_run_outside_the_first_of_the_month(self, mock_insights):
+        services.notify_monthly_summary(today=self.FIRST_OF_MONTH + timedelta(days=1))
+        mock_insights.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_respects_preference_off(self, mock_insights, mock_send):
+        NotificationPreference.objects.create(user=self.user, warn_monthly_summary=False)
+        services.notify_monthly_summary(today=self.FIRST_OF_MONTH)
+        mock_send.assert_not_called()
+        mock_insights.assert_not_called()
+        self.assertFalse(Notification.objects.filter(kind=Notification.KIND_MONTHLY_SUMMARY).exists())
+
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_no_notification_without_insights(self, mock_insights, mock_send):
+        mock_insights.return_value = []
+        services.notify_monthly_summary(today=self.FIRST_OF_MONTH)
+        mock_send.assert_not_called()
+        self.assertFalse(Notification.objects.filter(kind=Notification.KIND_MONTHLY_SUMMARY).exists())
+
+    @patch("apps.ai.summary.generate")
+    @patch("apps.notifications.services.send_push")
+    @patch("apps.notifications.services.behavior_insights")
+    def test_does_not_repeat_the_same_month(self, mock_insights, mock_send, mock_generate):
+        mock_insights.return_value = self.INSIGHTS
+        mock_generate.return_value = {"title": "Tu marzo", "body": "..."}
+        services.notify_monthly_summary(today=self.FIRST_OF_MONTH)
+        services.notify_monthly_summary(today=self.FIRST_OF_MONTH)
+        self.assertEqual(mock_send.call_count, 1)
+        self.assertEqual(
+            Notification.objects.filter(kind=Notification.KIND_MONTHLY_SUMMARY).count(), 1
+        )
+
+
 class SendPushTests(TestCase):
     @patch("apps.notifications.services.urllib_request.urlopen")
     def test_posts_to_expo_with_batched_messages(self, mock_urlopen):

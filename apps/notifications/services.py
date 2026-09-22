@@ -407,6 +407,70 @@ def notify_statement_due():
             )
 
 
+def _monthly_summary_text(user, workspace, insights):
+    """Gemini conecta los patrones en un solo texto (`apps.ai.summary.
+    generate`); si no está disponible, se sigue mandando el texto armado a
+    mano con los mismos datos -- la detección sigue siendo determinista, la
+    IA sólo redacta (backlog, punto 6)."""
+    from apps.ai.client import AIUnavailable
+    from apps.ai.summary import generate as generate_summary
+
+    try:
+        result = generate_summary(user=user, workspace=workspace, insights=insights)
+        return result["title"], result["body"]
+    except AIUnavailable:
+        body = " ".join(f"{i['title']}: {i['body']}" for i in insights)
+        return "Tu resumen del mes", body[:500]
+
+
+# Día del mes en que se dispara el resumen (para el mes que acaba de
+# terminar, ver `notify_monthly_summary`) -- un día fijo y no una ventana
+# móvil por membresía, mismo criterio que `INSIGHTS_WEEKDAY`.
+MONTHLY_SUMMARY_DAY = 1
+
+
+def notify_monthly_summary(today=None):
+    """Un mensaje único que conecta los patrones de `behavior_insights` del
+    mes que acaba de terminar, en vez de reavisarlos sueltos -- ésos siguen
+    su propio camino semanal en `notify_insights`. Corre una vez al mes y no
+    reemplaza al otro aviso: son dos toggles independientes a propósito
+    (backlog, punto 6), para poder apagar uno sin el otro."""
+    today = today or timezone.localdate()
+    if today.day != MONTHLY_SUMMARY_DAY:
+        return
+    # Último día del mes que acaba de terminar: `behavior_insights` mira
+    # hacia atrás desde `today`, así que correrlo con ayer da un resumen del
+    # mes recién cerrado en vez de arrancar el que empieza hoy.
+    reference_date = today - timezone.timedelta(days=1)
+    dedupe_month = f"{reference_date.year}-{reference_date.month:02d}"
+
+    prefs, devices_by_user = {}, {}
+
+    for membership in _active_memberships().order_by("user_id"):
+        user, workspace = membership.user, membership.workspace
+        if user.pk not in prefs:
+            prefs[user.pk] = _get_preference(user)
+        pref = prefs[user.pk]
+        if not pref.warn_monthly_summary:
+            continue
+        if user.pk not in devices_by_user:
+            devices_by_user[user.pk] = _devices_for(user)
+        devices = devices_by_user[user.pk]
+
+        insights = behavior_insights(workspace, user, today=reference_date)
+        if not insights:
+            continue
+
+        title, body = _monthly_summary_text(user, workspace, insights)
+        _notify(
+            user, workspace, NotificationLog.KIND_MONTHLY_SUMMARY, f"{workspace.id}:{dedupe_month}",
+            title=title,
+            body=body,
+            data={"type": NotificationLog.KIND_MONTHLY_SUMMARY, "workspace": str(workspace.id)},
+            devices=devices,
+        )
+
+
 def notify_insights(today=None):
     """Patrones de comportamiento de gasto (ver `apps.reports.services.
     behavior_insights`). La cadencia de aviso es semanal (o mensual) por

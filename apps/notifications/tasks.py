@@ -15,3 +15,4 @@ def send_daily_reminders():
     services.notify_low_balance()
     services.notify_statement_due()
     services.notify_insights()
+    services.notify_monthly_summary()
