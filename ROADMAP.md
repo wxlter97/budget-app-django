@@ -46,7 +46,7 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 
 | # | Qué | Quién | Tiempo |
 |---|---|---|---|
-| 0.1 | **`GS_BUCKET_NAME`** — sin esto los recibos se borran en cada deploy | 🧑 | 20 min |
+| 0.1 | ~~**`GS_BUCKET_NAME`**~~ — **hecho**, el roadmap tenía texto viejo: verificado el 19-sep-2026 (`CONFIG-PENDIENTE.md`), el job `budget-cron` ya lo tiene y el backup sube a `backups/db/` | 🧑 ✅ | — |
 | 0.2 | ~~**Cloud Scheduler + Job `budget-cron`**~~ — confirmado hecho por vos (22-sep-2026); no verificable desde este sandbox | 🧑 ✅ | — |
 | 0.3 | ~~**Endpoint *pooled* de Neon** en `DATABASE_URL`~~ — **hecho** (verificado el 20-sep-2026): el host es `-pooler` y el servicio y el job tienen `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True` | 🧑 ✅ | — |
 | 0.4 | **`CACHE_URL`** con Redis de Upstash — **diferido por decisión** (20-sep-2026): el throttling en memoria cuenta bien con una sola instancia (`maxScale: 1`, verificado el 19-sep) y sólo se reinicia en cada deploy o arranque en frío. Reabrir el día que se suba el máximo de instancias. Ojo: con Redis la API pasa a depender de un servicio externo, porque el backend de Redis de Django no falla en abierto | 🧑 | 30 min |
