@@ -377,6 +377,19 @@ class ApplyEventTests(TestCase):
         self.assertIsNone(apply_webhook_event(event, provider_code="wompi"))
         self.assertFalse(ProcessedWebhookEvent.objects.exists())
 
+    def test_a_non_uuid_reference_is_ignored_not_a_500(self):
+        # "probe-<uuid>" es la referencia que arma `wompi_probe --pago` para los enlaces de
+        # prueba (ver management/commands/wompi_probe.py) -- reproduce el 500 real que
+        # Wompi mandó en un webhook contra un enlace así, con reintento incluido.
+        from apps.billing.providers import WebhookEvent
+        event = WebhookEvent(
+            kind="subscription.activated", reference="probe-508adeec-cb83-4547-86cd-ee87b85347c9",
+            event_id="tx-real",
+        )
+        self.assertIsNone(apply_webhook_event(event, provider_code="wompi"))
+        self.assertFalse(ProcessedWebhookEvent.objects.exists())
+
+
 
 @override_settings(**CREDS)
 class WompiEndToEndTests(APITestCase):
@@ -437,3 +450,21 @@ class WompiEndToEndTests(APITestCase):
             self.assertEqual(resp.status_code, 403)
         sub.refresh_from_db()
         self.assertEqual(sub.status, Subscription.STATUS_PENDING)
+
+    def test_the_real_webhook_body_wompi_sent_for_a_probe_link_does_not_crash_the_endpoint(self):
+        # Cuerpo real recibido en producción (22-sep-2026) de un enlace creado con
+        # `wompi_probe --pago`, vía el endpoint completo -- no debe dar 500.
+        body = json.dumps({
+            "IdCuenta": "d7824dd5-bede-4e9d-a0bc-e6759c1e6b57",
+            "FechaTransaccion": "2026-09-21T22:44:52.7870985-06:00",
+            "Monto": "1.00", "ModuloUtilizado": "BotonPago", "FormaPagoUtilizada": "PagoNormal",
+            "IdTransaccion": "ed58565c-88df-47a5-a442-f432ffc6c9d7",
+            "ResultadoTransaccion": "ExitosaAprobada",
+            "EnlacePago": {"Id": 4418151, "IdentificadorEnlaceComercio": "probe-508adeec-cb83-4547-86cd-ee87b85347c9"},
+            "cliente": {"Email": "me@wxlter.dev"},
+            "EsProductiva": False,
+        }).encode()
+        resp = self.client.post(
+            WEBHOOK, body, content_type="application/json", HTTP_WOMPI_HASH=sign(body)
+        )
+        self.assertEqual(resp.status_code, 202)

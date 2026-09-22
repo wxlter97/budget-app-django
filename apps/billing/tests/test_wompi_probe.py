@@ -97,6 +97,30 @@ class DiagnosticoRedCommandTests(TestCase):
             call_command("wompi_probe", "--diagnostico-red", stdout=out)
         self.assertIn("también fue bloqueado", out.getvalue())
 
+    def test_fake_credentials_flag_sends_x_and_y_instead_of_the_real_ones(self):
+        out = StringIO()
+        post = mock.Mock(return_value=mock.Mock(status_code=400, text='{"error":"invalid_client"}'))
+        with mock.patch("requests.post", post), \
+             mock.patch(
+                 "apps.billing.management.commands.wompi_probe.curl_post_form",
+                 return_value=("400", '{"error":"invalid_client"}'),
+             ):
+            call_command("wompi_probe", "--diagnostico-red", "--credenciales-falsas", stdout=out)
+        self.assertEqual(post.call_args.kwargs["data"]["client_id"], "x")
+        self.assertEqual(post.call_args.kwargs["data"]["client_secret"], "y")
+        self.assertIn("credenciales FALSAS", out.getvalue())
+
+    def test_fake_credentials_flag_does_not_require_real_ones_to_be_set(self):
+        out = StringIO()
+        with override_settings(WOMPI_CLIENT_ID="", WOMPI_CLIENT_SECRET=""):
+            with mock.patch("requests.post", return_value=mock.Mock(status_code=400, text="{}")), \
+                 mock.patch(
+                     "apps.billing.management.commands.wompi_probe.curl_post_form",
+                     return_value=("400", "{}"),
+                 ):
+                call_command("wompi_probe", "--diagnostico-red", "--credenciales-falsas", stdout=out)
+        # No levantó CommandError por credenciales faltantes.
+
     def test_without_credentials_it_refuses_clearly(self):
         out = StringIO()
         with override_settings(WOMPI_CLIENT_ID="", WOMPI_CLIENT_SECRET=""):
