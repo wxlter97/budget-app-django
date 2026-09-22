@@ -145,6 +145,11 @@ class Notification(BaseModel):
 
     KIND_INVITATION = "invitation"
     KIND_EMAIL_IMPORT_PENDING = "email_import_pending"
+    # Suscripción (ver apps.billing.services.send_renewal_reminders): un plan mensual o
+    # anual por vencer pronto, o uno que venció sin renovarse (Wompi no avisa cobros
+    # recurrentes fallidos -- esto es la única forma de enterarse).
+    KIND_SUBSCRIPTION_RENEWAL_DUE = "subscription_renewal_due"
+    KIND_SUBSCRIPTION_EXPIRED = "subscription_expired"
     # Mismos strings que NotificationLog (no se redefinen): el cliente ya
     # switchea sobre `data.type` con estos valores al tocar un push (ver
     # `addNotificationTapListener`) -- tienen que seguir siendo idénticos.
@@ -157,6 +162,8 @@ class Notification(BaseModel):
     KIND_CHOICES = [
         (KIND_INVITATION, "Invitación a un presupuesto"),
         (KIND_EMAIL_IMPORT_PENDING, "Correo bancario por revisar"),
+        (KIND_SUBSCRIPTION_RENEWAL_DUE, "Suscripción por vencer"),
+        (KIND_SUBSCRIPTION_EXPIRED, "Suscripción vencida"),
         *NotificationLog.KIND_CHOICES,
     ]
 

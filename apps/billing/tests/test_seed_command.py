@@ -31,6 +31,30 @@ class SeedBillingPlansTests(TestCase):
             PlanPrice.BILLING_LIFETIME: 19.99,
         })
 
+    def test_lifetime_is_seeded_inactive(self):
+        """Desactivado (22-sep-2026, decisión de negocio) -- la fila se sigue creando
+        para no romper a quien ya lo compró, pero sin botón para comprarlo de nuevo."""
+        call_command("seed_billing_plans")
+        pro = Plan.objects.get(code="pro")
+        lifetime = pro.prices.get(billing_period=PlanPrice.BILLING_LIFETIME)
+        self.assertFalse(lifetime.is_active)
+        monthly = pro.prices.get(billing_period=PlanPrice.BILLING_MONTHLY)
+        self.assertTrue(monthly.is_active)
+
+    def test_reseeding_overwrites_a_manual_reactivation(self):
+        """A diferencia del catálogo de lealtad (que sólo crea lo que falta), este
+        comando SÍ pisa lo existente en cada corrida (ver su docstring) -- si alguien
+        reactiva el lifetime a mano en el admin, un reseed de rutina lo vuelve a
+        desactivar. Documentado acá para que no sorprenda."""
+        call_command("seed_billing_plans")
+        pro = Plan.objects.get(code="pro")
+        lifetime = pro.prices.get(billing_period=PlanPrice.BILLING_LIFETIME)
+        lifetime.is_active = True
+        lifetime.save()
+        call_command("seed_billing_plans")
+        lifetime.refresh_from_db()
+        self.assertFalse(lifetime.is_active)
+
     def test_seeds_the_ai_quotas_so_no_plan_falls_back_to_the_free_numbers(self):
         """`apps.ai.quotas` es fail-closed: un plan sin estas claves aplica los
         números del gratis, y un Pro pagando con cuota de Free sería un

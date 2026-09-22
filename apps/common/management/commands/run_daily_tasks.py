@@ -21,6 +21,7 @@ el sentido estricto: cada corrida deja un volcado más en el bucket. No molesta
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
+from apps.billing.services import send_renewal_reminders
 from apps.notifications.tasks import send_daily_reminders
 from apps.reports.tasks import close_previous_budget_period, close_previous_month
 from apps.transactions.tasks import generate_recurring_transactions
@@ -35,6 +36,7 @@ class Command(BaseCommand):
             ("Cierre de mes anterior", close_previous_month),
             ("Cierre del período de presupuesto anterior", close_previous_budget_period),
             ("Recordatorios diarios", send_daily_reminders),
+            ("Vencimientos de suscripción", send_renewal_reminders),
         ]
         for label, task in steps:
             self.stdout.write(f"→ {label}...")

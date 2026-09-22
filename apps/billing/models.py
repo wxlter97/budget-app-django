@@ -175,6 +175,12 @@ class Subscription(BaseModel):
     canceled_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, help_text="Uso interno -- p. ej. motivo de un alta manual.")
 
+    # `current_period_end` para el que ya se mandó el recordatorio de vencimiento (o el
+    # aviso de que venció sin renovarse). Comparar contra el `current_period_end` actual
+    # dice si ya se avisó DE ESE período o si es uno nuevo (p. ej. tras renovar) -- ver
+    # `apps.billing.services.send_renewal_reminders`.
+    renewal_notice_sent_for = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ("-created_at",)
         indexes = [models.Index(fields=["user", "status"])]

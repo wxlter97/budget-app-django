@@ -10,6 +10,8 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
+import requests
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import F
@@ -235,6 +237,7 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
         if event.external_customer_id:
             sub.external_customer_id = event.external_customer_id
 
+        was_pending = sub.status == Subscription.STATUS_PENDING
         if event.kind in ("subscription.activated", "subscription.renewed"):
             sub.status = Subscription.STATUS_ACTIVE
             sub.current_period_end = event.current_period_end or _paid_period_end(sub)
@@ -248,7 +251,113 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
             "status", "current_period_end", "canceled_at",
             "external_subscription_id", "external_customer_id", "updated_at",
         ])
+
+        if event.kind in ("subscription.activated", "subscription.renewed"):
+            notify_billing_event("new_subscriber" if was_pending else "renewed", sub)
+        elif event.kind == "subscription.failed":
+            notify_billing_event("failed", sub)
         return sub
+
+
+# ---------------------------------------------------------------------------
+# Avisos de pago a Discord -- ver BILLING_WEBHOOK_URL. Separado del webhook de
+# soporte (SUPPORT_WEBHOOK_URL): audiencia distinta, no se quiere mezclar
+# "alguien escribió un ticket" con "entró/se cayó un pago".
+# ---------------------------------------------------------------------------
+_BILLING_EMOJI = {"new_subscriber": "🎉", "renewed": "💳", "failed": "⚠️", "expired": "⏰"}
+_BILLING_LABEL = {
+    "new_subscriber": "Nueva suscripción",
+    "renewed": "Renovación cobrada",
+    "failed": "Cobro fallido",
+    "expired": "Venció sin renovarse",
+}
+
+
+def notify_billing_event(kind: str, sub: Subscription) -> None:
+    """Postea un evento de pago al webhook de Discord configurado
+    (`BILLING_WEBHOOK_URL`). No hace nada si no hay webhook configurado, y nunca
+    revienta el flujo de billing si el POST falla -- el evento real (activar,
+    marcar vencida, etc.) ya se aplicó de todos modos."""
+    webhook_url = settings.BILLING_WEBHOOK_URL
+    if not webhook_url:
+        return
+
+    price = sub.plan_price
+    amount = f"${price.amount:.2f} {price.get_billing_period_display().lower()}" if price else "—"
+    content = (
+        f"{_BILLING_EMOJI.get(kind, '💬')} **{_BILLING_LABEL.get(kind, kind)}** — {sub.plan.name}\n"
+        f"{sub.user.email} · {amount} · {sub.provider}"
+    )
+    try:
+        requests.post(webhook_url, json={"content": content}, timeout=10)
+    except requests.RequestException:
+        logger.warning("No se pudo notificar el evento de billing '%s' a Discord.", kind, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Recordatorios de vencimiento -- ver apps.notifications.tasks / run_daily_tasks.
+# ---------------------------------------------------------------------------
+RENEWAL_REMINDER_WINDOW = timedelta(days=3)
+
+
+def send_renewal_reminders() -> None:
+    """
+    Recordatorios de vencimiento para suscripciones mensuales/anuales, y detección de
+    las que vencieron sin renovarse. Wompi sólo avisa cobros EXITOSOS (ver
+    `WompiProvider`) -- un cobro recurrente fallido, o un anual que nadie volvió a pagar,
+    no manda ningún webhook. Esto es lo único que se entera: si `current_period_end` ya
+    pasó y nadie la renovó, se marca vencida acá, no por un aviso del proveedor.
+
+    Nada de por vida (`current_period_end` es None, nunca vence) ni suscripciones sin
+    `plan_price` (no se puede saber cuánto dura un período que no se conoce).
+    Idempotente por `renewal_notice_sent_for`: compara contra el `current_period_end`
+    actual, así que renovar (que lo cambia) habilita un aviso nuevo para el período nuevo.
+    """
+    from apps.notifications.models import Notification, PushDevice
+    from apps.notifications.services import notify_user, send_push
+
+    now = timezone.now()
+    candidates = (
+        Subscription.objects.filter(
+            status__in=[Subscription.STATUS_ACTIVE, Subscription.STATUS_PAST_DUE],
+            current_period_end__isnull=False,
+            plan_price__isnull=False,
+        )
+        .exclude(plan_price__billing_period=PlanPrice.BILLING_LIFETIME)
+        .select_related("user", "plan", "plan_price")
+    )
+    for sub in candidates:
+        if sub.renewal_notice_sent_for == sub.current_period_end:
+            continue  # ya se avisó de este vencimiento puntual
+
+        expired = sub.current_period_end <= now
+        if not expired and sub.current_period_end - now > RENEWAL_REMINDER_WINDOW:
+            continue  # todavía falta demasiado
+
+        when = sub.current_period_end.strftime("%d/%m/%Y")
+        if expired:
+            kind = Notification.KIND_SUBSCRIPTION_EXPIRED
+            title = f"Tu plan {sub.plan.name} venció"
+            body = "No se renovó a tiempo. Podés volver a suscribirte cuando quieras desde Cuenta → Pro."
+            sub.status = Subscription.STATUS_EXPIRED
+            notify_billing_event("expired", sub)
+        elif sub.plan_price.billing_period == PlanPrice.BILLING_MONTHLY:
+            kind = Notification.KIND_SUBSCRIPTION_RENEWAL_DUE
+            title = "Tu plan se renueva pronto"
+            body = f"{sub.plan.name} se renueva el {when} por ${sub.plan_price.amount:.2f}."
+        else:
+            kind = Notification.KIND_SUBSCRIPTION_RENEWAL_DUE
+            title = "Tu plan Pro vence pronto"
+            body = f"{sub.plan.name} vence el {when}. Renovalo desde Cuenta → Pro para no perder el acceso."
+
+        sub.renewal_notice_sent_for = sub.current_period_end
+        sub.save(update_fields=["status", "renewal_notice_sent_for", "updated_at"])
+
+        data = {"type": kind, "plan": sub.plan.code}
+        notify_user(sub.user, kind=kind, title=title, body=body, data=data)
+        devices = list(PushDevice.objects.filter(user=sub.user))
+        if devices:
+            send_push(devices, title=title, body=body, data=data)
 
 
 # ---------------------------------------------------------------------------
