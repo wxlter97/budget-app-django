@@ -299,6 +299,12 @@ class PersonViewSet(WorkspaceScopedViewSet):
     serializer_class = PersonSerializer
     queryset = Person.objects.select_related("member__user").all()
 
+    def perform_create(self, serializer):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "split_people")
+        serializer.save()
+
     def perform_destroy(self, instance):
         if instance.transaction_shares.exists() or instance.paid_transactions.exists():
             raise ValidationError(
@@ -819,6 +825,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         esto, "reembolsado" era sólo un flag sin ningún movimiento de
         dinero real detrás.
         """
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "refunds")
         txn = self.get_object()
         serializer = RegisterRefundSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -862,6 +871,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         de la cartera y los reportes por categoría no necesitan ningún caso
         especial: cada parte es una Transaction real e independiente.
         """
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "split_categories")
         txn = self.get_object()
         if txn.type == Transaction.TYPE_TRANSFER:
             raise ValidationError("No se puede dividir una transferencia.")
@@ -928,6 +940,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         Reemplaza cualquier división anterior de esta misma transacción
         (llamar de nuevo con una lista distinta corrige el reparto).
         """
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "split_people")
         txn = self.get_object()
         if txn.type == Transaction.TYPE_TRANSFER:
             raise ValidationError("No se puede dividir una transferencia entre personas.")
@@ -972,6 +987,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
     def settle_share(self, request, pk=None, share_id=None):
         """Marca (o desmarca) como liquidada la parte de una persona en esta
         transacción dividida -- para saber quién ya pagó su parte."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "split_people")
         txn = self.get_object()
         share = txn.shares.filter(id=share_id).first()
         if share is None:
@@ -990,6 +1008,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
     def balances(self, request):
         """Quién le debe cuánto a quién en el workspace activo, entre las
         divisiones por persona sin liquidar (ver `services.person_balances`)."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "split_people")
         data = services.person_balances(request.workspace)
         return Response(
             PersonBalanceSerializer(data, many=True, context=self.get_serializer_context()).data
@@ -1001,6 +1022,9 @@ class TransactionViewSet(WorkspaceScopedViewSet):
         de `balances`) -- marca como liquidadas todas las `TransactionShare`
         sin liquidar entre ellas, en cualquier dirección (ver
         `services.settle_balance`). Devuelve la lista de saldos actualizada."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "split_people")
         serializer = SettleBalanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         a = serializer.validated_data["from_person"]
@@ -1281,6 +1305,30 @@ class RecurringExpenseSerializer(WorkspaceScopedSerializerMixin, serializers.Mod
         category = attrs.get("category", getattr(inst, "category", None))
         txn_type = attrs.get("type") or getattr(inst, "type", None)
 
+        # `max_active_recurring` sólo importa cuando esto ACTIVA un recurrente
+        # nuevo: crear uno (inst is None) o reactivar uno pausado (was_active
+        # False -> True). Editar/pausar uno ya activo, o un create explícito
+        # con is_active=False, no suma a la cuenta -- ver `can_add_recurring`.
+        was_active = getattr(inst, "is_active", False)
+        will_be_active = attrs.get("is_active", was_active if inst is not None else True)
+        if will_be_active and not was_active:
+            from apps.billing.services import can_add_recurring, plan_for_workspace
+
+            workspace = self.context.get("workspace") or getattr(inst, "workspace", None)
+            if workspace is not None and not can_add_recurring(workspace):
+                plan = plan_for_workspace(workspace)
+                limit = plan.max_active_recurring if plan is not None else None
+                if limit == 0:
+                    message = (
+                        "Los gastos recurrentes son parte de Plus -- pasate a Plus para activarlos."
+                    )
+                else:
+                    message = (
+                        f"Tu plan permite hasta {limit} recurrente(s) activo(s) -- "
+                        "pausá uno o pasate a un plan con más lugar."
+                    )
+                raise serializers.ValidationError({"non_field_errors": [message]})
+
         _reject_if_group_wallet(wallet, "wallet")
 
         if not txn_type and category is not None:
@@ -1486,6 +1534,12 @@ class InstallmentPurchaseViewSet(WorkspaceScopedViewSet):
     queryset = InstallmentPurchase.objects.select_related(
         "workspace", "category", "wallet"
     ).all()
+
+    def perform_create(self, serializer):
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "installments")
+        serializer.save()
 
     def perform_destroy(self, instance):
         # La compra y su única Transaction son, en la práctica, un mismo

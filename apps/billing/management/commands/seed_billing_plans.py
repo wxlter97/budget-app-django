@@ -18,11 +18,17 @@ class Command(BaseCommand):
             code="free",
             defaults=dict(
                 name="Gratis",
-                description="El loop diario: anotar y ver tus gastos.",
+                description="El loop diario: anotar y ver tus gastos, en solitario.",
                 is_default=True,
                 max_workspaces_owned=1,
-                max_members_per_workspace=2,
-                max_active_recurring=5,
+                # 1 = sólo el owner (sin invitados) y 0 recurrentes activos:
+                # el gratis dejó de ser "un Pro más chico" y pasó a ser
+                # deliberadamente restrictivo (22-sep-2026, decisión de
+                # negocio -- es la única palanca de monetización que hay,
+                # sin publicidad ni venta de datos de por medio). Ver
+                # ECONOMIA-POR-PLAN.md.
+                max_members_per_workspace=1,
+                max_active_recurring=0,
                 features={
                     "import_email": False,
                     "import_excel": False,
@@ -33,6 +39,25 @@ class Command(BaseCommand):
                     "loyalty": False,
                     "multi_currency": False,
                     "quick_add": False,
+                    # Fuera del gratis por completo desde el 22-sep-2026 (ver
+                    # arriba): cada una es una función que antes estaba
+                    # disponible sin pagar y ahora es la razón para pasarse a
+                    # Plus. `has_feature_for_workspace`/`require_feature_for_workspace`
+                    # (apps/billing/services.py) son quienes la hacen cumplir;
+                    # `calendar` y `transaction_duplicate` no tienen chequeo de
+                    # backend propio (no hay un endpoint separado que gatear
+                    # sin romper la lista normal de transacciones) y se gatean
+                    # sólo del lado del frontend.
+                    "calendar": False,
+                    "notifications": False,
+                    "wallet_split": False,
+                    "transaction_duplicate": False,
+                    "refunds": False,
+                    "split_categories": False,
+                    "split_people": False,
+                    "installments": False,
+                    "statements": False,
+                    "net_worth": False,
                     # Cuotas de IA (ver apps/ai/quotas.py y el backlog de
                     # funciones nuevas). En Free la IA es una muestra: alcanza
                     # para probarla y no para que salga cara.
@@ -46,8 +71,8 @@ class Command(BaseCommand):
             code="plus",
             defaults=dict(
                 name="Plus",
-                description="Más lugar para crecer: workspaces y recurrentes extra, "
-                             "exportar tus datos, multi-moneda e historial de patrimonio.",
+                description="Todo lo que el gratis deja afuera: miembros, recurrentes, "
+                             "calendario, avisos, patrimonio y dividir gastos.",
                 is_default=False,
                 max_workspaces_owned=2,
                 max_members_per_workspace=5,
@@ -62,6 +87,16 @@ class Command(BaseCommand):
                     "loyalty": False,
                     "multi_currency": True,
                     "quick_add": False,
+                    "calendar": True,
+                    "notifications": True,
+                    "wallet_split": True,
+                    "transaction_duplicate": True,
+                    "refunds": True,
+                    "split_categories": True,
+                    "split_people": True,
+                    "installments": True,
+                    "statements": True,
+                    "net_worth": True,
                     # Techo de costo de IA ~$0.085/mes contra $0.99 de precio.
                     "ai_receipts_per_month": 30,
                     "ai_parses_per_month": 50,
@@ -89,6 +124,16 @@ class Command(BaseCommand):
                     "loyalty": True,
                     "multi_currency": True,
                     "quick_add": True,
+                    "calendar": True,
+                    "notifications": True,
+                    "wallet_split": True,
+                    "transaction_duplicate": True,
+                    "refunds": True,
+                    "split_categories": True,
+                    "split_people": True,
+                    "installments": True,
+                    "statements": True,
+                    "net_worth": True,
                     # Techo ~$0.36/mes contra $1.99. El lifetime de $19.99 usa
                     # estas mismas cuotas, no IA ilimitada: un usuario
                     # intensivo sin tope serían ~14 años de consumo sólo para

@@ -345,8 +345,10 @@ class WalletViewSet(WorkspaceScopedViewSet):
         Para cuando una cartera que ya tenía actividad propia necesita
         empezar a agrupar otras (p. ej. separar "Multimoney" en el banco
         real + un fondo de ahorro aparte, ambos bajo el mismo grupo)."""
+        from apps.billing.services import require_feature_for_workspace
         from apps.transactions.models import InstallmentPurchase, RecurringExpense, Transaction
 
+        require_feature_for_workspace(self.request.workspace, "wallet_split")
         wallet = self._owned_wallet(pk)
         if wallet is None:
             return Response({"detail": "No encontrada."}, status=404)
@@ -432,6 +434,9 @@ class WalletViewSet(WorkspaceScopedViewSet):
     def statement(self, request, pk=None):
         """Estado de cuenta de esta tarjeta a una fecha dada (`?as_of=`,
         hoy por defecto) -- ver `services.credit_card_statement`."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "statements")
         wallet = self._owned_wallet(pk)
         if wallet is None:
             return Response({"detail": "No encontrada."}, status=404)
@@ -481,6 +486,9 @@ class WalletViewSet(WorkspaceScopedViewSet):
     def statements(self, request):
         """Estado de cuenta de todas las tarjetas de crédito del workspace
         (siempre a hoy) -- para el listado en Herramientas."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(request.workspace, "statements")
         data = credit_card_statements_summary(request.workspace, request.user)
         return Response(CreditCardStatementSummarySerializer(data, many=True).data)
 
