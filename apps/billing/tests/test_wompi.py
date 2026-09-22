@@ -81,10 +81,19 @@ class WompiHttpTests(TestCase):
         headers = request.call_args.kwargs["headers"]
         self.assertEqual(headers["authorization"], "Bearer tok")
 
-    def test_bad_credentials_raise_a_clear_error(self):
-        self._calls(mock.Mock(return_value=FakeResponse(401, {"error": "invalid_client"})), mock.Mock())
-        with self.assertRaisesRegex(WompiError, "credenciales"):
+    def test_bad_credentials_raise_a_clear_error_including_what_wompi_said(self):
+        self._calls(mock.Mock(return_value=FakeResponse(403, {"error": "invalid_client"})), mock.Mock())
+        with self.assertRaisesRegex(WompiError, "credenciales.*invalid_client"):
             WompiProvider().request_api("GET", "/algo")
+
+    def test_leading_or_trailing_whitespace_in_the_credentials_is_stripped(self):
+        # Fácil de meter sin querer al crear el secret desde una terminal.
+        with override_settings(WOMPI_CLIENT_ID=" app-id\n", WOMPI_CLIENT_SECRET="\tsecreto-de-prueba \n"):
+            post = self._token_ok()
+            self._calls(post, mock.Mock(return_value=FakeResponse(200, {"ok": True})))
+            WompiProvider().request_api("GET", "/algo")
+        self.assertEqual(post.call_args.kwargs["data"]["client_id"], "app-id")
+        self.assertEqual(post.call_args.kwargs["data"]["client_secret"], "secreto-de-prueba")
 
     def test_missing_credentials_do_not_call_the_network(self):
         post = mock.Mock()

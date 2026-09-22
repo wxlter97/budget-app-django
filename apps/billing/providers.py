@@ -146,8 +146,11 @@ class WompiProvider(PaymentProvider):
     TIMEOUT = 15
 
     def __init__(self):
-        self.client_id = settings.WOMPI_CLIENT_ID
-        self.client_secret = settings.WOMPI_CLIENT_SECRET
+        # `.strip()`: un espacio o salto de línea de más al crear el secret (fácil al
+        # copiar del panel de Wompi) da un 403/401 sin explicación mejor -- ver
+        # `_token`, que ahora sí muestra lo que Wompi contesta.
+        self.client_id = settings.WOMPI_CLIENT_ID.strip()
+        self.client_secret = settings.WOMPI_CLIENT_SECRET.strip()
 
     # -- HTTP -----------------------------------------------------------------
     def _token(self) -> str:
@@ -169,8 +172,13 @@ class WompiProvider(PaymentProvider):
         except requests.RequestException as exc:
             raise WompiError(f"No se pudo contactar a Wompi para autenticar: {exc}") from exc
         if res.status_code != 200:
-            raise WompiError(f"Wompi rechazó las credenciales ({res.status_code}).")
-        data = res.json()
+            raise WompiError(
+                f"Wompi rechazó las credenciales ({res.status_code}): {res.text[:500]}"
+            )
+        try:
+            data = res.json()
+        except ValueError as exc:
+            raise WompiError(f"Wompi no devolvió JSON al autenticar: {res.text[:300]}") from exc
         token = data.get("access_token")
         if not token:
             raise WompiError("Wompi no devolvió un access_token.")
