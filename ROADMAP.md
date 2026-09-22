@@ -1,6 +1,6 @@
 # Roadmap — de acá a producción, y después
 
-> Escrito el 18 sep 2026. Es el índice maestro: junta lo que falta para salir a producción de
+> Escrito el 18 sep 2026, actualizado el 22 sep 2026. Es el índice maestro: junta lo que falta para salir a producción de
 > verdad con las funciones nuevas que ya están diseñadas. Los detalles viven en los documentos
 > que cada punto referencia, no acá — este archivo es para saber **qué sigue y en qué orden**.
 >
@@ -16,17 +16,24 @@
 
 ## Dónde estamos hoy
 
-- Los PRs #55 y #56 (backend) y #74 y #75 (front) **están mergeados a `main`**. El código de
-  producto está al día: reembolsos, división entre personas, Personas, ahorro con interés,
-  gamificación, insights de comportamiento, y los arreglos de escala del backend.
-- Además ya están **el backup diario a GCS (0.8)**, **el `_redirects` para Cloudflare (0.5)**,
-  **la base de IA con su cuota por plan (2.1)**, **el escaneo de recibos (2.2)** y **la entrada
-  por texto libre (2.3)**. Todas esperan configuración tuya: el bucket, el DNS y la key de
-  Gemini.
-- La app corre en web (Vercel Hobby). **No hay build nativo publicado** y no hay
+- El código de producto está al día: reembolsos, división entre personas, Personas, ahorro con
+  interés, gamificación, insights de comportamiento, plan gratis restrictivo, recompensas de
+  lealtad, y los arreglos de escala de backend y frontend.
+- La Fase 0 está prácticamente cerrada: backup diario a GCS, Cloud Scheduler/job diario, Sentry,
+  push web, correo saliente, alertas y Cloudflare Pages como hosting del front (ver la tabla de
+  Fase 0 arriba). La Fase 1 avanzó fuerte: Wompi tiene relay por Cloudflare Worker, cobro
+  recurrente, avisos de vencimiento, y su tarifa real ya está confirmada (1.1); 1.4 y 1.5 están
+  cerrados.
+- **De la Fase 2, ya están la base de IA con su cuota por plan (2.1), el escaneo de recibos
+  (2.2), la entrada por texto libre (2.3), la voz/dictado (2.5), el resumen mensual (2.9) y el
+  chat de finanzas (2.10)** — código y tests, pendiente sólo de crédito de prepago en AI Studio y
+  de que se prenda el interruptor `ai` del admin. Telegram (2.4), el DTE por correo (2.7) y el QR
+  de factura (2.8) quedaron **diferidos por decisión** (22-sep-2026), no por bloqueo técnico.
+- La app corre en web (Cloudflare Pages). **No hay build nativo publicado** y no hay
   `extra.eas.projectId`.
-- 850 tests en el backend, 257 en el front, todos pasando.
-- Lo que falta no es código de producto: es configuración, cobrar, y las funciones nuevas.
+- 1134 tests en el backend, 385 en el front, todos pasando.
+- Lo que falta no es código de producto para abrir y cobrar: es configuración y las funciones de
+  la Fase 2 que quedaron diferidas.
 
 ---
 
@@ -38,12 +45,12 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 | # | Qué | Quién | Tiempo |
 |---|---|---|---|
 | 0.1 | **`GS_BUCKET_NAME`** — sin esto los recibos se borran en cada deploy | 🧑 | 20 min |
-| 0.2 | **Cloud Scheduler + Job `budget-cron`** — sin esto no corre nada diario (recordatorios, recurrentes, insights) y no hay error que avise | 🧑 | 30 min |
+| 0.2 | ~~**Cloud Scheduler + Job `budget-cron`**~~ — confirmado hecho por vos (22-sep-2026); no verificable desde este sandbox | 🧑 ✅ | — |
 | 0.3 | ~~**Endpoint *pooled* de Neon** en `DATABASE_URL`~~ — **hecho** (verificado el 20-sep-2026): el host es `-pooler` y el servicio y el job tienen `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True` | 🧑 ✅ | — |
 | 0.4 | **`CACHE_URL`** con Redis de Upstash — **diferido por decisión** (20-sep-2026): el throttling en memoria cuenta bien con una sola instancia (`maxScale: 1`, verificado el 19-sep) y sólo se reinicia en cada deploy o arranque en frío. Reabrir el día que se suba el máximo de instancias. Ojo: con Redis la API pasa a depender de un servicio externo, porque el backend de Redis de Django no falla en abierto | 🧑 | 30 min |
 | 0.5 | ~~**Mover el front a Cloudflare Pages**~~ — **hecho** (20-sep-2026): proyecto de Pages `moneyapp-8jz`; `money.wxlter.dev` apunta por CNAME y la zona DNS no se movió del registrar. El despliegue de Vercel quedó pausado y su integración Git ya está desconectada (`DEPLOY.md` §3) | 🧑 ✅ | — |
 | 0.6 | ~~**Job `budget-migrate` + `RUN_MIGRATIONS=0`**~~ — **hecho** (20-sep-2026): el job existe, el servicio tiene `RUN_MIGRATIONS=0` y `deploy.yml` migra antes de mover el tráfico (`DEPLOY.md` §2.2). Regla que trae: nunca borrar ni renombrar una columna en el mismo release que deja de usarla | 🧑 ✅ | — |
-| 0.7 | **Sentry** en los dos repos — hasta que esté, los errores de producción sólo se ven si alguien los cuenta | 🧑 | 30 min |
+| 0.7 | ~~**Sentry** en los dos repos~~ — confirmado hecho por vos (22-sep-2026); no verificable desde este sandbox | 🧑 ✅ | — |
 | 0.8 | ~~**Backups**: `pg_dump` a GCS desde el job diario~~ — **hecho**: `manage.py backup_database` corre al final de `run_daily_tasks` y `RUNBOOK.md` §9 tiene la restauración. Se activa solo cuando exista el bucket de 0.1. Ojo: hasta el 19-sep-2026 no produjo ni un volcado, porque la imagen traía `pg_dump` 17 y Neon corre 18.6 (`server version mismatch`); arreglado instalando el cliente desde PGDG (`ARG PG_CLIENT_MAJOR` del Dockerfile) | 🤖 ✅ | — |
 | 0.9 | ~~**Ping de keepalive** del Scheduler~~ — **hecho** (20-sep-2026): job `budget-keepalive`, cada 5 min de 06:00 a 01:55 hora de El Salvador (elegido con el tráfico real: nada entre las 02h y las 05h). Sólo calienta Cloud Run; `/healthz/` no toca Neon | 🧑 ✅ | — |
 | 0.10 | ~~**Correo saliente (Mailgun)**~~ — **hecho** (20-sep-2026): configurado con `inbound.wxlter.dev` (el plan de Mailgun sólo permite un dominio) y probada una invitación de punta a punta | 🧑 ✅ | — |
@@ -60,11 +67,11 @@ corre las tareas diarias es tirar trabajo. Casi todo es 🧑.
 
 | # | Qué | Quién | Tiempo |
 |---|---|---|---|
-| 1.1 | **Wompi**: cuenta creada. **Hallazgo (20-sep):** `docs.wompi.sv` **es público** (el esqueleto de `WompiProvider` se escribió creyendo lo contrario). Lo que documenta: OAuth 2.0 *client credentials* (`id.wompi.sv/connect/token`, `client_id` = App ID y `client_secret` = API Secret del negocio); **Enlace de Pago** (`POST /EnlacePago`, con `identificadorEnlaceComercio` que vuelve en el webhook y `urlWebhook`/`urlRedirect` por enlace); webhook firmado con `wompi_hash` = HMAC-SHA256 del cuerpo crudo con el API Secret, y **sólo notifica cobros exitosos**; negocio en *modo desarrollo* para probar (CVV `111` simula rechazo). **Cobros recurrentes:** existe `EnlacePagoRecurrente`, pero es un enlace por plan (monto y día fijos) que cada cliente acepta a mano, no acepta una referencia nuestra y su único endpoint de baja desactiva el enlace entero; sin confirmar cómo identificar a cada suscriptor ni cancelar uno solo. **Pendiente de Wompi:** la tarifa (no es pública) y esas dos respuestas | 🧑 | 1 h |
+| 1.1 | **Wompi**: cuenta creada. **Hallazgo (20-sep):** `docs.wompi.sv` **es público** (el esqueleto de `WompiProvider` se escribió creyendo lo contrario). Lo que documenta: OAuth 2.0 *client credentials* (`id.wompi.sv/connect/token`, `client_id` = App ID y `client_secret` = API Secret del negocio); **Enlace de Pago** (`POST /EnlacePago`, con `identificadorEnlaceComercio` que vuelve en el webhook y `urlWebhook`/`urlRedirect` por enlace); webhook firmado con `wompi_hash` = HMAC-SHA256 del cuerpo crudo con el API Secret, y **sólo notifica cobros exitosos**; negocio en *modo desarrollo* para probar (CVV `111` simula rechazo). **Cobros recurrentes:** existe `EnlacePagoRecurrente`, pero es un enlace por plan (monto y día fijos) que cada cliente acepta a mano, no acepta una referencia nuestra y su único endpoint de baja desactiva el enlace entero; sin confirmar cómo identificar a cada suscriptor ni cancelar uno solo. **Tarifa confirmada (22-sep-2026):** 3.5% de comisión de Wompi + 2% de anticipo de IVA, **sin cuota fija por cobro** (ejemplo dado: ~$0.10 sobre un cobro de $1.99) — ver el detalle y cómo se modeló en `ECONOMIA-POR-PLAN.md`. **Sigue pendiente:** confirmar si permite cobros recurrentes con tarjeta guardada (más importante que la tarifa) | 🧑 | 1 h |
 | 1.2 | `manage.py seed_billing_plans` + `grandfather_existing_users` si ya hay usuarios | 🧑 | 15 min |
 | 1.3 | **Probar el flujo completo de punta a punta**: trial → cobro → webhook → activación → cancelación. **Bloqueado hasta implementar `WompiProvider` contra el sandbox de Wompi** (ver 1.1) | 🤖 + 🧑 | 2–3 h |
-| 1.4 | **Revisar precios a la luz del costo real.** Empujar el anual; decidir si el lifetime de $19.99 se mantiene (con IA es ~14 años de consumo para empatar). Análisis con los números: `ECONOMIA-POR-PLAN.md` (se regenera con `scripts/economia_por_plan.py`) | 🧑 | decisión |
-| 1.5 | **Legal**: revisar `privacy.tsx` y términos contra lo que de verdad va a hacer la app (IA, analítica, terceros). Hoy la política promete que no hay rastreadores de terceros | 🤖 + 🧑 | 2 h |
+| 1.4 | ~~**Revisar precios a la luz del costo real.**~~ — **cerrado (22-sep-2026)** con la tarifa real de Wompi (ver 1.1): sin cuota fija, la comisión deja de castigar a Plus y Pro mensual (antes ~34%/~18%, ahora ~5.5% del precio). El lifetime de $19.99 sigue siendo la exposición real (1.6–2.4 años al techo de Pro) y sigue sin decidirse; el resto del análisis, actualizado en `ECONOMIA-POR-PLAN.md` | 🧑 ✅ | — |
+| 1.5 | ~~**Legal**: revisar `privacy.tsx` y términos contra lo que de verdad va a hacer la app~~ — **confirmado listo por vos (22-sep-2026)**; el borrador ya mergeado a `main` es `c257e69` (sección "Inteligencia artificial") | 🤖 ✅ | — |
 | 1.6 | **Catálogo de lealtad** (`Bank`, `CardProduct`, `LoyaltyProgram`, tasas) y mapear categorías a `CategoryType` — sin filas, puntos y cashback nunca se calculan. **Hecho en código (20-sep):** `seed_loyalty_catalog` (`DEPLOY.md` §2.3b) con Agrícola, BAC, Promérica, Azul, Atlántida, Hipotecario y lo verificable de Cuscatlán e Industrial, tasas por **día de la semana**, **comercios** (`Merchant`: tasas de un solo comercio y rubro más fino que la categoría) y `map_categories_to_rubros`. **Falta:** correr los dos comandos en producción y completar Cuscatlán (MultiPuntos), Davivienda, Industrial, ABANK y Apoyo Integral (sus sitios no publican la tasa) | 🧑 | 1 h |
 | 1.7 | **Schemas de correo bancario** (`BankEmailSchema`), uno por banco; sin ellos toda importación falla | 🤖 + 🧑 | 1–2 h por banco |
 
@@ -82,15 +89,15 @@ Orden pensado para que cada pieza apoye la siguiente.
 | 2.1 | ~~**Base de IA** (`apps/ai`)~~ — **hecha** y con la key ya en el servicio (secreto `gemini-api-key`, 20-sep-2026): cliente de Gemini, throttle `ai`, cuota mensual por plan (`Plan.features`, fail-closed), `AIUsage` como log y contador a la vez, `GET /ai/status/` y `useAIStatus()` en el front. **Estado:** la IA está **apagada a propósito** desde el admin (*Common → Interruptores de módulos → `ai`*) mientras se definen precios, y ese interruptor ahora corta el gasto también en el servidor. **Para volver a encenderla:** (1) crédito de prepago en AI Studio (sin él la API responde 402 *prepayment credits are depleted*), (2) prender el interruptor, (3) mergear el borrador de la política de privacidad. Los modelos son de la serie 3: los 2.5 ya no están disponibles para cuentas nuevas (404) | 🤖 ✅ + 🧑 | — |
 | 2.2 | ~~**Leer y clasificar recibos**~~ — **hecho**: `POST /ai/receipt/` devuelve una candidata editable (monto, fecha, comercio, ítems, confianza por campo), con la categoría resuelta primero por historial y después por IA, y los posibles duplicados. En la app, botón "Escanear recibo" en el alta de gasto | 🤖 ✅ | — |
 | 2.3 | ~~**Entrada por texto libre (NLP)**~~ — **hecho**: `POST /ai/parse/` devuelve la misma candidata que los recibos, más el tipo y la cartera si la frase los nombra. Al modelo se le pasan los nombres reales de carteras y categorías para que elija de una lista cerrada. En la app, un campo de una línea en el alta | 🤖 ✅ | — |
-| 2.4 | **Canal de Telegram** — bot, webhook, vinculación de cuenta con token de un uso. Ya entra por `/ai/parse/`: no lleva parser propio | 🤖 + 🧑 | 1 jornada |
-| 2.5 | **Voz / dictado** — `expo-audio` + audio directo a Gemini, mismo parser que 2.3 | 🤖 | 1 jornada |
+| 2.4 | **Canal de Telegram** — bot, webhook, vinculación de cuenta con token de un uso. Ya entra por `/ai/parse/`: no lleva parser propio. **Diferido por decisión (22-sep-2026):** no es prioridad ahora | 🤖 + 🧑 | 1 jornada |
+| 2.5 | ~~**Voz / dictado**~~ — **hecho (22-sep-2026)**: `apps/ai/parsing.py` se separó en `_build_context`/`_candidate_from_response` compartidos y `parse_audio()`, que manda el audio como `inline_data` con `has_audio=True` (mismo precio de audio que ya tenía `pricing.py`). `POST /ai/voice/` comparte la cuota de `parse`, no es una operación aparte. En la app, `VoiceInputButton` con `expo-audio`: graba a `.m4a`/AAC en nativo, y en web sólo aparece si el navegador sabe grabar `audio/mp4` (Safari sí, Chrome/Firefox de escritorio no — ahí no se muestra el botón, en vez de grabar en un formato que el backend rechaza) | 🤖 ✅ | — |
 | 2.6 | **Analítica** — decidir primero entre sin-cookies, GA4+Clarity con banner, o métricas propias; implementar web | 🧑 luego 🤖 | 0.5 jornada |
-| 2.7 | **DTE por correo (JSON)** — reusa `apps/email_import` entero; es el que da datos más ricos (ítems, IVA) | 🤖 | 1.5 jornadas |
-| 2.8 | **QR de factura** — captura y validación contra el portal de Hacienda | 🤖 | 0.5 jornada |
-| 2.9 | **Resumen y consejos mensuales** — encima de `behavior_insights()`, que ya existe | 🤖 | 0.5–1 jornada |
-| 2.10 | **Chat sobre tus finanzas** — el de mayor superficie de riesgo (aislamiento por workspace), va al final | 🤖 | 2 jornadas |
+| 2.7 | **DTE por correo (JSON)** — reusa `apps/email_import` entero; es el que da datos más ricos (ítems, IVA). **Diferido por decisión (22-sep-2026):** no es prioridad ahora | 🤖 | 1.5 jornadas |
+| 2.8 | **QR de factura** — captura y validación contra el portal de Hacienda. **Diferido por decisión (22-sep-2026):** no es prioridad ahora | 🤖 | 0.5 jornada |
+| 2.9 | ~~**Resumen y consejos mensuales**~~ — **hecho (22-sep-2026)**: `apps/ai/summary.py` conecta los patrones de `behavior_insights()` (que sigue siendo 100% determinista) en un solo texto por Gemini; si la IA no responde, `notifications.services._monthly_summary_text` cae al texto armado a mano con los mismos datos. Corre una vez al mes (día 1, para el mes que terminó), kind propio (`monthly_summary`) y toggle propio (`warn_monthly_summary`) en Ajustes → Notificaciones, independiente del de "Patrones de gasto". No consume cuota (lo dispara el servidor, no el usuario) | 🤖 ✅ | — |
+| 2.10 | ~~**Chat sobre tus finanzas**~~ — **hecho (22-sep-2026)**: `POST /ai/chat/` (`apps/ai/chat.py`) nunca toca la base ni genera SQL — dos llamadas a Gemini (elegir una función cerrada de `apps.reports.services` o ninguna, y sólo redactar con lo que esa función devuelve), contadas como **una sola** unidad de la cuota de chat aunque sean dos llamadas reales. Pantalla nueva "Chat de finanzas" en Herramientas → Análisis, historial sólo en memoria de la pantalla (no se guarda en el servidor, backlog punto 5) | 🤖 ✅ | — |
 
-**Subtotal: ~6.5–8.5 jornadas** (eran 11–13; 2.1, 2.2 y 2.3 ya están).
+**Subtotal: ~3 jornadas** (eran 6.5–8.5; 2.1, 2.2, 2.3, 2.5, 2.9 y 2.10 ya están — quedan 2.4, 2.6, 2.7 y 2.8, y las tres primeras están diferidas por decisión).
 
 ---
 
@@ -133,17 +140,17 @@ documentar), no un día de calendario.
 
 | Fase | Trabajo | De eso, tuyo (🧑) |
 |---|---|---|
-| 0 — Producción sólida | ~1.5 jornadas | casi todo |
-| 1 — Antes de cobrar | ~1.5–2 jornadas | la mitad |
-| 2 — Funciones nuevas | ~6.5–8.5 jornadas | poco |
+| 0 — Producción sólida | ~1.5 jornadas (prácticamente cerrada) | casi todo |
+| 1 — Antes de cobrar | ~1.5–2 jornadas (1.1 tarifa confirmada, 1.4 y 1.5 cerrados) | la mitad |
+| 2 — Funciones nuevas | ~3 jornadas (2.1, 2.2, 2.3, 2.5, 2.9 y 2.10 ya están) | poco |
 | 3 — Nativo y tiendas | ~3–4 jornadas | la mitad |
-| **Total** | **~12.5–16.5 jornadas** | |
+| **Total** | **~9–10.5 jornadas** | |
 
-**Traducido a calendario:** a 2–3 jornadas por semana son **7 a 10 semanas** para todo. Pero el
-recorte que importa es otro: **las Fases 0 y 1 son ~3–3.5 jornadas y son lo único que necesitás
-para abrir y cobrar**. Eso es una semana de trabajo, no dos meses. Todo lo de la Fase 2 es
-producto nuevo que puede salir después, con usuarios adentro y decidiendo el orden con lo que
-ellos pidan.
+**Traducido a calendario:** a 2–3 jornadas por semana son **3 a 5 semanas** para todo lo que
+queda (bajó de 7–10 al cerrarse gran parte de la Fase 2). El recorte que sigue importando: **las
+Fases 0 y 1 son ~3–3.5 jornadas y son lo único que necesitás para abrir y cobrar**, y de eso ya
+quedan pocos puntos sueltos (0.1, 0.4, 1.1–1.3, 1.6, 1.7). Lo que queda de la Fase 2 (2.4, 2.6,
+2.7, 2.8) es producto nuevo que puede salir después, con usuarios adentro decidiendo el orden.
 
 **Camino crítico y esperas que no controlamos:** DNS de Cloudflare y de Mailgun (horas, a veces
 un día), verificación del dominio de correo, la cuenta de Apple Developer (hasta 48 h) y la
