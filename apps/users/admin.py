@@ -10,6 +10,9 @@ class CustomUserAdmin(UserAdmin):
     list_filter = ("is_staff", "is_superuser", "is_active", "groups")
     search_fields = ("username", "email", "first_name", "last_name")
     ordering = ("username",)
+    # Desmarcarlo vuelve a mostrar el tour de bienvenida en el próximo ingreso -- útil
+    # para probarlo con una cuenta de antes de que existiera (que nació en `True`).
+    fieldsets = UserAdmin.fieldsets + (("App", {"fields": ("onboarding_completed",)}),)
 
 
 @admin.register(TwoFactorAuth)

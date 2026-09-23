@@ -2,11 +2,14 @@
 import hashlib
 import hmac
 import json
+import time
 from datetime import timedelta
+from decimal import Decimal
 from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase, override_settings
+from dateutil.relativedelta import relativedelta
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
@@ -371,6 +374,48 @@ class ApplyEventTests(TestCase):
         sub.refresh_from_db()
         self.assertEqual(sub.status, Subscription.STATUS_ACTIVE)
 
+    def _plus_monthly(self, **kw):
+        plus, _ = Plan.objects.get_or_create(code="plus", defaults={"name": "Plus"})
+        price = PlanPrice.objects.create(plan=plus, billing_period=PlanPrice.BILLING_MONTHLY, amount_cents=99)
+        return Subscription.objects.create(user=self.user, plan=plus, plan_price=price, provider="wompi", **kw)
+
+    @override_settings(**CREDS)
+    def test_changing_plan_cancels_the_previous_one_and_deactivates_its_link(self):
+        old = self._plus_monthly(status=Subscription.STATUS_ACTIVE, external_subscription_id="rec-old",
+                                 current_period_end=timezone.now() + timedelta(days=20))
+        new = self._sub(PlanPrice.BILLING_ANNUAL)
+        with mock.patch.object(WompiProvider, "request_api") as request_api:
+            apply_webhook_event(self._event(new, "tx-up"), provider_code="wompi")
+        request_api.assert_called_once_with("POST", "/EnlacePagoRecurrente/rec-old")
+        old.refresh_from_db()
+        new.refresh_from_db()
+        self.assertEqual(new.status, Subscription.STATUS_ACTIVE)
+        self.assertEqual(old.status, Subscription.STATUS_CANCELED)
+        self.assertIsNotNone(old.canceled_at)
+        from apps.billing.services import plan_for_user
+        self.assertEqual(plan_for_user(self.user).code, "pro")
+
+    def test_changing_plan_still_activates_the_new_one_if_the_provider_fails(self):
+        old = self._plus_monthly(status=Subscription.STATUS_ACTIVE, external_subscription_id="rec-old",
+                                 current_period_end=timezone.now() + timedelta(days=20))
+        new = self._sub(PlanPrice.BILLING_ANNUAL)
+        with mock.patch.object(WompiProvider, "request_api", side_effect=WompiError("caído")), \
+                self.assertLogs("apps.billing.services", level="ERROR"):
+            apply_webhook_event(self._event(new, "tx-up2"), provider_code="wompi")
+        old.refresh_from_db()
+        new.refresh_from_db()
+        self.assertEqual(new.status, Subscription.STATUS_ACTIVE)
+        self.assertEqual(old.status, Subscription.STATUS_CANCELED)
+
+    def test_a_renewal_does_not_touch_other_subscriptions(self):
+        other = self._plus_monthly(status=Subscription.STATUS_ACTIVE,
+                                   current_period_end=timezone.now() + timedelta(days=5))
+        sub = self._sub(PlanPrice.BILLING_MONTHLY, status=Subscription.STATUS_ACTIVE,
+                        current_period_end=timezone.now() + timedelta(days=10))
+        apply_webhook_event(self._event(sub, "tx-ren"), provider_code="wompi")
+        other.refresh_from_db()
+        self.assertEqual(other.status, Subscription.STATUS_ACTIVE)
+
     def test_an_unknown_reference_is_a_no_op(self):
         from apps.billing.providers import WebhookEvent
         event = WebhookEvent(kind="subscription.activated", reference="00000000-0000-0000-0000-000000000000", event_id="x")
@@ -468,3 +513,99 @@ class WompiEndToEndTests(APITestCase):
             WEBHOOK, body, content_type="application/json", HTTP_WOMPI_HASH=sign(body)
         )
         self.assertEqual(resp.status_code, 202)
+
+
+@override_settings(**CREDS)
+class ProrationTests(APITestCase):
+    """Cambio de plan: lo que le quedaba al plan anterior se acredita en el nuevo."""
+
+    def setUp(self):
+        providers._token_cache.update(value="tok", expires_at=time.time() + 3600)
+        self.user = User.objects.create_user("ana", "ana@example.com", "pw")
+        self.client.force_authenticate(self.user)
+        plus = Plan.objects.create(code="plus", name="Plus")
+        pro = Plan.objects.create(code="pro", name="Pro")
+        self.plus_monthly = PlanPrice.objects.create(
+            plan=plus, billing_period=PlanPrice.BILLING_MONTHLY, amount_cents=1000)
+        self.pro_monthly = PlanPrice.objects.create(
+            plan=pro, billing_period=PlanPrice.BILLING_MONTHLY, amount_cents=2000)
+        self.pro_lifetime = PlanPrice.objects.create(
+            plan=pro, billing_period=PlanPrice.BILLING_LIFETIME, amount_cents=5000)
+
+    def _current(self, days_left=15, **kw):
+        # Un período mensual que termina en `days_left` días: sin depender de cuántos días
+        # tiene el mes, la fracción restante es `days_left / duración del período`.
+        end = timezone.now() + timedelta(days=days_left)
+        defaults = dict(user=self.user, plan=self.plus_monthly.plan, plan_price=self.plus_monthly,
+                        provider="wompi", status=Subscription.STATUS_ACTIVE,
+                        external_subscription_id="rec-old", current_period_end=end)
+        defaults.update(kw)
+        return Subscription.objects.create(**defaults)
+
+    def _checkout(self, price):
+        with mock.patch.object(WompiProvider, "request_api",
+                               return_value={"urlEnlace": "https://pay", "idEnlace": 7}) as api:
+            resp = self.client.post("/api/v1/billing/checkout/", {
+                "plan_price": str(price.id), "success_url": "https://app.example.com/ok", "cancel_url": "https://app.example.com/no",
+            })
+        self.assertEqual(resp.status_code, 200, resp.data)
+        return Subscription.objects.get(pk=resp.data["subscription_id"]), api.call_args.args[2]
+
+    def _activate(self, sub, tx):
+        from apps.billing.providers import WebhookEvent
+        with mock.patch.object(WompiProvider, "request_api"):
+            apply_webhook_event(WebhookEvent(kind="subscription.activated", event_id=tx,
+                                             reference=str(sub.checkout_reference),
+                                             amount=Decimal(sub.charge_cents) / 100),
+                                provider_code="wompi")
+        sub.refresh_from_db()
+
+    def test_my_plan_reports_the_unused_value_of_the_current_plan(self):
+        old = self._current()
+        period = (old.current_period_end - (old.current_period_end - relativedelta(months=1))).days
+        resp = self.client.get("/api/v1/billing/me/")
+        self.assertAlmostEqual(resp.data["proration_credit"], 10 * 15 / period, delta=0.02)
+
+    def test_free_trial_and_manual_plans_have_no_credit(self):
+        self._current(provider="manual", external_subscription_id="")
+        self.assertEqual(self.client.get("/api/v1/billing/me/").data["proration_credit"], 0)
+
+    def test_monthly_to_monthly_charges_full_price_and_adds_the_credit_as_extra_days(self):
+        old = self._current(days_left=15)
+        new, payload = self._checkout(self.pro_monthly)
+        self.assertEqual(payload["monto"], 20.0)  # el recurrente se cobra siempre completo
+        self.assertEqual(new.prorated_from, old)
+        self.assertGreater(new.proration_credit_cents, 0)
+
+        before = timezone.now()
+        self._activate(new, "tx-1")
+        # ~5 USD de crédito sobre un plan de 20 USD/mes = ~1/4 de mes extra.
+        extra = new.current_period_end - (before + relativedelta(months=1))
+        expected = (before + relativedelta(months=1) - before) * (new.proration_credit_cents / 2000)
+        self.assertAlmostEqual(extra.total_seconds(), expected.total_seconds(), delta=60)
+        old.refresh_from_db()
+        self.assertEqual(old.status, Subscription.STATUS_CANCELED)
+
+    def test_lifetime_discounts_the_credit_from_the_charge(self):
+        self._current(days_left=15)
+        new, payload = self._checkout(self.pro_lifetime)
+        self.assertEqual(payload["monto"], round((5000 - new.proration_credit_cents) / 100, 2))
+        self._activate(new, "tx-2")
+        self.assertEqual(new.status, Subscription.STATUS_ACTIVE)
+        self.assertIsNone(new.current_period_end)
+
+    def test_lifetime_with_more_credit_than_the_price_still_charges_the_minimum(self):
+        from apps.billing.models import MIN_CHARGE_CENTS
+        self._current(days_left=400)  # renovó muchos meses por adelantado: crédito > 50 USD
+        new, payload = self._checkout(self.pro_lifetime)
+        self.assertEqual(payload["monto"], MIN_CHARGE_CENTS / 100)
+
+    def test_the_credit_is_used_once_even_with_two_checkouts_in_flight(self):
+        self._current(days_left=15)
+        first, _ = self._checkout(self.pro_monthly)
+        second, _ = self._checkout(self.pro_monthly)
+        self._activate(first, "tx-a")
+        before = timezone.now()
+        self._activate(second, "tx-b")
+        # El plan anterior ya lo reemplazó `first`: `second` no vuelve a sumar su crédito.
+        self.assertLess(second.current_period_end, before + relativedelta(months=1) + timedelta(minutes=1))
