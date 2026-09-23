@@ -281,7 +281,47 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
             notify_billing_event("new_subscriber" if was_pending else "renewed", sub)
         elif event.kind == "subscription.failed":
             notify_billing_event("failed", sub)
-        return sub
+
+    # Fuera de la transacción: dar de baja el plan anterior puede pegarle a la API del
+    # proveedor, y si eso falla la activación del plan nuevo ya tiene que haber quedado.
+    if was_pending and sub.status == Subscription.STATUS_ACTIVE:
+        supersede_previous_subscriptions(sub)
+    return sub
+
+
+def supersede_previous_subscriptions(new_sub: Subscription) -> None:
+    """
+    Cambio de plan: al activarse `new_sub`, cualquier otra suscripción vigente del
+    mismo usuario queda cancelada ya mismo, y se le pide al proveedor que no la vuelva
+    a cobrar (el enlace recurrente de Wompi). Sin esto el usuario seguiría pagando los
+    dos planes, y la vieja dispararía avisos de "se renueva pronto"/"venció".
+
+    No hay prorrateo: los días que le quedaban al plan anterior se pierden (la pantalla
+    de Pro lo avisa antes de pagar). Un fallo del proveedor no deshace nada -- queda en
+    el log para desactivar el enlace a mano (`wompi_probe --desactivar ID`).
+    """
+    from .providers import get_provider
+
+    previous = Subscription.objects.filter(
+        user=new_sub.user,
+        status__in=[Subscription.STATUS_ACTIVE, Subscription.STATUS_PAST_DUE],
+    ).exclude(pk=new_sub.pk).select_related("plan_price")
+    for old in previous:
+        if old.canceled_at is None and old.provider != PROVIDER_MANUAL:
+            try:
+                get_provider(old.provider).cancel_subscription(old)
+            except Exception:
+                logger.exception(
+                    "No se pudo dar de baja en %s la suscripción %s al cambiar al plan %s: "
+                    "desactivar a mano su enlace (%s).",
+                    old.provider, old.pk, new_sub.plan.code, old.external_subscription_id,
+                )
+        old.status = Subscription.STATUS_CANCELED
+        old.canceled_at = old.canceled_at or timezone.now()
+        old.notes = (old.notes + "\n" if old.notes else "") + (
+            f"Reemplazada por el plan {new_sub.plan.name} ({new_sub.pk})."
+        )
+        old.save(update_fields=["status", "canceled_at", "notes", "updated_at"])
 
 
 # ---------------------------------------------------------------------------

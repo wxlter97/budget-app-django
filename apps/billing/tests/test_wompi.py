@@ -371,6 +371,48 @@ class ApplyEventTests(TestCase):
         sub.refresh_from_db()
         self.assertEqual(sub.status, Subscription.STATUS_ACTIVE)
 
+    def _plus_monthly(self, **kw):
+        plus, _ = Plan.objects.get_or_create(code="plus", defaults={"name": "Plus"})
+        price = PlanPrice.objects.create(plan=plus, billing_period=PlanPrice.BILLING_MONTHLY, amount_cents=99)
+        return Subscription.objects.create(user=self.user, plan=plus, plan_price=price, provider="wompi", **kw)
+
+    @override_settings(**CREDS)
+    def test_changing_plan_cancels_the_previous_one_and_deactivates_its_link(self):
+        old = self._plus_monthly(status=Subscription.STATUS_ACTIVE, external_subscription_id="rec-old",
+                                 current_period_end=timezone.now() + timedelta(days=20))
+        new = self._sub(PlanPrice.BILLING_ANNUAL)
+        with mock.patch.object(WompiProvider, "request_api") as request_api:
+            apply_webhook_event(self._event(new, "tx-up"), provider_code="wompi")
+        request_api.assert_called_once_with("POST", "/EnlacePagoRecurrente/rec-old")
+        old.refresh_from_db()
+        new.refresh_from_db()
+        self.assertEqual(new.status, Subscription.STATUS_ACTIVE)
+        self.assertEqual(old.status, Subscription.STATUS_CANCELED)
+        self.assertIsNotNone(old.canceled_at)
+        from apps.billing.services import plan_for_user
+        self.assertEqual(plan_for_user(self.user).code, "pro")
+
+    def test_changing_plan_still_activates_the_new_one_if_the_provider_fails(self):
+        old = self._plus_monthly(status=Subscription.STATUS_ACTIVE, external_subscription_id="rec-old",
+                                 current_period_end=timezone.now() + timedelta(days=20))
+        new = self._sub(PlanPrice.BILLING_ANNUAL)
+        with mock.patch.object(WompiProvider, "request_api", side_effect=WompiError("caído")), \
+                self.assertLogs("apps.billing.services", level="ERROR"):
+            apply_webhook_event(self._event(new, "tx-up2"), provider_code="wompi")
+        old.refresh_from_db()
+        new.refresh_from_db()
+        self.assertEqual(new.status, Subscription.STATUS_ACTIVE)
+        self.assertEqual(old.status, Subscription.STATUS_CANCELED)
+
+    def test_a_renewal_does_not_touch_other_subscriptions(self):
+        other = self._plus_monthly(status=Subscription.STATUS_ACTIVE,
+                                   current_period_end=timezone.now() + timedelta(days=5))
+        sub = self._sub(PlanPrice.BILLING_MONTHLY, status=Subscription.STATUS_ACTIVE,
+                        current_period_end=timezone.now() + timedelta(days=10))
+        apply_webhook_event(self._event(sub, "tx-ren"), provider_code="wompi")
+        other.refresh_from_db()
+        self.assertEqual(other.status, Subscription.STATUS_ACTIVE)
+
     def test_an_unknown_reference_is_a_no_op(self):
         from apps.billing.providers import WebhookEvent
         event = WebhookEvent(kind="subscription.activated", reference="00000000-0000-0000-0000-000000000000", event_id="x")
