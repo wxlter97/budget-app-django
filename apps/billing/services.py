@@ -203,6 +203,40 @@ def _paid_period_end(sub: Subscription):
     return base + relativedelta(months=months)
 
 
+def proration_credit_cents(sub: Subscription | None) -> int:
+    """
+    Valor sin usar de una suscripción pagada, para acreditarlo al cambiar de plan: la
+    parte proporcional del precio por el tiempo que le queda (puede ser más de un período
+    si renovó antes). Cero para lo que no se pagó (alta manual, código, prueba gratis),
+    lo que no tiene período (de por vida) o lo que ya venció.
+    """
+    if sub is None or sub.provider == PROVIDER_MANUAL or sub.is_trial or sub.plan_price is None:
+        return 0
+    months = _PERIOD_MONTHS.get(sub.plan_price.billing_period)
+    end = sub.current_period_end
+    now = timezone.now()
+    if months is None or end is None or end <= now:
+        return 0
+    period = (end - (end - relativedelta(months=months))).total_seconds()
+    return int(sub.plan_price.amount_cents * (end - now).total_seconds() / period)
+
+
+def _credit_as_time(sub: Subscription) -> timedelta:
+    """El crédito de prorrateo de `sub` convertido en tiempo de su plan nuevo, a su precio:
+    p. ej. USD 0.66 de crédito en un plan de USD 1.99/mes son ~10 días. Sólo si la
+    suscripción de la que viene el crédito sigue vigente -- si ya la reemplazó otra
+    compra (dos checkouts a la vez), ese crédito ya se usó."""
+    old = sub.prorated_from
+    if not sub.proration_credit_cents or old is None or not old.is_in_force:
+        return timedelta(0)
+    months = _PERIOD_MONTHS.get(sub.plan_price.billing_period) if sub.plan_price else None
+    if months is None or not sub.plan_price.amount_cents:
+        return timedelta(0)  # de por vida: el crédito ya se descontó del cobro
+    now = timezone.now()
+    period = now + relativedelta(months=months) - now
+    return period * (sub.proration_credit_cents / sub.plan_price.amount_cents)
+
+
 def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscription | None:
     """
     Aplica un `WebhookEvent` ya normalizado a la Subscription
@@ -240,7 +274,7 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
         # Nunca activar por menos de lo que cuesta: un enlace con monto editable, o un aviso
         # armado a mano por quien conozca la firma, no debe regalar el plan.
         if event.amount is not None and sub.plan_price is not None:
-            expected = Decimal(sub.plan_price.amount_cents) / 100
+            expected = Decimal(sub.charge_cents) / 100
             if event.amount < expected:
                 logger.warning(
                     "Pago de %s por %s (esperado %s): no se activa la suscripción %s.",
@@ -266,6 +300,8 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
         if event.kind in ("subscription.activated", "subscription.renewed"):
             sub.status = Subscription.STATUS_ACTIVE
             sub.current_period_end = event.current_period_end or _paid_period_end(sub)
+            if was_pending and sub.current_period_end is not None:
+                sub.current_period_end += _credit_as_time(sub)
         elif event.kind == "subscription.failed":
             sub.status = Subscription.STATUS_PAST_DUE
         elif event.kind == "subscription.canceled":
@@ -296,8 +332,8 @@ def supersede_previous_subscriptions(new_sub: Subscription) -> None:
     a cobrar (el enlace recurrente de Wompi). Sin esto el usuario seguiría pagando los
     dos planes, y la vieja dispararía avisos de "se renueva pronto"/"venció".
 
-    No hay prorrateo: los días que le quedaban al plan anterior se pierden (la pantalla
-    de Pro lo avisa antes de pagar). Un fallo del proveedor no deshace nada -- queda en
+    El prorrateo ya se aplicó antes: lo que le quedaba al plan anterior se descontó del
+    cobro o se sumó como tiempo al nuevo (`proration_credit_cents`). Un fallo del proveedor no deshace nada -- queda en
     el log para desactivar el enlace a mano (`wompi_probe --desactivar ID`).
     """
     from .providers import get_provider

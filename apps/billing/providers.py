@@ -232,7 +232,8 @@ class WompiProvider(PaymentProvider):
     # -- PaymentProvider ------------------------------------------------------
     def create_checkout(self, *, user, plan_price, subscription, success_url, cancel_url):
         reference = str(subscription.checkout_reference)
-        amount = round(plan_price.amount_cents / 100, 2)
+        # No siempre es el precio: un plan de por vida con crédito de prorrateo cobra menos.
+        amount = round(subscription.charge_cents / 100, 2)
         plan_name = plan_price.plan.name
 
         if plan_price.billing_period == plan_price.BILLING_MONTHLY:

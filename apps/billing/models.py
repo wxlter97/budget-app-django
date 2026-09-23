@@ -130,6 +130,10 @@ class PlanPrice(BaseModel):
         return self.external_refs.get(provider_code, "")
 
 
+# Cobro mínimo de un plan de por vida con crédito de prorrateo -- ver `Subscription.charge_cents`.
+MIN_CHARGE_CENTS = 100
+
+
 class Subscription(BaseModel):
     STATUS_PENDING = "pending"
     STATUS_ACTIVE = "active"
@@ -181,6 +185,14 @@ class Subscription(BaseModel):
     # `apps.billing.services.send_renewal_reminders`.
     renewal_notice_sent_for = models.DateTimeField(null=True, blank=True)
 
+    # Cambio de plan con prorrateo (ver `services.proration_credit_cents`): la suscripción
+    # que se reemplaza y el valor sin usar que le quedaba al momento del checkout. Se
+    # descuenta del precio (plan de por vida) o se suma como tiempo extra (mensual/anual).
+    prorated_from = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    proration_credit_cents = models.PositiveIntegerField(default=0)
+
     class Meta:
         ordering = ("-created_at",)
         indexes = [models.Index(fields=["user", "status"])]
@@ -197,6 +209,19 @@ class Subscription(BaseModel):
 
     def __str__(self):
         return f"{self.user} · {self.plan.code} · {self.get_status_display()}"
+
+    @property
+    def charge_cents(self) -> int:
+        """Lo que se cobra por esta suscripción. Igual al precio, salvo un plan de por vida
+        comprado con crédito de un plan anterior: ahí se descuenta, con un piso de
+        `MIN_CHARGE_CENTS` (un enlace de pago no puede ser de 0). En mensual/anual el
+        crédito no toca el cobro -- se suma como tiempo al activarse."""
+        if self.plan_price is None:
+            return 0
+        amount = self.plan_price.amount_cents
+        if self.plan_price.billing_period == PlanPrice.BILLING_LIFETIME and self.proration_credit_cents:
+            return max(amount - self.proration_credit_cents, min(amount, MIN_CHARGE_CENTS))
+        return amount
 
     @property
     def is_in_force(self) -> bool:

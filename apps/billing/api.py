@@ -15,6 +15,7 @@ from .models import Plan, PlanPrice, Subscription
 from .providers import WompiError, get_provider
 from .services import (
     active_subscription_for,
+    proration_credit_cents,
     apply_webhook_event,
     plan_for_user,
     redeem_promo_code,
@@ -103,6 +104,8 @@ class MyPlanView(AtomicOnlyForWritesMixin, APIView):
         return Response({
             "plan": PlanSerializer(plan).data if plan else None,
             "subscription": SubscriptionSerializer(sub).data if sub else None,
+            # Lo que se acreditaría hoy al cambiar de plan (ver `proration_credit_cents`).
+            "proration_credit": proration_credit_cents(sub) / 100,
         })
 
 
@@ -143,9 +146,13 @@ class CheckoutView(APIView):
                 {"plan_price": f"Este precio todavía no está habilitado para '{provider_code}'."}
             )
 
+        # Cambio de plan: el valor sin usar del actual queda anotado en la nueva, y se
+        # aplica al activarse (ver `Subscription.charge_cents` y `_credit_as_time`).
+        current = active_subscription_for(request.user)
         subscription = Subscription.objects.create(
             user=request.user, plan=plan_price.plan, plan_price=plan_price,
             provider=provider_code, status=Subscription.STATUS_PENDING,
+            prorated_from=current, proration_credit_cents=proration_credit_cents(current),
         )
         try:
             session = provider.create_checkout(
