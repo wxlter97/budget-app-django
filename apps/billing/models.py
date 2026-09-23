@@ -233,6 +233,37 @@ class Subscription(BaseModel):
         return self.current_period_end >= timezone.now()
 
 
+class Affiliate(BaseModel):
+    """
+    Influencer o socio que trae clientes. Sus códigos (`PromoCode.affiliate`) dan el
+    beneficio a quien llega y, además, dejan anotado de quién vino (`AffiliateReferral`).
+    La comisión se calcula en cada pago de esos clientes (`Payment.commission_cents`),
+    y se paga a mano -- Wompi no hace pagos salientes.
+    """
+
+    name = models.CharField(max_length=120)
+    contact = models.CharField(max_length=200, blank=True, help_text="Correo, @usuario, teléfono...")
+    commission_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=20,
+        help_text="Porcentaje de cada pago de sus referidos, p. ej. 20 = 20 %.",
+    )
+    commission_months = models.PositiveIntegerField(
+        null=True, blank=True, default=6,
+        help_text="Durante cuántos meses desde el primer pago de cada referido se paga "
+                   "comisión. Vacío = siempre.",
+    )
+    is_active = models.BooleanField(
+        default=True, help_text="Inactivo: sus códigos siguen dando el beneficio, pero no generan comisión nueva.",
+    )
+    notes = models.TextField(blank=True, help_text="Uso interno -- acuerdo, forma de pago...")
+
+    class Meta:
+        ordering = ("name",)
+
+    def __str__(self):
+        return self.name
+
+
 class PromoCode(BaseModel):
     """
     Código de invitación: da acceso gratis a un plan sin pasar por ningún
@@ -265,6 +296,11 @@ class PromoCode(BaseModel):
     )
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True, help_text="Uso interno -- p. ej. a quién se le mandó.")
+    affiliate = models.ForeignKey(
+        Affiliate, on_delete=models.PROTECT, null=True, blank=True, related_name="promo_codes",
+        help_text="Código de un influencer: quien lo use (o llegue por su enlace ?ref=CÓDIGO) "
+                   "queda atribuido a él.",
+    )
 
     class Meta:
         ordering = ("-created_at",)
@@ -327,3 +363,60 @@ class ProcessedWebhookEvent(models.Model):
 
     def __str__(self):
         return f"{self.provider}:{self.event_id}"
+
+
+class AffiliateReferral(BaseModel):
+    """
+    De qué influencer vino un usuario. Primer contacto gana: una vez atribuido, otro
+    código u otro enlace no lo cambia.
+    """
+
+    SOURCE_LINK = "link"
+    SOURCE_CODE = "code"
+    SOURCE_CHOICES = [(SOURCE_LINK, "Enlace (?ref=)"), (SOURCE_CODE, "Código canjeado")]
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="affiliate_referral"
+    )
+    affiliate = models.ForeignKey(Affiliate, on_delete=models.PROTECT, related_name="referrals")
+    promo_code = models.ForeignKey(
+        PromoCode, on_delete=models.SET_NULL, null=True, blank=True, related_name="referrals"
+    )
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"{self.user} · {self.affiliate}"
+
+
+class Payment(BaseModel):
+    """
+    Cada cobro confirmado por un proveedor (primer pago y renovaciones), con la comisión
+    de afiliado que le corresponde, calculada al momento del pago. Antes sólo se sabía
+    hasta cuándo estaba pagada una suscripción, no cuánto ni cuándo se cobró.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="payments")
+    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name="payments")
+    provider = models.CharField(max_length=20)
+    event_id = models.CharField(max_length=120, blank=True)
+    amount_cents = models.PositiveIntegerField()
+    currency = models.CharField(max_length=3, default="USD")
+    paid_at = models.DateTimeField(default=timezone.now)
+
+    affiliate = models.ForeignKey(
+        Affiliate, on_delete=models.PROTECT, null=True, blank=True, related_name="payments"
+    )
+    commission_cents = models.PositiveIntegerField(default=0)
+    commission_paid_at = models.DateTimeField(
+        null=True, blank=True, help_text="Cuándo se le pagó esta comisión al afiliado.",
+    )
+
+    class Meta:
+        ordering = ("-paid_at",)
+        indexes = [models.Index(fields=["affiliate", "commission_paid_at"])]
+
+    def __str__(self):
+        return f"{self.user} · {self.amount_cents / 100:.2f} {self.currency}"

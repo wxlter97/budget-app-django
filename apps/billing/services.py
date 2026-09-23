@@ -22,6 +22,8 @@ from dateutil.relativedelta import relativedelta
 
 from .models import (
     PROVIDER_MANUAL,
+    AffiliateReferral,
+    Payment,
     Plan,
     PlanPrice,
     ProcessedWebhookEvent,
@@ -314,6 +316,7 @@ def apply_webhook_event(event: WebhookEvent, *, provider_code: str) -> Subscript
         ])
 
         if event.kind in ("subscription.activated", "subscription.renewed"):
+            record_payment(sub, event, provider_code=provider_code)
             notify_billing_event("new_subscriber" if was_pending else "renewed", sub)
         elif event.kind == "subscription.failed":
             notify_billing_event("failed", sub)
@@ -505,8 +508,81 @@ def redeem_promo_code(user, code: str) -> Subscription:
         PromoCodeRedemption.objects.create(promo_code=promo, user=user, subscription=subscription)
         promo.redemption_count = F("redemption_count") + 1
         promo.save(update_fields=["redemption_count", "updated_at"])
+        attribute_referral(user, promo.code, source=AffiliateReferral.SOURCE_CODE)
 
     return subscription
+
+
+# ---------------------------------------------------------------------------
+# Afiliados / influencers
+# ---------------------------------------------------------------------------
+def attribute_referral(user, code: str, *, source: str) -> AffiliateReferral | None:
+    """
+    Anota que `user` llegó por el influencer dueño del código `code` (un `PromoCode`
+    con `affiliate`). Primer contacto gana: si ya estaba atribuido, no cambia nada.
+    Un código que no existe o no es de un influencer se ignora -- no es un error para
+    quien se está registrando.
+    """
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        return None
+    promo = PromoCode.objects.select_related("affiliate").filter(
+        code=normalized, affiliate__isnull=False
+    ).first()
+    if promo is None:
+        return None
+    referral, _ = AffiliateReferral.objects.get_or_create(
+        user=user, defaults={"affiliate": promo.affiliate, "promo_code": promo, "source": source},
+    )
+    return referral
+
+
+def apply_signup_referral(user, code: str) -> None:
+    """
+    Cuenta recién creada que llegó con `?ref=CÓDIGO`: la atribuye al influencer y le
+    canjea el beneficio del código. Nada de esto puede impedir el registro: un código
+    agotado o vencido igual deja la atribución, y sólo se pierde el beneficio.
+    """
+    if not attribute_referral(user, code, source=AffiliateReferral.SOURCE_LINK):
+        return
+    try:
+        redeem_promo_code(user, code)
+    except ValidationError:
+        pass
+
+
+def _commission_for(user, amount_cents: int, paid_at):
+    """(afiliado, comisión en centavos) de un pago de `user`: sólo si llegó por un
+    afiliado activo y el pago cae dentro de sus `commission_months` contados desde el
+    primer pago del usuario."""
+    referral = AffiliateReferral.objects.select_related("affiliate").filter(user=user).first()
+    if referral is None or not referral.affiliate.is_active:
+        return None, 0
+    affiliate = referral.affiliate
+    if affiliate.commission_months is not None:
+        first = Payment.objects.filter(user=user).order_by("paid_at").values_list("paid_at", flat=True).first()
+        start = first or paid_at
+        if paid_at >= start + relativedelta(months=affiliate.commission_months):
+            return affiliate, 0
+    commission = int(Decimal(amount_cents) * affiliate.commission_percent / 100)
+    return affiliate, commission
+
+
+def record_payment(sub: Subscription, event: WebhookEvent, *, provider_code: str) -> Payment:
+    """Registra un cobro confirmado (ver `Payment`). Se llama una sola vez por aviso:
+    `apply_webhook_event` ya descartó los repetidos por `event_id`."""
+    if event.amount is not None:
+        amount_cents = int((event.amount * 100).to_integral_value())
+    else:
+        amount_cents = sub.charge_cents
+    paid_at = timezone.now()
+    affiliate, commission = _commission_for(sub.user, amount_cents, paid_at)
+    return Payment.objects.create(
+        user=sub.user, subscription=sub, provider=provider_code, event_id=event.event_id or "",
+        amount_cents=amount_cents,
+        currency=sub.plan_price.currency if sub.plan_price else "USD",
+        paid_at=paid_at, affiliate=affiliate if commission else None, commission_cents=commission,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -346,10 +346,12 @@ class SetPasswordView(generics.GenericAPIView):
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    # Código de influencer del enlace `?ref=` con el que llegó (ver `apply_signup_referral`).
+    ref = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=40)
 
     class Meta:
         model = User
-        fields = ("id", "username", "email", "password", "first_name", "last_name")
+        fields = ("id", "username", "email", "password", "first_name", "last_name", "ref")
         read_only_fields = ("id",)
 
     def validate_email(self, value):
@@ -366,6 +368,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         # bienvenida (default=True en la columna, ver `User.onboarding_completed`),
         # una cuenta que se está creando ACÁ es realmente nueva -- lo arranca
         # en False a propósito.
+        validated_data.pop("ref", None)
         return User.objects.create_user(**validated_data, onboarding_completed=False)
 
 
@@ -421,6 +424,7 @@ class RegisterView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        _apply_signup_referral(user, serializer.validated_data.get("ref", ""))
         return Response(
             {"user": UserSerializer(user).data, **_tokens_for(user)},
             status=201,
@@ -486,8 +490,17 @@ def _unique_username_from_email(email):
     return username
 
 
+def _apply_signup_referral(user, ref: str) -> None:
+    if ref:
+        from apps.billing.services import apply_signup_referral  # import diferido: billing -> users
+
+        apply_signup_referral(user, ref)
+
+
 class GoogleIdTokenSerializer(serializers.Serializer):
     id_token = serializers.CharField()
+    # Sólo cuenta si la cuenta se crea en este login (ver `RegisterSerializer.ref`).
+    ref = serializers.CharField(required=False, allow_blank=True, max_length=40)
 
 
 class GoogleLoginView(generics.GenericAPIView):
@@ -536,6 +549,7 @@ class GoogleLoginView(generics.GenericAPIView):
             )
             user.set_unusable_password()
             user.save(update_fields=["password"])
+            _apply_signup_referral(user, serializer.validated_data.get("ref", ""))
         elif not user.google_linked:
             raise serializers.ValidationError(
                 {
