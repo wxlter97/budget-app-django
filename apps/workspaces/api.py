@@ -232,10 +232,12 @@ class WorkspaceViewSet(AtomicOnlyForWritesMixin, viewsets.ModelViewSet):
 class MembershipSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     user_email = serializers.EmailField(source="user.email", read_only=True)
+    # Nombre y apellido si los cargó (Perfil); si no, el usuario.
+    display_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Membership
-        fields = ("id", "user", "username", "user_email", "role", "joined_at")
+        fields = ("id", "user", "username", "display_name", "user_email", "role", "joined_at")
         read_only_fields = ("id", "user", "joined_at")
 
     def validate(self, attrs):
@@ -248,6 +250,9 @@ class MembershipSerializer(serializers.ModelSerializer):
                     {"role": "No puedes quitar el último owner del workspace."}
                 )
         return attrs
+
+    def get_display_name(self, obj) -> str:
+        return obj.user.get_full_name() or obj.user.username
 
     @staticmethod
     def _is_last_owner(workspace):

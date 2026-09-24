@@ -395,8 +395,9 @@ def notify_statement_due():
                 user, workspace, NotificationLog.KIND_STATEMENT_DUE, dedupe_key,
                 title="Estado de cuenta por vencer",
                 body=(
-                    f"{wallet.name}: {_fmt_amount(statement['total_due'])} {wallet.currency} "
-                    f"vence el {due_date.strftime('%d/%m')} — {workspace.name}"
+                    f"{wallet.name}: pagá {_fmt_amount(statement['total_due'])} {wallet.currency} "
+                    f"antes del {due_date.strftime('%d/%m')} para no pagar intereses "
+                    f"— {workspace.name}"
                 ),
                 data={
                     "type": NotificationLog.KIND_STATEMENT_DUE,
@@ -405,6 +406,120 @@ def notify_statement_due():
                 },
                 devices=devices,
             )
+
+
+# Cuántos días antes del corte se avisa. Fijo y corto a propósito: el aviso
+# sirve para decidir si una compra grande conviene hacerla después del corte
+# (entra al estado siguiente y se paga un mes más tarde), y eso se decide en
+# los últimos días del ciclo.
+STATEMENT_CUTOFF_DAYS_BEFORE = 2
+
+
+def notify_statement_cutoff(today=None):
+    """Tarjetas cuyo corte cae dentro de `STATEMENT_CUTOFF_DAYS_BEFORE` días:
+    lo que se compre después del corte se paga en el estado siguiente."""
+    from apps.accounts.models import Wallet
+    from apps.accounts.services import credit_card_statement
+
+    today = today or timezone.localdate()
+
+    for membership in _active_memberships():
+        user, workspace = membership.user, membership.workspace
+        pref = _get_preference(user)
+        if not pref.warn_statement_cutoff:
+            continue
+        devices = _devices_for(user)
+
+        wallets = (
+            Wallet.objects.filter(workspace=workspace, kind=Wallet.KIND_CREDIT, is_archived=False)
+            .exclude(billing_cycle_day__isnull=True)
+            .filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
+        )
+        for wallet in wallets:
+            statement = credit_card_statement(wallet, as_of=today)
+            if statement is None:
+                continue
+            # Si hoy ES el día de corte, `cutoff_date` es hoy: ya cortó.
+            cutoff = statement["next_cutoff_date"]
+            days_left = (cutoff - today).days
+            if not (1 <= days_left <= STATEMENT_CUTOFF_DAYS_BEFORE):
+                continue
+
+            when = "mañana" if days_left == 1 else f"el {cutoff.strftime('%d/%m')}"
+            _notify(
+                user, workspace, NotificationLog.KIND_STATEMENT_CUTOFF,
+                f"{wallet.id}:{cutoff.isoformat()}",
+                title=f"{wallet.name} corta {when}",
+                body=(
+                    "Lo que compres después del corte entra al estado siguiente y lo "
+                    f"pagás un mes más tarde — {workspace.name}"
+                ),
+                data={
+                    "type": NotificationLog.KIND_STATEMENT_CUTOFF,
+                    "workspace": str(workspace.id),
+                    "wallet": str(wallet.id),
+                },
+                devices=devices,
+            )
+
+
+# Día en que sale el resumen semanal (0 = lunes): cubre de lunes a domingo.
+WEEKLY_SUMMARY_WEEKDAY = 0
+
+
+def _weekly_summary_body(summary, currency):
+    parts = [f"Gastaste {_fmt_amount(summary['total'])} {currency}"]
+    change = summary["change_pct"]
+    if change is not None and abs(change) >= 5:
+        parts[0] += f" ({'+' if change > 0 else ''}{change:.0f}% vs. la anterior)"
+    if summary["top_category_name"]:
+        parts.append(
+            f"lo que más: {summary['top_category_name']} "
+            f"({_fmt_amount(summary['top_category_amount'])})"
+        )
+    over = summary["over_budget"]
+    if over:
+        parts.append(
+            "pasado de presupuesto: " + ", ".join(over[:3]) + ("…" if len(over) > 3 else "")
+        )
+    else:
+        parts.append("todo dentro del presupuesto")
+    return "; ".join(parts) + "."
+
+
+def notify_weekly_summary(today=None):
+    """Los lunes, un resumen de la semana anterior por presupuesto: cuánto se
+    gastó, contra la semana previa, en qué se fue más y qué categorías ya
+    pasaron su presupuesto. No usa IA: son números que ya están calculados.
+    Sin gasto en la semana, no se avisa."""
+    from apps.reports.planning import weekly_summary
+
+    today = today or timezone.localdate()
+    if today.weekday() != WEEKLY_SUMMARY_WEEKDAY:
+        return
+    iso_year, iso_week, _ = (today - timezone.timedelta(days=1)).isocalendar()
+
+    prefs, devices_by_user = {}, {}
+    for membership in _active_memberships().order_by("user_id"):
+        user, workspace = membership.user, membership.workspace
+        if user.pk not in prefs:
+            prefs[user.pk] = _get_preference(user)
+        if not prefs[user.pk].warn_weekly_summary:
+            continue
+        summary = weekly_summary(workspace, user, today=today)
+        if summary is None:
+            continue
+        if user.pk not in devices_by_user:
+            devices_by_user[user.pk] = _devices_for(user)
+
+        _notify(
+            user, workspace, NotificationLog.KIND_WEEKLY_SUMMARY,
+            f"{workspace.id}:{iso_year}-W{iso_week:02d}",
+            title=f"Tu semana en {workspace.name}",
+            body=_weekly_summary_body(summary, workspace.base_currency),
+            data={"type": NotificationLog.KIND_WEEKLY_SUMMARY, "workspace": str(workspace.id)},
+            devices=devices_by_user[user.pk],
+        )
 
 
 def _monthly_summary_text(user, workspace, insights):

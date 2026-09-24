@@ -10,6 +10,27 @@ de la del frontend (`moneyapp`, que tiene su propio changelog).
 Para "qué falta"/planeamiento ver `ROADMAP.md`. Este archivo es sólo lo que
 ya se envió.
 
+## [1.9.0] - 2026-09-23
+
+### Agregado
+- `GET /reports/members/`: gasto del mes por miembro (quién pagó, si la
+  transacción se dividió entre personas; si no, quién la cargó).
+- `GET /reports/can-afford/?amount=&category=`: "¿me alcanza?", cómo quedan
+  la categoría y el presupuesto del período descontando lo programado
+  (recurrentes y cuotas). Sin presupuesto, usa el flujo del mes.
+- `GET /wallets/{id}/contributions/`: aportes y retiros por miembro en una
+  cartera de ahorro (metas compartidas).
+- Aviso de corte de tarjeta dos días antes (`warn_statement_cutoff`) y
+  resumen semanal los lunes (`warn_weekly_summary`), con sus preferencias.
+- `display_name` en las membresías.
+
+### Cambiado
+- La detección de recurrentes agrupa también por comercio o descripción:
+  dos suscripciones en la misma categoría y tarjeta (Netflix y Spotify) ya
+  no se anulan entre sí. Las sugerencias traen `name`, y un recurrente ya
+  creado sólo oculta la sugerencia con un monto parecido.
+- El aviso de estado de cuenta dice cuánto pagar para no pagar intereses.
+
 ## [1.8.0] - 2026-09-23
 
 ### Agregado

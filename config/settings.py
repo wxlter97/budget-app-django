@@ -317,7 +317,7 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "budget API",
     "DESCRIPTION": "API REST de presupuesto personal/compartido (iOS + web).",
     # Bump manual en cada release que cambia comportamiento -- ver CHANGELOG.md.
-    "VERSION": "1.8.0",
+    "VERSION": "1.9.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SWAGGER_UI_DIST": "SIDECAR",
