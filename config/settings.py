@@ -48,6 +48,12 @@ MAINTENANCE_MESSAGE = env("MAINTENANCE_MESSAGE")
 # ticket sólo queda guardado (visible en el admin).
 SUPPORT_WEBHOOK_URL = env("SUPPORT_WEBHOOK_URL")
 
+# Webhook de Discord para avisos de operación: hoy, que el job diario
+# (`run_daily_tasks`) falló en algún paso. Vacío = cae al de soporte, que es
+# el mismo canal que ya se mira a diario; se separa sólo si se quiere un
+# canal aparte para alertas.
+OPS_WEBHOOK_URL = env("OPS_WEBHOOK_URL", default="") or SUPPORT_WEBHOOK_URL
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
 ROOT_URLCONF = "config.urls"
@@ -311,7 +317,7 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "budget API",
     "DESCRIPTION": "API REST de presupuesto personal/compartido (iOS + web).",
     # Bump manual en cada release que cambia comportamiento -- ver CHANGELOG.md.
-    "VERSION": "1.7.0",
+    "VERSION": "1.8.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SWAGGER_UI_DIST": "SIDECAR",

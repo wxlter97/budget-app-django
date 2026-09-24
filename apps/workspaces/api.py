@@ -15,7 +15,7 @@ from apps.common.api import (
 )
 
 from .models import ExchangeRate, Invitation, Membership, Workspace
-from .services import get_or_create_invitation, send_invitation_email
+from .services import add_member, get_or_create_invitation, send_invitation_email
 
 User = Membership._meta.get_field("user").related_model
 
@@ -308,7 +308,7 @@ class MembershipViewSet(WorkspaceScopedViewSet):
                 {"email": "Ese usuario ya es miembro del workspace."}
             )
 
-        membership = Membership.objects.create(workspace=workspace, user=user, role=role)
+        membership = add_member(workspace, user, role)
         return Response(self.get_serializer(membership).data, status=201)
 
     def perform_destroy(self, instance):
@@ -319,6 +319,45 @@ class MembershipViewSet(WorkspaceScopedViewSet):
 
             raise ValidationError("No puedes expulsar al último owner del workspace.")
         instance.soft_delete()
+
+    def get_permissions(self):
+        # Salir es cosa de cada miembro, no sólo del owner.
+        if self.action == "leave":
+            return [IsAuthenticated(), HasWorkspaceMembership()]
+        return super().get_permissions()
+
+    @action(detail=False, methods=["post"])
+    def leave(self, request):
+        """El usuario autenticado se va del workspace del header.
+
+        El último owner no puede irse: con más gente adentro, primero tiene que
+        nombrar a otro dueño (si no, el workspace queda sin nadie que lo
+        administre); solo, lo que corresponde es borrar el workspace. Tampoco se
+        puede dejar el único workspace que uno tiene, por la misma razón que
+        `WorkspaceViewSet.perform_destroy`: el cliente siempre necesita uno.
+        """
+        membership = request.membership
+        workspace = request.workspace
+        if membership.role == Membership.ROLE_OWNER and MembershipSerializer._is_last_owner(workspace):
+            others = Membership.objects.filter(workspace=workspace).exclude(pk=membership.pk)
+            if others.exists():
+                raise serializers.ValidationError(
+                    "Sos el único dueño: nombrá a otro dueño antes de salir."
+                )
+            raise serializers.ValidationError(
+                "Sos la única persona en este presupuesto: si ya no lo usás, borralo."
+            )
+        has_other_workspace = (
+            Membership.objects.filter(user=request.user, workspace__is_deleted=False)
+            .exclude(workspace=workspace)
+            .exists()
+        )
+        if not has_other_workspace:
+            raise serializers.ValidationError(
+                "Es tu único presupuesto: creá otro antes de salir de éste."
+            )
+        membership.soft_delete()
+        return Response(status=204)
 
 
 # ---------------------------------------------------------------------------
@@ -381,11 +420,11 @@ class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
                 "Este presupuesto ya llegó al límite de miembros de su plan."
             )
         with transaction.atomic():
-            Membership.objects.get_or_create(
-                workspace=invitation.workspace,
-                user=request.user,
-                defaults={"role": invitation.role},
-            )
+            already_member = Membership.objects.filter(
+                workspace=invitation.workspace, user=request.user
+            ).exists()
+            if not already_member:
+                add_member(invitation.workspace, request.user, invitation.role)
             invitation.status = Invitation.STATUS_ACCEPTED
             invitation.responded_at = timezone.now()
             invitation.save(update_fields=["status", "responded_at", "updated_at"])
@@ -413,6 +452,56 @@ class InvitationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
             )
         if invitation.email.lower() != (user.email or "").lower():
             raise PermissionDenied("Esta invitación es para otro correo.")
+
+
+class WorkspaceInvitationViewSet(
+    AtomicOnlyForWritesMixin,
+    mixins.ListModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    """
+    Invitaciones pendientes DEL WORKSPACE del header, vistas desde adentro:
+    a quién se invitó y todavía no entró. Cualquier miembro las ve (igual que
+    ve los correos de los miembros); cancelar (DELETE) y reenviar el correo
+    (`resend`), sólo el owner.
+    """
+
+    serializer_class = InvitationSerializer
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership, IsWorkspaceOwner]
+    queryset = Invitation.objects.select_related("workspace", "invited_by").all()
+
+    # Reenviar manda un correo por toque: sin un mínimo entre reenvíos, un
+    # dedo nervioso (o un script) llena la bandeja del invitado y quema la
+    # reputación del dominio de envío.
+    RESEND_COOLDOWN_SECONDS = 60
+
+    def get_queryset(self):
+        return super().get_queryset().filter(
+            workspace=self.request.workspace, status=Invitation.STATUS_PENDING
+        )
+
+    def perform_destroy(self, instance):
+        from apps.notifications.models import Notification
+        from apps.notifications.services import resolve_notifications
+
+        # Soft delete: el enlace del correo deja de funcionar (el queryset de
+        # `InvitationViewSet` ya no la encuentra) y el correo queda libre para
+        # invitarlo de nuevo más adelante.
+        instance.soft_delete()
+        resolve_notifications(Notification.KIND_INVITATION, instance.id)
+
+    @action(detail=True, methods=["post"])
+    def resend(self, request, pk=None):
+        invitation = self.get_object()
+        elapsed = (timezone.now() - invitation.updated_at).total_seconds()
+        if elapsed < self.RESEND_COOLDOWN_SECONDS:
+            raise serializers.ValidationError(
+                "Acabamos de mandar ese correo: esperá un minuto antes de reenviarlo."
+            )
+        send_invitation_email(invitation)
+        invitation.save(update_fields=["updated_at"])
+        return Response(self.get_serializer(invitation).data)
 
 
 # ---------------------------------------------------------------------------

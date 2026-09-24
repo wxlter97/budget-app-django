@@ -729,6 +729,19 @@ a Neon, apuntá el ping a un endpoint que consulte, por ejemplo
 
 ### 6.4 Alerta cuando el job diario falla
 
+**Aviso a Discord (el principal).** `run_daily_tasks` manda a `OPS_WEBHOOK_URL`
+(si está vacía, a `SUPPORT_WEBHOOK_URL`) qué pasos fallaron y con qué error. El
+job tiene que tener la variable:
+
+```bash
+gcloud run jobs update budget-cron --region us-east1 \
+  --update-secrets SUPPORT_WEBHOOK_URL=support-webhook-url:latest
+```
+
+Eso cubre todo lo que llega a correr Python. Lo que no llega (la imagen no
+arranca, se queda sin memoria) lo cubre la política de Monitoring de abajo, por
+correo.
+
 Sin esto, un `budget-cron` caído sólo se ve si alguien abre la consola de Cloud
 Run. El backup estuvo roto (`server version mismatch`) sin que nada avisara.
 La política está versionada en `infra/alerta-job-fallido.json`; cómo crearla y

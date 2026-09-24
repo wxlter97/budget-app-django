@@ -27,7 +27,7 @@
       `RUNBOOK.md` §9. El `pg_dump` de la imagen tiene que ser >= la versión de Neon (hoy 18,
       `ARG PG_CLIENT_MAJOR` del Dockerfile); subirla cuando Neon suba, o el backup falla con
       `server version mismatch` (RUNBOOK §9).
-- [ ] **Tareas diarias en producción.** No hay Celery en prod: los recordatorios, las
+- [x] **Tareas diarias en producción.** **Listo (23-sep-2026):** `budget-cron` corre a diario. No hay Celery en prod: los recordatorios, las
       transacciones recurrentes y los insights de comportamiento nuevos corren por
       `manage.py run_daily_tasks` desde un Cloud Run Job disparado por Cloud Scheduler
       (`DEPLOY.md` §6.1 y §6.2). Si el Job/Scheduler no está creado, **nada de lo diario
@@ -55,7 +55,10 @@
       `DJANGO_DB_DISABLE_SERVER_SIDE_CURSORS=True`; el check `common.W002` lo avisa. El host
       ya es `-pooler` en producción (verificado el 19-sep-2026); **(verificar)** sólo la variable
       de cursores.
-- [ ] **Alerta cuando el job diario falla.** Hoy un `budget-cron` caído sólo se ve si alguien
+- [x] **Alerta cuando el job diario falla.** **Listo (23-sep-2026):** `run_daily_tasks` avisa a
+      Discord (`OPS_WEBHOOK_URL`, que si está vacía usa `SUPPORT_WEBHOOK_URL`) qué pasos fallaron,
+      y la política de Monitoring por correo (`infra/alerta-job-fallido.json`) queda de respaldo
+      para lo que ni llega a Python (imagen que no arranca, memoria). Texto original: Hoy un `budget-cron` caído sólo se ve si alguien
       abre la consola de Cloud Run: el backup estuvo roto (`pg_dump` 17 contra Neon 18.6) sin
       que nada avisara. Una alerta de Cloud Monitoring sobre ejecuciones fallidas del job, al
       mismo canal de `SUPPORT_WEBHOOK_URL`. De paso, con los 3 reintentos por defecto, si falla
@@ -93,7 +96,8 @@
       3. **Filas de `BankEmailSchema`** cargadas a mano en `/admin/` (es catálogo global,
          sólo staff lo edita, y no hay fixtures). Sin el schema del banco, cada correo
          importado termina en `EmailImportLog` con estado `failed`.
-- [ ] **Correo saliente (invitaciones a workspace).** `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD`
+- [x] **Correo saliente (invitaciones a workspace).** **Listo (23-sep-2026):** probado con una
+      invitación real. `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD`
       de un *sending domain* verificado en Mailgun, más `DJANGO_DEFAULT_FROM_EMAIL` y
       `INVITE_ACCEPT_URL_BASE`. Sin esto, en `DEBUG` los correos sólo se imprimen en consola
       y en producción las invitaciones no llegan (compartir workspace queda inservible).
@@ -107,7 +111,7 @@
       Además cada `Category` del workspace tiene que quedar mapeada a un `CategoryType` para
       heredar la tasa. Sin cargar nada: los puntos, el cashback y el descuento sugerido nunca
       se calculan, aunque toda la lógica y la UI ya estén.
-- [ ] **Pagos y suscripciones (Wompi).** `WOMPI_CLIENT_ID` + `WOMPI_CLIENT_SECRET` (`DEPLOY.md` §2.4b), más
+- [x] **Pagos y suscripciones (Wompi).** **Listo (23-sep-2026):** probado con un pago real. `WOMPI_CLIENT_ID` + `WOMPI_CLIENT_SECRET` (`DEPLOY.md` §2.4b), más
       `manage.py seed_billing_plans` una sola vez (`DEPLOY.md` §2.4) y
       `manage.py grandfather_existing_users` si ya hay usuarios reales de antes. Sin esto no
       se puede cobrar y los planes quedan sin precio. Ojo con el webhook: si deja de llegar,
@@ -122,7 +126,7 @@
 El centro de notificaciones dentro de la app funciona sin nada de esto; lo que falta es el
 aviso *fuera* de la app.
 
-- [ ] **Push en navegador (VAPID).** `manage.py generate_vapid_keys` y pegar
+- [x] **Push en navegador (VAPID).** **Listo (23-sep-2026):** el job ya tiene las tres variables. `manage.py generate_vapid_keys` y pegar
       `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`. Vacío = se omiten los pushes
       a navegadores. Es el que más rinde hoy, porque la app en producción es la web.
       **Estado al 19-sep-2026:** las tres variables ya están en el *servicio* (desde el 14-sep,
@@ -139,7 +143,7 @@ aviso *fuera* de la app.
 
 ## Prioridad 4 — visibilidad y cosas menores
 
-- [ ] **Sentry.** `SENTRY_DSN` en el backend y `EXPO_PUBLIC_SENTRY_DSN` en el front. Vacío =
+- [x] **Sentry.** **Listo (23-sep-2026):** backend, job y front. `SENTRY_DSN` en el backend y `EXPO_PUBLIC_SENTRY_DSN` en el front. Vacío =
       ni se importa el SDK. Hasta que esté, los errores de producción sólo se ven si un
       usuario te los cuenta. **Estado al 19-sep-2026:** `SENTRY_DSN` ya está en el servicio
       (secreto `sentry-dsn`, desde el 14-sep) pero no en el job `budget-cron`, así que los

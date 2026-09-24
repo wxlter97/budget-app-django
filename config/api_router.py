@@ -31,6 +31,7 @@ from apps.workspaces.api import (
     ExchangeRateViewSet,
     InvitationViewSet,
     MembershipViewSet,
+    WorkspaceInvitationViewSet,
     WorkspaceViewSet,
 )
 
@@ -38,6 +39,9 @@ router = DefaultRouter()
 router.register("workspaces", WorkspaceViewSet, basename="workspace")
 router.register("memberships", MembershipViewSet, basename="membership")
 router.register("invitations", InvitationViewSet, basename="invitation")
+router.register(
+    "workspace-invitations", WorkspaceInvitationViewSet, basename="workspace-invitation"
+)
 router.register("exchange-rates", ExchangeRateViewSet, basename="exchangerate")
 
 router.register("wallets", WalletViewSet, basename="wallet")

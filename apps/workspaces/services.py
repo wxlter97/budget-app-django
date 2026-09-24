@@ -10,7 +10,7 @@ from django.core.mail import send_mail
 from django.db import transaction as db_transaction
 from django.utils import timezone
 
-from .models import Invitation
+from .models import Invitation, Membership
 
 BACKUP_FORMAT = "budget-app-backup"
 BACKUP_VERSION = 1
@@ -18,6 +18,26 @@ BACKUP_VERSION = 1
 
 class BackupError(Exception):
     """Respaldo con formato inválido o incompleto -- se traduce a 400."""
+
+
+def add_member(workspace, user, role):
+    """Suma a ``user`` al workspace y devuelve la Membership.
+
+    Quitar a alguien hace soft delete, pero la restricción
+    `unique_membership_per_workspace` no mira `is_deleted`: la fila vieja sigue
+    ocupando el lugar. Crear otra reventaba con IntegrityError (un 500) al
+    volver a invitar a alguien que se había ido o que habían quitado. Por eso
+    se revive la fila existente, con el rol nuevo y la fecha de ingreso de hoy.
+    """
+    membership = Membership.all_objects.filter(workspace=workspace, user=user).first()
+    if membership is None:
+        return Membership.objects.create(workspace=workspace, user=user, role=role)
+    if membership.is_deleted:
+        membership.is_deleted = False
+        membership.role = role
+        membership.joined_at = timezone.now()
+        membership.save(update_fields=["is_deleted", "role", "joined_at", "updated_at"])
+    return membership
 
 
 def get_or_create_invitation(workspace, email, role, invited_by):
