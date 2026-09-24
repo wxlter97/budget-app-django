@@ -43,6 +43,22 @@ class WalletCardSerializer(serializers.Serializer):
     label = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
 
 
+class GoalContributionRowSerializer(serializers.Serializer):
+    user = serializers.IntegerField(allow_null=True)
+    name = serializers.CharField()
+    contributed = serializers.DecimalField(max_digits=16, decimal_places=2)
+    withdrawn = serializers.DecimalField(max_digits=16, decimal_places=2)
+    net = serializers.DecimalField(max_digits=16, decimal_places=2)
+    share_pct = serializers.FloatField()
+
+
+class GoalContributionsSerializer(serializers.Serializer):
+    opening_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
+    total_contributed = serializers.DecimalField(max_digits=16, decimal_places=2)
+    goal_amount = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    members = GoalContributionRowSerializer(many=True)
+
+
 class WalletSerializer(serializers.ModelSerializer):
     aggregated_balance = serializers.DecimalField(
         max_digits=16, decimal_places=2, read_only=True
@@ -429,6 +445,20 @@ class WalletViewSet(WorkspaceScopedViewSet):
                 {"detail": "Esta cartera no tiene una meta de ahorro."}, status=404
             )
         return Response(GoalProjectionSerializer(data).data)
+
+    @action(detail=True, methods=["get"])
+    def contributions(self, request, pk=None):
+        """Aportes por miembro a una cartera de ahorro -- ver
+        `services.goal_contributions`. 404 si no es de ahorro."""
+        from .services import goal_contributions
+
+        wallet = self._owned_wallet(pk)
+        if wallet is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        data = goal_contributions(wallet)
+        if data is None:
+            return Response({"detail": "Esta cartera no es de ahorro."}, status=404)
+        return Response(GoalContributionsSerializer(data).data)
 
     @action(detail=True, methods=["get"])
     def statement(self, request, pk=None):

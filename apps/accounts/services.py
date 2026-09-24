@@ -242,6 +242,65 @@ def _months_to_payoff(principal: Decimal, monthly_payment: Decimal, annual_rate_
     return math.ceil(n)
 
 
+def goal_contributions(wallet):
+    """Cuánto puso (y sacó) cada miembro en una cartera de ahorro, para las
+    metas compartidas. ``None`` si no es de ahorro.
+
+    Aporte = transferencias que entran a la cartera + ingresos registrados
+    directo en ella; retiro = lo que sale (gastos o transferencias hacia
+    otra cartera). Se atribuye a quien cargó el movimiento (`created_by`):
+    es lo único que dice quién puso la plata cuando ambos transfieren desde
+    una cuenta compartida. El saldo inicial va aparte, sin dueño.
+    """
+    from apps.transactions.models import Transaction
+    from apps.workspaces.models import Membership
+
+    if wallet.purpose != Wallet.PURPOSE_SAVINGS:
+        return None
+
+    names = {
+        m.user_id: (m.user.get_full_name() or m.user.username)
+        for m in Membership.all_objects.filter(workspace_id=wallet.workspace_id).select_related("user")
+    }
+    rows = {}
+
+    def row_for(user_id):
+        if user_id not in rows:
+            rows[user_id] = {
+                "user": user_id,
+                "name": names.get(user_id, "Sin asignar") if user_id else "Sin asignar",
+                "contributed": Decimal("0"),
+                "withdrawn": Decimal("0"),
+            }
+        return rows[user_id]
+
+    txns = Transaction.objects.filter(is_deleted=False).filter(
+        Q(wallet=wallet) | Q(to_wallet=wallet)
+    ).values("type", "amount", "wallet_id", "to_wallet_id", "created_by_id")
+    for t in txns:
+        row = row_for(t["created_by_id"])
+        incoming = (t["type"] == Transaction.TYPE_TRANSFER and t["to_wallet_id"] == wallet.id) or (
+            t["type"] == Transaction.TYPE_INCOME and t["wallet_id"] == wallet.id
+        )
+        if incoming:
+            row["contributed"] += t["amount"]
+        elif t["wallet_id"] == wallet.id:
+            row["withdrawn"] += t["amount"]
+
+    total_contributed = sum((r["contributed"] for r in rows.values()), Decimal("0"))
+    members = []
+    for r in sorted(rows.values(), key=lambda r: -(r["contributed"] - r["withdrawn"])):
+        r["net"] = r["contributed"] - r["withdrawn"]
+        r["share_pct"] = float(r["contributed"] / total_contributed * 100) if total_contributed else 0.0
+        members.append(r)
+    return {
+        "opening_balance": wallet.opening_balance,
+        "total_contributed": total_contributed,
+        "goal_amount": wallet.goal_amount,
+        "members": members,
+    }
+
+
 def goal_projection(wallet, months=6):
     """Proyección de "a este ritmo la alcanzás / la saldás en N meses": para
     una meta de ahorro (`purpose=savings`) o para una deuda con monto total

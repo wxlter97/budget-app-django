@@ -1,4 +1,5 @@
 import datetime as dt
+from decimal import Decimal
 
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -309,3 +310,110 @@ class ScheduledView(_BaseReportView):
             request.workspace, request.user, until=_parse("until"), since=_parse("since")
         )
         return Response(ScheduledItemSerializer(data, many=True).data)
+
+
+# ---------------------------------------------------------------------------
+# Planificación (ver `planning.py`)
+# ---------------------------------------------------------------------------
+class MemberSpendingRowSerializer(serializers.Serializer):
+    user = serializers.IntegerField(allow_null=True)
+    name = serializers.CharField()
+    spent = _Money()
+    count = serializers.IntegerField()
+    share_pct = serializers.FloatField()
+
+
+class MemberSpendingSerializer(serializers.Serializer):
+    year = serializers.IntegerField()
+    month = serializers.IntegerField()
+    base_currency = serializers.CharField()
+    total = _Money()
+    members = MemberSpendingRowSerializer(many=True)
+
+
+class MemberSpendingView(_BaseReportView):
+    """Gasto del mes por miembro: quién pagó (si la transacción se dividió
+    entre personas) o quién la cargó. `?year=&month=` (default: el actual)."""
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("year", int, description="Año (default: el actual)"),
+            OpenApiParameter("month", int, description="1-12 (default: el actual)"),
+        ],
+        responses=MemberSpendingSerializer,
+    )
+    def get(self, request):
+        from . import planning
+
+        today = timezone.localdate()
+        try:
+            year = int(request.query_params.get("year", today.year))
+            month = int(request.query_params.get("month", today.month))
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "year y month tienen que ser enteros."})
+        if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+            raise ValidationError({"detail": "Mes o año fuera de rango."})
+        data = planning.member_spending(request.workspace, request.user, year, month)
+        return Response(MemberSpendingSerializer(data).data)
+
+
+class CanAffordCategorySerializer(serializers.Serializer):
+    category = serializers.UUIDField()
+    category_name = serializers.CharField()
+    budgeted = _Money()
+    spent = _Money()
+    remaining_before = _Money()
+    remaining_after = _Money()
+    has_budget = serializers.BooleanField()
+
+
+class CanAffordSerializer(serializers.Serializer):
+    amount = _Money()
+    base_currency = serializers.CharField()
+    period_start = serializers.DateField()
+    period_end = serializers.DateField()
+    days_left = serializers.IntegerField()
+    basis = serializers.ChoiceField(choices=["budget", "cashflow"])
+    committed = _Money()
+    available_before = _Money()
+    available_after = _Money()
+    category = CanAffordCategorySerializer(allow_null=True)
+    verdict = serializers.ChoiceField(choices=["ok", "tight", "over"])
+
+
+class CanAffordInputSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
+    category = serializers.UUIDField(required=False, allow_null=True)
+
+
+class CanAffordView(_BaseReportView):
+    """"¿Me alcanza?": cómo quedarían la categoría y el presupuesto del
+    período si hoy se gastara `?amount=` (moneda base), opcionalmente en
+    `?category=`. No crea nada."""
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("amount", str, required=True, description="Monto, en la moneda base"),
+            OpenApiParameter("category", str, description="UUID de una categoría de gasto"),
+        ],
+        responses=CanAffordSerializer,
+    )
+    def get(self, request):
+        from apps.transactions.models import Category
+
+        from . import planning
+
+        params = CanAffordInputSerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+        category = None
+        category_id = params.validated_data.get("category")
+        if category_id:
+            category = Category.objects.filter(
+                id=category_id, workspace=request.workspace
+            ).first()
+            if category is None:
+                raise ValidationError({"category": "No existe en este presupuesto."})
+        data = planning.can_afford(
+            request.workspace, request.user, params.validated_data["amount"], category=category
+        )
+        return Response(CanAffordSerializer(data).data)
