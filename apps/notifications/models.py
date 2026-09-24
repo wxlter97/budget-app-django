@@ -78,6 +78,12 @@ class NotificationPreference(BaseModel):
     # vez al mes, en vez de reavisarlos sueltos. Toggle propio y no atado a
     # `warn_insights` a propósito, para poder apagar uno sin el otro.
     warn_monthly_summary = models.BooleanField(default=True)
+    # Corte de la tarjeta a pocos días (ver `services.notify_statement_cutoff`):
+    # lo que se compre después entra al estado siguiente. Aparte del aviso de
+    # pago (`warn_statement_due`), que es otra fecha y otra decisión.
+    warn_statement_cutoff = models.BooleanField(default=True)
+    # Resumen de la semana, los lunes (ver `services.notify_weekly_summary`).
+    warn_weekly_summary = models.BooleanField(default=True)
 
     def __str__(self):
         return f"Preferencias de {self.user}"
@@ -98,6 +104,8 @@ class NotificationLog(BaseModel):
     # no está disponible). Kind propio, no `KIND_INSIGHT`, para que se pueda
     # apagar aparte (ver `NotificationPreference.warn_monthly_summary`).
     KIND_MONTHLY_SUMMARY = "monthly_summary"
+    KIND_STATEMENT_CUTOFF = "statement_cutoff"
+    KIND_WEEKLY_SUMMARY = "weekly_summary"
     KIND_CHOICES = [
         (KIND_RECURRING_DUE, "Recurrente por vencer"),
         (KIND_INSTALLMENT_DUE, "Cuota por vencer"),
@@ -106,6 +114,8 @@ class NotificationLog(BaseModel):
         (KIND_STATEMENT_DUE, "Estado de cuenta por vencer"),
         (KIND_INSIGHT, "Patrón de gasto detectado"),
         (KIND_MONTHLY_SUMMARY, "Resumen mensual"),
+        (KIND_STATEMENT_CUTOFF, "Corte de tarjeta cerca"),
+        (KIND_WEEKLY_SUMMARY, "Resumen semanal"),
     ]
 
     user = models.ForeignKey(
@@ -171,6 +181,8 @@ class Notification(BaseModel):
     KIND_STATEMENT_DUE = NotificationLog.KIND_STATEMENT_DUE
     KIND_INSIGHT = NotificationLog.KIND_INSIGHT
     KIND_MONTHLY_SUMMARY = NotificationLog.KIND_MONTHLY_SUMMARY
+    KIND_STATEMENT_CUTOFF = NotificationLog.KIND_STATEMENT_CUTOFF
+    KIND_WEEKLY_SUMMARY = NotificationLog.KIND_WEEKLY_SUMMARY
     KIND_CHOICES = [
         (KIND_INVITATION, "Invitación a un presupuesto"),
         (KIND_EMAIL_IMPORT_PENDING, "Correo bancario por revisar"),

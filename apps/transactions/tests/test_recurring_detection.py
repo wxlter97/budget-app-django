@@ -167,3 +167,33 @@ class RecurringSuggestionApiTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
         # Ya está cubierta por un RecurringExpense activo -> deja de sugerirse.
         self.assertEqual(self.client.get("/api/v1/recurring-expenses/suggestions/").data, [])
+
+
+class SubscriptionDetectionTests(RecurringDetectionServiceTests):
+    """Dos suscripciones en la misma categoría y la misma tarjeta: antes no
+    se detectaba ninguna (dos cobros por mes en el grupo)."""
+
+    def test_two_subscriptions_same_category_and_wallet(self):
+        for n in (3, 2, 1, 0):
+            self._txn(self.streaming, "15.99", n, day=5, description=f"NETFLIX.COM {n}0923")
+            self._txn(self.streaming, "9.99", n, day=12, description="Spotify septiembre")
+
+        candidates = detect_recurring_candidates(self.ws, self.user)
+
+        names = sorted(c["name"] for c in candidates)
+        self.assertEqual(len(candidates), 2, candidates)
+        self.assertTrue(names[0].startswith("NETFLIX"))
+        self.assertEqual(names[1], "Spotify septiembre")
+
+    def test_existing_recurring_only_hides_the_matching_amount(self):
+        for n in (3, 2, 1, 0):
+            self._txn(self.streaming, "15.99", n, day=5, description="Netflix")
+            self._txn(self.streaming, "9.99", n, day=12, description="Spotify")
+        RecurringExpense.objects.create(
+            workspace=self.ws, wallet=self.acc, category=self.streaming,
+            amount=Decimal("15.99"), next_due_date=_FIRST + relativedelta(months=1),
+        )
+
+        candidates = detect_recurring_candidates(self.ws, self.user)
+
+        self.assertEqual([c["name"] for c in candidates], ["Spotify"])

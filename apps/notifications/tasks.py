@@ -14,5 +14,7 @@ def send_daily_reminders():
     services.notify_budget_thresholds()
     services.notify_low_balance()
     services.notify_statement_due()
+    services.notify_statement_cutoff()
     services.notify_insights()
     services.notify_monthly_summary()
+    services.notify_weekly_summary()

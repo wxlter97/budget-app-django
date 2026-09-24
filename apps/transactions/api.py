@@ -1400,6 +1400,9 @@ class RecurringSuggestionSerializer(serializers.Serializer):
     category_name = serializers.CharField()
     wallet = serializers.UUIDField()
     wallet_name = serializers.CharField()
+    # Comercio o descripción que se repite ("Netflix"); vacío si el patrón
+    # sólo se ve por categoría + cartera.
+    name = serializers.CharField(allow_blank=True)
     suggested_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
     occurrences = serializers.IntegerField()
     last_date = serializers.DateField()
