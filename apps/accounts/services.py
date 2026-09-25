@@ -777,6 +777,10 @@ def credit_card_statements_summary(workspace, user, as_of=None):
         data = credit_card_statement(w, as_of=as_of)
         if data is None:
             continue
+        # Lo que de verdad hay que pagar ahora: el saldo del ÚLTIMO corte
+        # menos lo ya abonado (no el saldo de hoy, que incluye compras que
+        # van al próximo estado) -- ver `statement_cycle`.
+        cycle = statement_cycle(w, data["cutoff_date"], as_of=as_of)
         results.append(
             {
                 "wallet_id": w.id,
@@ -784,6 +788,10 @@ def credit_card_statements_summary(workspace, user, as_of=None):
                 "currency": w.currency,
                 "card_last4": w.card_last4,
                 **data,
+                "statement_balance": cycle["statement_balance"],
+                "remaining": cycle["remaining"],
+                "minimum_remaining": cycle["minimum_remaining"],
+                "status": cycle["status"],
             }
         )
     return results

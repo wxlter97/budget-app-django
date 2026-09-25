@@ -331,6 +331,10 @@ class SavingsInterestProjectionSerializer(serializers.Serializer):
 
 
 class CreditCardStatementSummarySerializer(CreditCardStatementSerializer):
+    statement_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
+    remaining = serializers.DecimalField(max_digits=16, decimal_places=2)
+    minimum_remaining = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    status = serializers.CharField()
     wallet_id = serializers.UUIDField()
     wallet_name = serializers.CharField()
     currency = serializers.CharField()

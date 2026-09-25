@@ -212,3 +212,12 @@ class StatementCyclesApiTests(_Base):
         w = self._card()
         resp = self.client.patch(f"/api/v1/wallets/{w.id}/", {"min_payment_pct": "150"}, format="json")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_statements_summary_includes_remaining_of_last_cutoff(self):
+        w = self._card()
+        self._buy(w, "80.00", dt.date(2020, 1, 15))
+        resp = self.client.get("/api/v1/wallets/statements/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        row = next(r for r in resp.data if str(r["wallet_id"]) == str(w.id))
+        self.assertIn(row["status"], {"pending", "overdue", "paid", "minimum_paid", "nothing_due"})
+        self.assertIn("remaining", row)
