@@ -451,6 +451,37 @@ class NotifyStatementDueTests(NotificationServicesTestCase):
             services.notify_statement_due()
         self.assertEqual(mock_send.call_count, 1)
 
+    def _pay_card(self, amount, on):
+        bank = Wallet.objects.create(workspace=self.workspace, name="Banco")
+        Transaction.objects.create(
+            wallet=bank, to_wallet=self.card, type=Transaction.TYPE_TRANSFER,
+            amount=Decimal(amount), date=on,
+        )
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_warning_when_statement_already_paid(self, mock_send):
+        self._pay_card("300.00", dt.date(2026, 3, 5))
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE):
+            services.notify_statement_due()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_amount_is_statement_balance_minus_payments_not_todays_balance(self, mock_send):
+        # Compra DESPUÉS del corte: se cobra en el corte siguiente, no entra.
+        Transaction.objects.create(
+            wallet=self.card, category=self.category, amount=Decimal("50.00"),
+            date=dt.date(2026, 3, 4),
+        )
+        self._pay_card("100.00", dt.date(2026, 3, 5))
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE):
+            services.notify_statement_due()
+        mock_send.assert_called_once()
+        data = mock_send.call_args.kwargs["data"]
+        self.assertEqual(data["amount"], "200.00")
+        self.assertEqual(data["due_date"], "2026-03-10")
+        self.assertEqual(mock_send.call_args.kwargs["title"], "Fecha límite de pago")
+        self.assertIn("para no generar intereses", mock_send.call_args.kwargs["body"])
+
 
 class NotifyInsightsTests(NotificationServicesTestCase):
     """`behavior_insights` (los 6 detectores) ya se prueba a fondo en

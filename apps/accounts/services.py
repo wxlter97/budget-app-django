@@ -528,6 +528,47 @@ def credit_card_statement(wallet, as_of=None):
     }
 
 
+def _credits_between(wallet, after, until) -> Decimal:
+    """Abonos a ``wallet`` (ingresos + transferencias entrantes) con fecha en
+    ``(after, until]`` -- en una tarjeta, los pagos hechos desde un corte."""
+    from apps.transactions.models import Transaction
+
+    income = Transaction.objects.filter(
+        wallet=wallet, type=Transaction.TYPE_INCOME, date__gt=after, date__lte=until
+    ).aggregate(total=Sum("amount", output_field=_MONEY))["total"] or Decimal("0")
+    incoming = Transaction.objects.filter(
+        to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__gt=after, date__lte=until
+    ).aggregate(total=Sum("amount", output_field=_MONEY))["total"] or Decimal("0")
+    return income + incoming
+
+
+def statement_payoff(wallet, as_of=None):
+    """Lo que falta pagar del ÚLTIMO corte para no generar intereses, como en
+    un estado de cuenta real -- distinto de `credit_card_statement`, que mira
+    el saldo de HOY (incluye compras posteriores al corte, que recién se
+    cobran en el corte siguiente):
+
+        saldo_al_corte  = pago de contado calculado AL DÍA del corte
+        pendiente       = saldo_al_corte - abonos hechos desde el corte
+
+    ``None`` si la tarjeta no tiene corte o fecha de pago configurados."""
+    statement = credit_card_statement(wallet, as_of=as_of)
+    if statement is None or statement["payment_due_date"] is None:
+        return None
+    as_of = as_of or timezone.localdate()
+    cutoff = statement["cutoff_date"]
+    at_cutoff = credit_card_statement(wallet, as_of=cutoff)
+    statement_balance = max(at_cutoff["total_due"], Decimal("0"))
+    paid = _credits_between(wallet, cutoff, as_of)
+    return {
+        "cutoff_date": cutoff,
+        "payment_due_date": statement["payment_due_date"],
+        "statement_balance": statement_balance,
+        "paid_since_cutoff": paid,
+        "remaining": max(statement_balance - paid, Decimal("0")),
+    }
+
+
 def credit_card_statements_summary(workspace, user, as_of=None):
     """`credit_card_statement` de cada tarjeta de crédito visible del
     workspace (con fecha de corte configurada), para el listado de Herramientas."""

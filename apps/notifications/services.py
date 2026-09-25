@@ -359,11 +359,14 @@ def notify_low_balance():
 
 
 def notify_statement_due():
-    """Tarjetas cuyo estado de cuenta vence dentro de
-    `statement_due_days_before` días -- distinto de `notify_due_items`, que
-    avisa cuota por cuota: esto es el PAGO DE CONTADO completo."""
+    """Tarjetas cuya fecha límite de pago (la de "pagar sin intereses") cae
+    dentro de `statement_due_days_before` días y a las que todavía les falta
+    pagar algo del último corte (ver `statement_payoff`) -- distinto de
+    `notify_due_items`, que avisa cuota por cuota. Las compras hechas después
+    del corte no entran: esas se cobran en el corte siguiente. Si ya se pagó
+    el saldo al corte, no hay nada que avisar."""
     from apps.accounts.models import Wallet
-    from apps.accounts.services import credit_card_statement
+    from apps.accounts.services import statement_payoff
 
     today = timezone.localdate()
 
@@ -382,26 +385,30 @@ def notify_statement_due():
             .filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
         )
         for wallet in wallets:
-            statement = credit_card_statement(wallet)
-            due_date = statement["payment_due_date"] if statement else None
-            if due_date is None or statement["total_due"] <= 0:
+            payoff = statement_payoff(wallet, as_of=today)
+            if payoff is None or payoff["remaining"] <= 0:
                 continue
+            due_date = payoff["payment_due_date"]
             days_left = (due_date - today).days
             if not (0 <= days_left <= pref.statement_due_days_before):
                 continue
 
+            when = "hoy" if days_left == 0 else f"antes del {due_date.strftime('%d/%m')}"
             dedupe_key = f"{wallet.id}:{due_date.isoformat()}"
             _notify(
                 user, workspace, NotificationLog.KIND_STATEMENT_DUE, dedupe_key,
-                title="Estado de cuenta por vencer",
+                title="Fecha límite de pago",
                 body=(
-                    f"{wallet.name}: {_fmt_amount(statement['total_due'])} {wallet.currency} "
-                    f"vence el {due_date.strftime('%d/%m')} — {workspace.name}"
+                    f"{wallet.name}: pagá {_fmt_amount(payoff['remaining'])} {wallet.currency} "
+                    f"{when} para no generar intereses (corte del "
+                    f"{payoff['cutoff_date'].strftime('%d/%m')}) — {workspace.name}"
                 ),
                 data={
                     "type": NotificationLog.KIND_STATEMENT_DUE,
                     "workspace": str(workspace.id),
                     "wallet": str(wallet.id),
+                    "amount": _fmt_amount(payoff["remaining"]),
+                    "due_date": due_date.isoformat(),
                 },
                 devices=devices,
             )
