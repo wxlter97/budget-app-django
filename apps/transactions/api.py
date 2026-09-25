@@ -796,6 +796,31 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             for c, v in sorted(by_currency.items())
         ])
 
+    @action(detail=False, methods=["get"])
+    def breakdown(self, request):
+        """Cuántos movimientos cumplen los mismos filtros que la lista, y sus
+        ingresos/gastos por categoría y moneda (de mayor a menor). Para el
+        "ver por categoría" de una búsqueda: igual que `totals`, sumar en el
+        cliente sólo lo cargado daría un número distinto según el scroll."""
+        qs = self.filter_queryset(self.get_queryset()).order_by()
+        count = qs.values("id").distinct().count()
+        rows = (
+            qs.filter(type__in=[Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE])
+            .values("category", "currency", "type")
+            .annotate(total=Sum("amount"), n=Count("id", distinct=True))
+        )
+        groups: dict[tuple, dict] = {}
+        for r in rows:
+            key = (r["category"], r["currency"])
+            g = groups.setdefault(key, {
+                "category": r["category"], "currency": r["currency"],
+                "income": Decimal("0"), "expenses": Decimal("0"), "count": 0,
+            })
+            g["income" if r["type"] == Transaction.TYPE_INCOME else "expenses"] += r["total"]
+            g["count"] += r["n"]
+        ordered = sorted(groups.values(), key=lambda g: -(g["income"] + g["expenses"]))
+        return Response({"count": count, "categories": ordered})
+
     # Definidas en `services` porque el mismo archivo entra también por
     # `/ai/receipt/` y las dos puertas tienen que aceptar lo mismo.
     RECEIPT_MAX_SIZE = services.RECEIPT_MAX_SIZE

@@ -528,44 +528,238 @@ def credit_card_statement(wallet, as_of=None):
     }
 
 
-def _credits_between(wallet, after, until) -> Decimal:
-    """Abonos a ``wallet`` (ingresos + transferencias entrantes) con fecha en
-    ``(after, until]`` -- en una tarjeta, los pagos hechos desde un corte."""
+def _flows_between(wallet, after, until, *, exclude_installments=False):
+    """(abonos, cargos) de ``wallet`` con fecha en ``(after, until]``:
+    abonos = ingresos + transferencias entrantes; cargos = gastos +
+    transferencias salientes. En una tarjeta, abonos son los pagos y cargos
+    las compras. ``exclude_installments`` deja afuera la transacción del
+    total de cada compra a plazo (en un estado se cobra cuota por cuota)."""
     from apps.transactions.models import Transaction
 
-    income = Transaction.objects.filter(
-        wallet=wallet, type=Transaction.TYPE_INCOME, date__gt=after, date__lte=until
+    window = {"date__gt": after, "date__lte": until}
+    own = Transaction.objects.filter(wallet=wallet, **window)
+    if exclude_installments:
+        own = own.filter(installment_purchase__isnull=True)
+    rows = own.values("type").annotate(total=Sum("amount", output_field=_MONEY))
+    credits = debits = Decimal("0")
+    for r in rows:
+        if r["type"] == Transaction.TYPE_INCOME:
+            credits += r["total"]
+        else:  # gasto o transferencia saliente
+            debits += r["total"]
+    credits += Transaction.objects.filter(
+        to_wallet=wallet, type=Transaction.TYPE_TRANSFER, **window
     ).aggregate(total=Sum("amount", output_field=_MONEY))["total"] or Decimal("0")
-    incoming = Transaction.objects.filter(
-        to_wallet=wallet, type=Transaction.TYPE_TRANSFER, date__gt=after, date__lte=until
-    ).aggregate(total=Sum("amount", output_field=_MONEY))["total"] or Decimal("0")
-    return income + incoming
+    return credits, debits
+
+
+def _credits_between(wallet, after, until) -> Decimal:
+    """Abonos a ``wallet`` con fecha en ``(after, until]`` -- en una tarjeta,
+    los pagos hechos desde un corte."""
+    return _flows_between(wallet, after, until)[0]
+
+
+def _installments_due_on(wallet, cutoff_date) -> Decimal:
+    """Cuotas de las compras a plazo de ``wallet`` que se cobran en el corte
+    ``cutoff_date`` (ver `installment_schedule`)."""
+    from apps.transactions.models import InstallmentPurchase
+
+    total = Decimal("0")
+    for purchase in InstallmentPurchase.objects.filter(wallet=wallet, start_date__lte=cutoff_date):
+        for row in installment_schedule(purchase):
+            if row["cutoff_date"] == cutoff_date:
+                total += row["amount"]
+    return total
+
+
+def _money(value) -> Decimal:
+    return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def minimum_payment(wallet, statement_balance):
+    """Pago mínimo de un estado: ``max(piso, % del saldo)``, nunca más que el
+    saldo. ``None`` si la tarjeta no tiene ni % ni piso configurado -- cada
+    banco lo calcula distinto y no inventamos una regla."""
+    if wallet.min_payment_pct is None and wallet.min_payment_floor is None:
+        return None
+    if statement_balance <= 0:
+        return Decimal("0.00")
+    by_pct = statement_balance * (wallet.min_payment_pct or Decimal("0")) / 100
+    floor = wallet.min_payment_floor or Decimal("0")
+    return _money(min(max(by_pct, floor), statement_balance))
+
+
+def _monthly_interest(wallet, principal):
+    """Interés de un mes sobre ``principal`` con la tasa anual de la tarjeta
+    (`interest_rate`, %). ``None`` sin tasa configurada."""
+    if not wallet.interest_rate:
+        return None
+    if principal <= 0:
+        return Decimal("0.00")
+    return _money(principal * wallet.interest_rate / 100 / 12)
+
+
+STATUS_PAID = "paid"
+STATUS_MINIMUM_PAID = "minimum_paid"
+STATUS_PENDING = "pending"
+STATUS_OVERDUE = "overdue"
+STATUS_NOTHING_DUE = "nothing_due"
+
+
+def statement_cycle(wallet, cutoff_date, as_of=None):
+    """Estado de cuenta del ciclo que cierra en ``cutoff_date``, como lo
+    imprime un banco:
+
+        saldo_anterior + compras + cuotas_del_ciclo - pagos (+ ajustes)
+            = saldo_al_corte (pago de contado)
+
+    - ``previous_balance``: saldo al corte anterior.
+    - ``purchases``: compras y cargos del ciclo, SIN el total de las compras
+      a plazo (esas entran cuota por cuota, en ``installments_charged``).
+    - ``payments``: pagos hechos DENTRO del ciclo.
+    - ``adjustments``: lo que haga falta para cuadrar con el saldo real (0
+      salvo casos raros: un saldo inicial editado, una compra a plazo sin su
+      transacción...). Se expone en vez de esconderlo.
+    - ``paid_since_cutoff``: pagos hechos DESPUÉS del corte (hasta
+      ``as_of`` o la fecha límite, lo que llegue primero) -- son los que
+      cuentan para este estado.
+
+    ``None`` si la tarjeta no tiene fecha de corte."""
+    if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day:
+        return None
+    as_of = as_of or timezone.localdate()
+    prev_cutoff = _cutoff_on_or_before(wallet.billing_cycle_day, cutoff_date - timedelta(days=1))
+    due_date = _payment_due_date(wallet, cutoff_date)
+
+    balance = max(credit_card_statement(wallet, as_of=cutoff_date)["total_due"], Decimal("0"))
+    previous = max(credit_card_statement(wallet, as_of=prev_cutoff)["total_due"], Decimal("0"))
+    payments, purchases = _flows_between(wallet, prev_cutoff, cutoff_date, exclude_installments=True)
+    installments = _installments_due_on(wallet, cutoff_date)
+    adjustments = balance - (previous + purchases + installments - payments)
+
+    pay_until = min(as_of, due_date) if due_date else as_of
+    paid = _credits_between(wallet, cutoff_date, pay_until) if pay_until > cutoff_date else Decimal("0")
+    remaining = max(balance - paid, Decimal("0"))
+    minimum = minimum_payment(wallet, balance)
+    minimum_remaining = max(minimum - paid, Decimal("0")) if minimum is not None else None
+
+    if balance <= 0:
+        status = STATUS_NOTHING_DUE
+    elif remaining <= 0:
+        status = STATUS_PAID
+    elif due_date and as_of > due_date:
+        status = STATUS_OVERDUE if minimum_remaining is None or minimum_remaining > 0 else STATUS_MINIMUM_PAID
+    elif minimum_remaining is not None and minimum_remaining <= 0:
+        status = STATUS_MINIMUM_PAID
+    else:
+        status = STATUS_PENDING
+
+    return {
+        "period_start": prev_cutoff + timedelta(days=1),
+        "cutoff_date": cutoff_date,
+        "payment_due_date": due_date,
+        "previous_balance": previous,
+        "purchases": purchases,
+        "installments_charged": installments,
+        "payments": payments,
+        "adjustments": adjustments,
+        "statement_balance": balance,
+        "minimum_payment": minimum,
+        "paid_since_cutoff": paid,
+        "remaining": remaining,
+        "minimum_remaining": minimum_remaining,
+        "status": status,
+        # Estimación simple (un mes, tasa anual / 12) sobre lo que quedaría
+        # financiado: pagando sólo el mínimo, o lo que falta hoy.
+        "interest_if_minimum": (
+            _monthly_interest(wallet, balance - minimum) if minimum is not None else None
+        ),
+        "interest_if_unpaid": _monthly_interest(wallet, remaining),
+    }
+
+
+def statement_cycles(wallet, count=6, as_of=None):
+    """Los últimos ``count`` estados (el más reciente primero)."""
+    if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day:
+        return []
+    as_of = as_of or timezone.localdate()
+    cutoff = _cutoff_on_or_before(wallet.billing_cycle_day, as_of)
+    cycles = []
+    for _ in range(count):
+        cycles.append(statement_cycle(wallet, cutoff, as_of=as_of))
+        cutoff = _cutoff_on_or_before(wallet.billing_cycle_day, cutoff - timedelta(days=1))
+    return cycles
+
+
+def unbilled_activity(wallet, as_of=None):
+    """Lo que va al PRÓXIMO estado: compras desde el último corte (sin el
+    total de las compras a plazo) + las cuotas que se cobran en el próximo
+    corte. No se paga ahora -- es la otra mitad de "del corte / después del
+    corte"."""
+    as_of = as_of or timezone.localdate()
+    cutoff = _cutoff_on_or_before(wallet.billing_cycle_day, as_of)
+    next_cutoff = _next_cutoff(wallet.billing_cycle_day, cutoff)
+    _, purchases = _flows_between(wallet, cutoff, as_of, exclude_installments=True)
+    installments = _installments_due_on(wallet, next_cutoff)
+    return {
+        "since": cutoff + timedelta(days=1),
+        "next_cutoff_date": next_cutoff,
+        "purchases": purchases,
+        "installments_next": installments,
+        "total": purchases + installments,
+    }
 
 
 def statement_payoff(wallet, as_of=None):
-    """Lo que falta pagar del ÚLTIMO corte para no generar intereses, como en
-    un estado de cuenta real -- distinto de `credit_card_statement`, que mira
-    el saldo de HOY (incluye compras posteriores al corte, que recién se
-    cobran en el corte siguiente):
-
-        saldo_al_corte  = pago de contado calculado AL DÍA del corte
-        pendiente       = saldo_al_corte - abonos hechos desde el corte
-
-    ``None`` si la tarjeta no tiene corte o fecha de pago configurados."""
-    statement = credit_card_statement(wallet, as_of=as_of)
-    if statement is None or statement["payment_due_date"] is None:
+    """Lo que falta pagar del ÚLTIMO corte para no generar intereses -- ver
+    `statement_cycle`. ``None`` si la tarjeta no tiene corte o fecha de pago
+    configurados."""
+    if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day or not wallet.payment_due_day:
         return None
     as_of = as_of or timezone.localdate()
-    cutoff = statement["cutoff_date"]
-    at_cutoff = credit_card_statement(wallet, as_of=cutoff)
-    statement_balance = max(at_cutoff["total_due"], Decimal("0"))
-    paid = _credits_between(wallet, cutoff, as_of)
+    return statement_cycle(wallet, _cutoff_on_or_before(wallet.billing_cycle_day, as_of), as_of=as_of)
+
+
+def _previous_period(start, end):
+    """El período anterior de igual forma: el mes calendario anterior si
+    ``start..end`` es un mes completo; si no, los mismos días justo antes."""
+    last_day = calendar.monthrange(end.year, end.month)[1]
+    if start.day == 1 and end.day == last_day and start.year == end.year and start.month == end.month:
+        prev_end = start - timedelta(days=1)
+        return prev_end.replace(day=1), prev_end
+    length = (end - start).days + 1
+    return start - timedelta(days=length), start - timedelta(days=1)
+
+
+def wallet_period_summary(wallet, start, end):
+    """Saldo inicial → entradas → salidas → saldo final de ``wallet`` entre
+    ``start`` y ``end`` (inclusive), como un extracto bancario, más las
+    mismas entradas/salidas del período anterior para comparar. Cuenta
+    transferencias (entrantes/salientes): acá importa el saldo, no el
+    presupuesto."""
+    from apps.transactions.models import Transaction
+
+    opening = _balance_as_of(wallet, start - timedelta(days=1))
+    inflows, outflows = _flows_between(wallet, start - timedelta(days=1), end)
+    prev_start, prev_end = _previous_period(start, end)
+    prev_in, prev_out = _flows_between(wallet, prev_start - timedelta(days=1), prev_end)
+    count = Transaction.objects.filter(
+        Q(wallet=wallet) | Q(to_wallet=wallet), date__gte=start, date__lte=end
+    ).count()
     return {
-        "cutoff_date": cutoff,
-        "payment_due_date": statement["payment_due_date"],
-        "statement_balance": statement_balance,
-        "paid_since_cutoff": paid,
-        "remaining": max(statement_balance - paid, Decimal("0")),
+        "date_after": start,
+        "date_before": end,
+        "opening_balance": opening,
+        "inflows": inflows,
+        "outflows": outflows,
+        "closing_balance": opening + inflows - outflows,
+        "count": count,
+        "previous": {
+            "date_after": prev_start,
+            "date_before": prev_end,
+            "inflows": prev_in,
+            "outflows": prev_out,
+        },
     }
 
 

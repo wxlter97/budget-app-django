@@ -207,7 +207,7 @@ def resolve_notifications(kind, related_object_id, *, users=None):
     qs.update(status=Notification.STATUS_RESOLVED)
 
 
-def _notify(user, workspace, kind, dedupe_key, *, title, body, data, devices):
+def _notify(user, workspace, kind, dedupe_key, *, title, body, data, devices, related_object_id=""):
     """Registra el aviso (una vez por ocurrencia, ver ``_mark_sent``), crea
     la fila del centro de notificaciones, y lo manda por push si el usuario
     tiene algún dispositivo registrado -- las tres cosas juntas para no
@@ -227,7 +227,10 @@ def _notify(user, workspace, kind, dedupe_key, *, title, body, data, devices):
         return
     if _mark_sent(user, workspace, kind, dedupe_key):
         return
-    notify_user(user, kind=kind, title=title, body=body, workspace=workspace, data=data)
+    notify_user(
+        user, kind=kind, title=title, body=body, workspace=workspace, data=data,
+        related_object_id=related_object_id,
+    )
     if devices:
         send_push(devices, title=title, body=body, data=data)
 
@@ -358,15 +361,38 @@ def notify_low_balance():
             )
 
 
+# Días después del corte / de la fecha límite en que todavía se avisa (por
+# si el job diario no corrió justo ese día).
+STATEMENT_CLOSED_GRACE_DAYS = 2
+STATEMENT_OVERDUE_GRACE_DAYS = 3
+
+
+def statement_related_id(wallet, cutoff_date) -> str:
+    """`related_object_id` de los avisos de un estado de cuenta: una
+    tarjeta + un corte. Registrar el pago lo resuelve (ver
+    `resolve_paid_statement_notifications`)."""
+    return f"{wallet.id}:{cutoff_date.isoformat()}"
+
+
+def _money_text(amount, currency) -> str:
+    return f"{_fmt_amount(amount)} {currency}"
+
+
 def notify_statement_due():
-    """Tarjetas cuya fecha límite de pago (la de "pagar sin intereses") cae
-    dentro de `statement_due_days_before` días y a las que todavía les falta
-    pagar algo del último corte (ver `statement_payoff`) -- distinto de
-    `notify_due_items`, que avisa cuota por cuota. Las compras hechas después
-    del corte no entran: esas se cobran en el corte siguiente. Si ya se pagó
-    el saldo al corte, no hay nada que avisar."""
+    """Avisos del estado de cuenta de cada tarjeta, como los manda un banco:
+
+    1. **Cierre** (el día del corte): saldo al corte, mínimo y fecha límite.
+    2. **Recordatorio** `statement_due_days_before` días antes de la fecha
+       límite, y otro **el mismo día** -- sólo si todavía falta pagar algo
+       del corte (las compras posteriores al corte no cuentan: van al
+       próximo estado).
+    3. **Vencido**: pasada la fecha límite sin haber cubierto el mínimo (o
+       el total, si no hay mínimo configurado).
+
+    Registrar el pago resuelve los avisos pendientes de ese corte (ver
+    `resolve_paid_statement_notifications`)."""
     from apps.accounts.models import Wallet
-    from apps.accounts.services import statement_payoff
+    from apps.accounts.services import _credits_between, _cutoff_on_or_before, statement_cycle
 
     today = timezone.localdate()
 
@@ -385,33 +411,106 @@ def notify_statement_due():
             .filter(Q(visibility=Wallet.VISIBILITY_SHARED) | Q(owner=user))
         )
         for wallet in wallets:
-            payoff = statement_payoff(wallet, as_of=today)
-            if payoff is None or payoff["remaining"] <= 0:
+            cutoff = _cutoff_on_or_before(wallet.billing_cycle_day, today)
+            cycle = statement_cycle(wallet, cutoff, as_of=today)
+            if cycle["statement_balance"] <= 0:
                 continue
-            due_date = payoff["payment_due_date"]
-            days_left = (due_date - today).days
-            if not (0 <= days_left <= pref.statement_due_days_before):
-                continue
+            cur = wallet.currency
+            due = cycle["payment_due_date"]
+            minimum = cycle["minimum_payment"]
+            related = statement_related_id(wallet, cutoff)
+            data = {
+                "type": None,
+                "workspace": str(workspace.id),
+                "wallet": str(wallet.id),
+                "cutoff_date": cutoff.isoformat(),
+                "amount": _fmt_amount(cycle["remaining"]),
+                "statement_balance": _fmt_amount(cycle["statement_balance"]),
+            }
+            if due:
+                data["due_date"] = due.isoformat()
+            if minimum is not None:
+                data["minimum"] = _fmt_amount(minimum)
 
-            when = "hoy" if days_left == 0 else f"antes del {due_date.strftime('%d/%m')}"
-            dedupe_key = f"{wallet.id}:{due_date.isoformat()}"
-            _notify(
-                user, workspace, NotificationLog.KIND_STATEMENT_DUE, dedupe_key,
-                title="Fecha límite de pago",
-                body=(
-                    f"{wallet.name}: pagá {_fmt_amount(payoff['remaining'])} {wallet.currency} "
-                    f"{when} para no generar intereses (corte del "
-                    f"{payoff['cutoff_date'].strftime('%d/%m')}) — {workspace.name}"
-                ),
-                data={
-                    "type": NotificationLog.KIND_STATEMENT_DUE,
-                    "workspace": str(workspace.id),
-                    "wallet": str(wallet.id),
-                    "amount": _fmt_amount(payoff["remaining"]),
-                    "due_date": due_date.isoformat(),
-                },
-                devices=devices,
-            )
+            def send(kind, dedupe_key, title, body):
+                _notify(
+                    user, workspace, kind, dedupe_key,
+                    title=title, body=f"{body} — {workspace.name}",
+                    data={**data, "type": kind}, devices=devices, related_object_id=related,
+                )
+
+            # 1. Cierre.
+            if 0 <= (today - cutoff).days <= STATEMENT_CLOSED_GRACE_DAYS and cycle["remaining"] > 0:
+                parts = [f"{wallet.name}: saldo al corte {_money_text(cycle['statement_balance'], cur)}"]
+                if minimum is not None:
+                    parts.append(f"mínimo {_money_text(minimum, cur)}")
+                text = ", ".join(parts) + "."
+                if due:
+                    text += f" Fecha límite: {due.strftime('%d/%m')}."
+                send(NotificationLog.KIND_STATEMENT_CLOSED, related, "Cerró tu estado de cuenta", text)
+
+            if due is None:
+                continue
+            days_left = (due - today).days
+
+            # 2. Recordatorios escalonados.
+            if cycle["remaining"] > 0 and 0 <= days_left <= pref.statement_due_days_before:
+                stage = "today" if days_left == 0 else "before"
+                when = "hoy" if days_left == 0 else f"antes del {due.strftime('%d/%m')}"
+                text = (
+                    f"{wallet.name}: pagá {_money_text(cycle['remaining'], cur)} {when} "
+                    f"para no generar intereses (corte del {cutoff.strftime('%d/%m')})."
+                )
+                if cycle["minimum_remaining"]:
+                    text += f" Mínimo: {_money_text(cycle['minimum_remaining'], cur)}."
+                send(
+                    NotificationLog.KIND_STATEMENT_DUE,
+                    f"{related}:{stage}",
+                    "Hoy vence el pago de tu tarjeta" if days_left == 0 else "Fecha límite de pago",
+                    text,
+                )
+
+            # 3. Vencido. Acá sí cuentan los pagos tardíos: si ya pagó
+            # (aunque tarde), no hay nada que reclamarle.
+            if -STATEMENT_OVERDUE_GRACE_DAYS <= days_left < 0:
+                paid = _credits_between(wallet, cutoff, today)
+                target = minimum if minimum is not None else cycle["statement_balance"]
+                if paid >= target:
+                    continue
+                owed = cycle["statement_balance"] - paid
+                what = "el mínimo" if minimum is not None else "el pago"
+                send(
+                    NotificationLog.KIND_STATEMENT_OVERDUE,
+                    related,
+                    "Pago de tarjeta vencido",
+                    f"{wallet.name}: no registramos {what} que vencía el {due.strftime('%d/%m')}. "
+                    f"Pendiente: {_money_text(owed, cur)}. Si ya pagaste, registrá el pago.",
+                )
+
+
+def resolve_paid_statement_notifications(wallet):
+    """Al registrar un abono a una tarjeta: si ya cubre el saldo al corte,
+    resuelve TODOS los avisos de ese corte; si sólo cubre el mínimo, al menos
+    el de "vencido". Cuenta también pagos después de la fecha límite (acá
+    lo que importa es si queda algo que reclamar)."""
+    from apps.accounts.services import _credits_between, _cutoff_on_or_before, statement_cycle
+
+    if not wallet.billing_cycle_day:
+        return
+    today = timezone.localdate()
+    cutoff = _cutoff_on_or_before(wallet.billing_cycle_day, today)
+    cycle = statement_cycle(wallet, cutoff, as_of=today)
+    paid = _credits_between(wallet, cutoff, today)
+    related = statement_related_id(wallet, cutoff)
+    if paid >= cycle["statement_balance"]:
+        for kind in (
+            Notification.KIND_STATEMENT_CLOSED,
+            Notification.KIND_STATEMENT_DUE,
+            Notification.KIND_STATEMENT_OVERDUE,
+        ):
+            resolve_notifications(kind, related)
+    elif cycle["minimum_payment"] is not None and paid >= cycle["minimum_payment"]:
+        resolve_notifications(Notification.KIND_STATEMENT_OVERDUE, related)
 
 
 def _monthly_summary_text(user, workspace, insights):

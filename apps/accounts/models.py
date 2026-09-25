@@ -156,6 +156,17 @@ class Wallet(BaseModel):
     interest_rate = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True
     )
+    # Pago mínimo del estado de cuenta = max(piso, % del saldo al corte),
+    # nunca más que el saldo (ver `services.minimum_payment`). Ambos nulos =
+    # no se muestra mínimo: cada banco lo calcula distinto.
+    min_payment_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="% del saldo al corte (tarjetas)",
+    )
+    min_payment_floor = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        help_text="Monto mínimo fijo (tarjetas)",
+    )
     due_date = models.DateField(null=True, blank=True)
     # Banco emisor (opcional). Referencia por string a `email_import` para no
     # crear un import circular (esa app ya importa `Wallet`). Sirve para

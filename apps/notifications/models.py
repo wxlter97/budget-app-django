@@ -89,6 +89,10 @@ class NotificationLog(BaseModel):
     KIND_BUDGET_THRESHOLD = "budget_threshold"
     KIND_LOW_BALANCE = "low_balance"
     KIND_STATEMENT_DUE = "statement_due"
+    # Estado de cuenta de tarjeta: el día del corte ("cerró tu estado") y
+    # después de la fecha límite sin el pago (ver `notify_statement_due`).
+    KIND_STATEMENT_CLOSED = "statement_closed"
+    KIND_STATEMENT_OVERDUE = "statement_overdue"
     # Patrón de comportamiento de gasto detectado (ver `apps.reports.
     # services.behavior_insights`) -- un solo kind para los seis patrones,
     # el detalle va en `title`/`body`.
@@ -103,7 +107,9 @@ class NotificationLog(BaseModel):
         (KIND_INSTALLMENT_DUE, "Cuota por vencer"),
         (KIND_BUDGET_THRESHOLD, "Presupuesto por agotarse"),
         (KIND_LOW_BALANCE, "Saldo bajo"),
-        (KIND_STATEMENT_DUE, "Estado de cuenta por vencer"),
+        (KIND_STATEMENT_DUE, "Fecha límite de pago de tarjeta"),
+        (KIND_STATEMENT_CLOSED, "Cierre de estado de cuenta"),
+        (KIND_STATEMENT_OVERDUE, "Pago de tarjeta vencido"),
         (KIND_INSIGHT, "Patrón de gasto detectado"),
         (KIND_MONTHLY_SUMMARY, "Resumen mensual"),
     ]
@@ -169,6 +175,8 @@ class Notification(BaseModel):
     KIND_BUDGET_THRESHOLD = NotificationLog.KIND_BUDGET_THRESHOLD
     KIND_LOW_BALANCE = NotificationLog.KIND_LOW_BALANCE
     KIND_STATEMENT_DUE = NotificationLog.KIND_STATEMENT_DUE
+    KIND_STATEMENT_CLOSED = NotificationLog.KIND_STATEMENT_CLOSED
+    KIND_STATEMENT_OVERDUE = NotificationLog.KIND_STATEMENT_OVERDUE
     KIND_INSIGHT = NotificationLog.KIND_INSIGHT
     KIND_MONTHLY_SUMMARY = NotificationLog.KIND_MONTHLY_SUMMARY
     KIND_CHOICES = [

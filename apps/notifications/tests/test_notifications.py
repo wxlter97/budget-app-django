@@ -413,20 +413,57 @@ class NotifyStatementDueTests(NotificationServicesTestCase):
 
     @patch("apps.notifications.services.send_push")
     def test_no_warning_far_from_due_date(self, mock_send):
-        # Todavía a 9 días del vencimiento -- más lejos que el default (3).
+        # A 6 días del vencimiento -- más lejos que el default (3) -- y ya
+        # pasado el aviso de cierre (el corte fue hace 3 días).
         with patch(
-            "django.utils.timezone.localdate", return_value=self.DUE_DATE - timedelta(days=9)
+            "django.utils.timezone.localdate", return_value=self.DUE_DATE - timedelta(days=6)
         ):
             services.notify_statement_due()
         mock_send.assert_not_called()
 
     @patch("apps.notifications.services.send_push")
-    def test_no_warning_after_due_date_passed(self, mock_send):
+    def test_overdue_notice_after_due_date_without_payment(self, mock_send):
+        with patch(
+            "django.utils.timezone.localdate", return_value=self.DUE_DATE + timedelta(days=1)
+        ):
+            services.notify_statement_due()
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args.kwargs["title"], "Pago de tarjeta vencido")
+        self.assertEqual(mock_send.call_args.kwargs["data"]["type"], "statement_overdue")
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_overdue_notice_if_paid_late(self, mock_send):
+        self._pay_card("300.00", self.DUE_DATE + timedelta(days=1))
         with patch(
             "django.utils.timezone.localdate", return_value=self.DUE_DATE + timedelta(days=1)
         ):
             services.notify_statement_due()
         mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_no_warning_long_after_due_date(self, mock_send):
+        with patch(
+            "django.utils.timezone.localdate", return_value=self.DUE_DATE + timedelta(days=10)
+        ):
+            services.notify_statement_due()
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.send_push")
+    def test_closed_notice_on_cutoff_day(self, mock_send):
+        with patch("django.utils.timezone.localdate", return_value=dt.date(2026, 3, 1)):
+            services.notify_statement_due()
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args.kwargs["title"], "Cerró tu estado de cuenta")
+        self.assertIn("Fecha límite: 10/03", mock_send.call_args.kwargs["body"])
+
+    def test_payment_resolves_pending_statement_notifications(self):
+        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE), patch(
+            "apps.notifications.services.send_push"
+        ):
+            services.notify_statement_due()
+            self._pay_card("300.00", self.DUE_DATE)
+        n = Notification.objects.get(user=self.user, kind=Notification.KIND_STATEMENT_DUE)
+        self.assertEqual(n.status, Notification.STATUS_RESOLVED)
 
     @patch("apps.notifications.services.send_push")
     def test_no_warning_without_balance_due(self, mock_send):
@@ -444,12 +481,17 @@ class NotifyStatementDueTests(NotificationServicesTestCase):
         mock_send.assert_not_called()
 
     @patch("apps.notifications.services.send_push")
-    def test_does_not_rewarn_within_the_same_window(self, mock_send):
-        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE - timedelta(days=2)):
-            services.notify_statement_due()
-        with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE):
-            services.notify_statement_due()
-        self.assertEqual(mock_send.call_count, 1)
+    def test_escalates_once_before_and_once_on_the_day(self, mock_send):
+        for days_before in (3, 2, 0, 0):
+            with patch(
+                "django.utils.timezone.localdate",
+                return_value=self.DUE_DATE - timedelta(days=days_before),
+            ):
+                services.notify_statement_due()
+        self.assertEqual(
+            [c.kwargs["title"] for c in mock_send.call_args_list],
+            ["Fecha límite de pago", "Hoy vence el pago de tu tarjeta"],
+        )
 
     def _pay_card(self, amount, on):
         bank = Wallet.objects.create(workspace=self.workspace, name="Banco")
@@ -479,7 +521,7 @@ class NotifyStatementDueTests(NotificationServicesTestCase):
         data = mock_send.call_args.kwargs["data"]
         self.assertEqual(data["amount"], "200.00")
         self.assertEqual(data["due_date"], "2026-03-10")
-        self.assertEqual(mock_send.call_args.kwargs["title"], "Fecha límite de pago")
+        self.assertEqual(mock_send.call_args.kwargs["title"], "Hoy vence el pago de tu tarjeta")
         self.assertIn("para no generar intereses", mock_send.call_args.kwargs["body"])
 
 
