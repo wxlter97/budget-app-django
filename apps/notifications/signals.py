@@ -43,3 +43,34 @@ def notify_pending_invitations_on_user_created(sender, instance, created, **kwar
             },
             related_object_id=invitation.id,
         )
+
+
+def _resolve_card_payment(sender, instance, created, **kwargs):
+    """Un abono a una tarjeta con corte (transferencia entrante o ingreso)
+    puede dejar pagado su estado de cuenta: resuelve esos avisos en el
+    centro de notificaciones (ver `resolve_paid_statement_notifications`)."""
+    from apps.accounts.models import Wallet
+    from apps.transactions.models import Transaction
+
+    from .services import resolve_paid_statement_notifications
+
+    if instance.is_deleted:
+        return
+    if instance.type == Transaction.TYPE_TRANSFER:
+        target_id = instance.to_wallet_id
+    elif instance.type == Transaction.TYPE_INCOME:
+        target_id = instance.wallet_id
+    else:
+        return
+    wallet = Wallet.objects.filter(
+        id=target_id, kind=Wallet.KIND_CREDIT, billing_cycle_day__isnull=False
+    ).first()
+    if wallet is not None:
+        resolve_paid_statement_notifications(wallet)
+
+
+post_save.connect(
+    _resolve_card_payment,
+    sender="transactions.Transaction",
+    dispatch_uid="notifications_resolve_card_payment",
+)

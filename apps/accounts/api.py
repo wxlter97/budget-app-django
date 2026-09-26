@@ -20,6 +20,9 @@ from .services import (
     goal_projection,
     recompute_wallet_balance,
     savings_interest_projection,
+    statement_cycles,
+    unbilled_activity,
+    wallet_period_summary,
 )
 
 
@@ -85,6 +88,8 @@ class WalletSerializer(serializers.ModelSerializer):
             "billing_cycle_day",
             "payment_due_day",
             "interest_rate",
+            "min_payment_pct",
+            "min_payment_floor",
             "due_date",
             "counterparty",
             "bank_schema",
@@ -184,6 +189,12 @@ class WalletSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"savings_interest_rate": "Sólo aplica a carteras de ahorro."}
             )
+        pct = attrs.get("min_payment_pct")
+        if pct is not None and not (0 < pct <= 100):
+            raise serializers.ValidationError({"min_payment_pct": "Debe estar entre 0 y 100."})
+        floor = attrs.get("min_payment_floor")
+        if floor is not None and floor < 0:
+            raise serializers.ValidationError({"min_payment_floor": "No puede ser negativo."})
         return attrs
 
     def _sync_extra_cards(self, instance, extra_cards):
@@ -262,6 +273,54 @@ class CreditCardStatementSerializer(serializers.Serializer):
     installment_lines = StatementInstallmentLineSerializer(many=True)
 
 
+_M = {"max_digits": 16, "decimal_places": 2}
+
+
+class StatementCycleSerializer(serializers.Serializer):
+    period_start = serializers.DateField()
+    cutoff_date = serializers.DateField()
+    payment_due_date = serializers.DateField(allow_null=True)
+    previous_balance = serializers.DecimalField(**_M)
+    purchases = serializers.DecimalField(**_M)
+    installments_charged = serializers.DecimalField(**_M)
+    payments = serializers.DecimalField(**_M)
+    adjustments = serializers.DecimalField(**_M)
+    statement_balance = serializers.DecimalField(**_M)
+    minimum_payment = serializers.DecimalField(**_M, allow_null=True)
+    paid_since_cutoff = serializers.DecimalField(**_M)
+    remaining = serializers.DecimalField(**_M)
+    minimum_remaining = serializers.DecimalField(**_M, allow_null=True)
+    status = serializers.CharField()
+    interest_if_minimum = serializers.DecimalField(**_M, allow_null=True)
+    interest_if_unpaid = serializers.DecimalField(**_M, allow_null=True)
+
+
+class UnbilledActivitySerializer(serializers.Serializer):
+    since = serializers.DateField()
+    next_cutoff_date = serializers.DateField()
+    purchases = serializers.DecimalField(**_M)
+    installments_next = serializers.DecimalField(**_M)
+    total = serializers.DecimalField(**_M)
+
+
+class _PreviousPeriodSerializer(serializers.Serializer):
+    date_after = serializers.DateField()
+    date_before = serializers.DateField()
+    inflows = serializers.DecimalField(**_M)
+    outflows = serializers.DecimalField(**_M)
+
+
+class WalletPeriodSummarySerializer(serializers.Serializer):
+    date_after = serializers.DateField()
+    date_before = serializers.DateField()
+    opening_balance = serializers.DecimalField(**_M)
+    inflows = serializers.DecimalField(**_M)
+    outflows = serializers.DecimalField(**_M)
+    closing_balance = serializers.DecimalField(**_M)
+    count = serializers.IntegerField()
+    previous = _PreviousPeriodSerializer()
+
+
 class SavingsInterestProjectionSerializer(serializers.Serializer):
     opening_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
     closing_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
@@ -272,6 +331,10 @@ class SavingsInterestProjectionSerializer(serializers.Serializer):
 
 
 class CreditCardStatementSummarySerializer(CreditCardStatementSerializer):
+    statement_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
+    remaining = serializers.DecimalField(max_digits=16, decimal_places=2)
+    minimum_remaining = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    status = serializers.CharField()
     wallet_id = serializers.UUIDField()
     wallet_name = serializers.CharField()
     currency = serializers.CharField()
@@ -452,6 +515,50 @@ class WalletViewSet(WorkspaceScopedViewSet):
                 status=404,
             )
         return Response(CreditCardStatementSerializer(data).data)
+
+    @action(detail=True, methods=["get"], url_path="statement-cycles")
+    def statement_cycles(self, request, pk=None):
+        """Los últimos estados de cuenta de esta tarjeta, uno por corte (el
+        más reciente primero; `?count=` 1-24, 6 por defecto), más lo que ya
+        va al próximo estado -- ver `services.statement_cycle`."""
+        from apps.billing.services import require_feature_for_workspace
+
+        require_feature_for_workspace(self.request.workspace, "statements")
+        wallet = self._owned_wallet(pk)
+        if wallet is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day:
+            return Response(
+                {"detail": "Esta cartera no es una tarjeta de crédito con fecha de corte configurada."},
+                status=404,
+            )
+        try:
+            count = min(max(int(request.query_params.get("count", 6)), 1), 24)
+        except ValueError:
+            return Response({"detail": "count inválido."}, status=400)
+        return Response(
+            {
+                "cycles": StatementCycleSerializer(statement_cycles(wallet, count=count), many=True).data,
+                "unbilled": UnbilledActivitySerializer(unbilled_activity(wallet)).data,
+            }
+        )
+
+    @action(detail=True, methods=["get"], url_path="period-summary")
+    def period_summary(self, request, pk=None):
+        """Saldo inicial / entradas / salidas / saldo final de esta cartera
+        entre `?date_after=` y `?date_before=` (inclusive), más el período
+        anterior para comparar -- ver `services.wallet_period_summary`."""
+        wallet = self._owned_wallet(pk)
+        if wallet is None:
+            return Response({"detail": "No encontrada."}, status=404)
+        try:
+            start = date_cls.fromisoformat(request.query_params["date_after"])
+            end = date_cls.fromisoformat(request.query_params["date_before"])
+        except (KeyError, ValueError):
+            return Response({"detail": "date_after y date_before son obligatorias (AAAA-MM-DD)."}, status=400)
+        if end < start or (end - start).days > 3660:
+            return Response({"detail": "Rango de fechas inválido."}, status=400)
+        return Response(WalletPeriodSummarySerializer(wallet_period_summary(wallet, start, end)).data)
 
     @action(detail=True, methods=["get"], url_path="interest-projection")
     def interest_projection(self, request, pk=None):

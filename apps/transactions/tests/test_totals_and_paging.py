@@ -80,6 +80,35 @@ class TotalsAndPagingTests(APITestCase):
         Transaction.objects.create(wallet=w, category=c, amount=Decimal("99"), date=dt.date(2026, 8, 1))
         self.assertEqual(self._totals(), {})
 
+    def test_breakdown_counts_and_groups_by_category(self):
+        self._txn(self.usd, self.pay, "1000")
+        self._txn(self.usd, self.food, "30")
+        self._txn(self.usd, self.food, "20")
+        Transaction.objects.create(
+            type=Transaction.TYPE_TRANSFER, wallet=self.usd, to_wallet=self.eur,
+            amount=Decimal("5"), date=dt.date(2026, 8, 2),
+        )
+        res = self.client.get(
+            "/api/v1/transactions/breakdown/", {"search": ""}, **{HEADER: str(self.ws.id)}
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # La transferencia cuenta como movimiento, pero no entra al desglose.
+        self.assertEqual(res.data["count"], 4)
+        first, second = res.data["categories"]
+        self.assertEqual(first["category"], self.pay.id)
+        self.assertEqual(Decimal(first["income"]), Decimal("1000"))
+        self.assertEqual(second["count"], 2)
+        self.assertEqual(Decimal(second["expenses"]), Decimal("50"))
+
+    def test_breakdown_uses_the_same_filters_as_the_list(self):
+        self._txn(self.usd, self.food, "30")
+        self._txn(self.usd, self.pay, "100")
+        res = self.client.get(
+            "/api/v1/transactions/breakdown/", {"type": "expense"}, **{HEADER: str(self.ws.id)}
+        )
+        self.assertEqual(res.data["count"], 1)
+        self.assertEqual(len(res.data["categories"]), 1)
+
     def test_pages_do_not_repeat_or_skip_rows_with_equal_dates(self):
         # Todas el mismo día y creadas casi a la vez: el desempate por id evita que
         # el orden cambie entre una página y la siguiente.
