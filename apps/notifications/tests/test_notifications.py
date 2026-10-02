@@ -620,6 +620,8 @@ class NotifyMonthlySummaryTests(NotificationServicesTestCase):
         notif = Notification.objects.get(user=self.user, kind=Notification.KIND_MONTHLY_SUMMARY)
         self.assertEqual(notif.title, "Tu marzo")
         self.assertEqual(notif.body, "Gastaste más los fines de semana.")
+        # "Ver resumen" abre el mes del que habla, no el actual (vacío el día 1).
+        self.assertEqual(notif.data["month"], "2026-03")
         self.assertTrue(
             NotificationLog.objects.filter(
                 user=self.user, kind=NotificationLog.KIND_MONTHLY_SUMMARY, dedupe_key=f"{self.workspace.id}:2026-03"
@@ -641,6 +643,9 @@ class NotifyMonthlySummaryTests(NotificationServicesTestCase):
         self.assertEqual(notif.title, "Tu resumen del mes")
         self.assertIn("Gastás más los fines de semana", notif.body)
         self.assertIn("Tenés un día pico", notif.body)
+        # Una línea por patrón, no un párrafo corrido.
+        self.assertEqual(len(notif.body.splitlines()), 2)
+        self.assertTrue(all(line.startswith("• ") for line in notif.body.splitlines()))
 
     @patch("apps.notifications.services.behavior_insights")
     def test_does_not_run_outside_the_first_of_the_month(self, mock_insights):

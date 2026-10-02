@@ -116,6 +116,40 @@ class CloseMonthTests(TestCase):
         provision = CategoryProvision.objects.get(category=self.food)
         self.assertEqual(provision.accumulated_amount, Decimal("200.00"))
 
+    def test_rollover_off_does_not_accumulate(self):
+        self.food.rollover_surplus = False
+        self.food.save()
+        CategoryBudget.objects.create(
+            workspace=self.ws, category=self.food, amount=Decimal("500.00"),
+            period_start=dt.date(2026, 1, 1),
+        )
+        self._txn(self.food, "300.00")  # sobran 200, pero se pierden
+
+        close_previous_budget_period(workspace=self.ws, as_of=dt.date(2026, 2, 1))
+        self.assertFalse(CategoryProvision.objects.filter(category=self.food).exists())
+
+    def test_report_ignores_accumulated_provision_when_rollover_off(self):
+        from apps.reports.services import budget_vs_actual
+
+        CategoryBudget.objects.create(
+            workspace=self.ws, category=self.food, amount=Decimal("500.00"),
+            period_start=dt.date(2026, 2, 1),
+        )
+        CategoryProvision.objects.create(category=self.food, accumulated_amount=Decimal("200.00"))
+
+        def provision():
+            report = budget_vs_actual(self.ws, None, dt.date(2026, 2, 1))
+            return next(r for r in report["rows"] if r["category"] == str(self.food.id))["provision"]
+
+        self.assertEqual(provision(), Decimal("200.00"))
+        self.food.rollover_surplus = False
+        self.food.save()
+        # Se conserva lo acumulado (por si se vuelve a encender) pero no cuenta.
+        self.assertEqual(provision(), Decimal("0"))
+        self.assertEqual(
+            CategoryProvision.objects.get(category=self.food).accumulated_amount, Decimal("200.00")
+        )
+
     def test_overspent_category_does_not_create_negative_provision(self):
         CategoryBudget.objects.create(
             workspace=self.ws, category=self.food, amount=Decimal("100.00"),

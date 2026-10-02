@@ -47,6 +47,11 @@ class Workspace(BaseModel):
     # Se resetea a mano cuando cambia `budget_period` (ver WorkspaceSerializer)
     # para no arrastrar un rollover calculado bajo la grilla de períodos vieja.
     budget_period_closed_through = models.DateField(null=True, blank=True)
+    # Interruptor global de la provisión acumulada: si se apaga, NINGUNA
+    # categoría del workspace acumula sobrante (manda sobre
+    # `Category.rollover_surplus`, que es el ajuste fino por categoría). Lo ya
+    # acumulado se conserva pero no cuenta -- ver `reports.services`.
+    rollover_surplus = models.BooleanField(default=True)
 
     def __str__(self):
         return self.name

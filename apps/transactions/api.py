@@ -26,6 +26,7 @@ from . import xlsx_import as xlsx
 from .models import (
     Category,
     CategoryBudget,
+    CategoryProvision,
     InstallmentPurchase,
     Person,
     RecurringExpense,
@@ -70,7 +71,8 @@ class CategorySerializer(serializers.ModelSerializer):
         model = Category
         fields = (
             "id", "name", "icon", "color", "type", "parent", "sort_order",
-            "category_type", "is_group", "usage_count", "created_at", "updated_at",
+            "category_type", "rollover_surplus", "is_group", "usage_count", "created_at",
+            "updated_at",
         )
         read_only_fields = ("id", "is_group", "usage_count", "created_at", "updated_at")
 
@@ -142,6 +144,16 @@ class CategoryViewSet(WorkspaceScopedViewSet):
                 cat.sort_order = position
                 cat.save(update_fields=["sort_order", "updated_at"])
         return Response({"reordered": len(owned)})
+
+    @action(detail=True, methods=["post"], url_path="reset-provision")
+    def reset_provision(self, request, pk=None):
+        """Pone en cero lo acumulado de esta categoría (provisión). No toca
+        el presupuesto ni el interruptor `rollover_surplus`."""
+        category = self.get_object()
+        CategoryProvision.objects.filter(category=category).update(
+            accumulated_amount=0, last_updated=timezone.localdate()
+        )
+        return Response({"category": str(category.id), "accumulated_amount": "0.00"})
 
     @action(detail=False, methods=["get"])
     def deleted(self, request):

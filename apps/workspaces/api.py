@@ -32,7 +32,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         model = Workspace
         fields = (
             "id", "name", "role", "member_count",
-            "base_currency", "budget_period",
+            "base_currency", "budget_period", "rollover_surplus",
             "inbound_token", "inbound_email",
             "created_at", "updated_at",
         )
@@ -144,6 +144,19 @@ class WorkspaceViewSet(AtomicOnlyForWritesMixin, viewsets.ModelViewSet):
         self._require_owner(workspace, request.user)
         workspace.rotate_inbound_token()
         return Response(self.get_serializer(workspace).data)
+
+    @action(detail=True, methods=["post"], url_path="reset-provisions")
+    def reset_provisions(self, request, pk=None):
+        """Pone en cero lo acumulado (provisión) de TODAS las categorías del
+        workspace. Solo owner. No cambia ningún interruptor."""
+        from apps.transactions.models import CategoryProvision
+
+        workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+        reset = CategoryProvision.objects.filter(category__workspace=workspace).update(
+            accumulated_amount=0, last_updated=timezone.localdate()
+        )
+        return Response({"reset": reset})
 
     @action(detail=True, methods=["post"])
     def reset(self, request, pk=None):
