@@ -525,8 +525,17 @@ def _monthly_summary_text(user, workspace, insights):
         result = generate_summary(user=user, workspace=workspace, insights=insights)
         return result["title"], result["body"]
     except AIUnavailable:
-        body = " ".join(f"{i['title']}: {i['body']}" for i in insights)
-        return "Tu resumen del mes", body[:500]
+        # Una línea por patrón: pegados en un solo párrafo, en una
+        # notificación se leen como un muro de texto. Se corta por líneas
+        # completas, no a mitad de una oración.
+        lines, size = [], 0
+        for i in insights:
+            line = f"• {i['title']}: {i['body']}"
+            size += len(line) + 1
+            if lines and size > 500:
+                break
+            lines.append(line)
+        return "Tu resumen del mes", "\n".join(lines)[:500]
 
 
 # Día del mes en que se dispara el resumen (para el mes que acaba de
@@ -572,7 +581,13 @@ def notify_monthly_summary(today=None):
             user, workspace, NotificationLog.KIND_MONTHLY_SUMMARY, f"{workspace.id}:{dedupe_month}",
             title=title,
             body=body,
-            data={"type": NotificationLog.KIND_MONTHLY_SUMMARY, "workspace": str(workspace.id)},
+            data={
+                "type": NotificationLog.KIND_MONTHLY_SUMMARY,
+                "workspace": str(workspace.id),
+                # El mes del que habla (YYYY-MM), no el actual: se manda el
+                # día 1, y "Ver resumen" tiene que abrir ese mes, no uno vacío.
+                "month": dedupe_month,
+            },
             devices=devices,
         )
 

@@ -45,6 +45,16 @@ class Category(BaseModel):
         help_text="Opcional -- se define en el admin (Loyalty → Rubros).",
     )
 
+    # Si el sobrante de presupuesto de esta categoría rueda al período
+    # siguiente (`CategoryProvision`). Apagarlo es "lo que sobra se pierde":
+    # el cierre de período deja de acumular y el reporte/avisos ignoran lo ya
+    # acumulado (no se borra, por si se vuelve a encender). Es por categoría
+    # y no por grupo: el presupuesto vive en la subcategoría.
+    rollover_surplus = models.BooleanField(
+        default=True,
+        verbose_name="acumular sobrante de presupuesto",
+    )
+
     class Meta:
         ordering = ["sort_order", "name"]
 

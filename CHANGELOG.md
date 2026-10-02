@@ -10,6 +10,24 @@ de la del frontend (`moneyapp`, que tiene su propio changelog).
 Para "qué falta"/planeamiento ver `ROADMAP.md`. Este archivo es sólo lo que
 ya se envió.
 
+## [1.8.0] - 2026-10-02
+
+### Agregado
+- Provisión acumulada apagable: `Category.rollover_surplus` (por categoría) y
+  `Workspace.rollover_surplus` (interruptor global, solo owner; manda sobre el
+  de la categoría). Apagado, el cierre de período no acumula y el reporte de
+  presupuesto y los avisos de umbral ignoran lo ya acumulado, que se conserva.
+  Ambos van por defecto encendidos y entran en el respaldo del workspace.
+- `POST /categories/{id}/reset-provision/` y
+  `POST /workspaces/{id}/reset-provisions/` (owner): ponen en cero lo
+  acumulado, de una categoría o de todo el workspace.
+- El aviso de resumen mensual trae `data.month` (`YYYY-MM`, el mes del que
+  habla) para que el cliente abra ese mes.
+
+### Cambiado
+- Resumen mensual: una línea por idea (con "• ") en vez de un párrafo corrido,
+  tanto el texto de Gemini como el de respaldo sin IA.
+
 ## [1.7.0] - 2026-09-22
 
 Antes de este archivo no hubo changelog formal -- el historial vive en
