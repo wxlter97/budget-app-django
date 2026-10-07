@@ -32,7 +32,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         model = Workspace
         fields = (
             "id", "name", "role", "member_count",
-            "base_currency", "budget_period", "rollover_surplus",
+            "base_currency", "budget_period", "week_start_day", "rollover_surplus",
             "inbound_token", "inbound_email",
             "created_at", "updated_at",
         )
@@ -47,11 +47,18 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         # pensada para la vieja -- casi seguro desalineada. Más simple y más
         # seguro: arrancar de cero, sin reconstruir rollover retroactivo
         # cruzando el cambio de cadencia.
-        if "budget_period" in validated_data and validated_data["budget_period"] != instance.budget_period:
+        # Lo mismo vale para el día de inicio de la semana: mueve la grilla
+        # semanal, así que también se reinicia el cierre.
+        new_period = validated_data.get("budget_period", instance.budget_period)
+        new_week_start = validated_data.get("week_start_day", instance.week_start_day)
+        if new_period != instance.budget_period or (
+            new_period == periods.WEEKLY and new_week_start != instance.week_start_day
+        ):
             today = timezone.localdate()
             validated_data["budget_period_closed_through"] = periods.previous_period_start(
-                periods.period_start(today, validated_data["budget_period"]),
-                validated_data["budget_period"],
+                periods.period_start(today, new_period, new_week_start),
+                new_period,
+                new_week_start,
             )
         return super().update(instance, validated_data)
 

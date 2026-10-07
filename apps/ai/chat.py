@@ -245,7 +245,7 @@ def _call_function(name, workspace, user, args):
 
     if name == "budget_vs_actual":
         period_start = _date_arg(args.get("period_start")) or periods.period_start(
-            today, workspace.budget_period
+            today, workspace.budget_period, workspace.week_start_day
         )
         return reports.budget_vs_actual(workspace, user, period_start)
 

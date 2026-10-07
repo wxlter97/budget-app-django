@@ -1,6 +1,7 @@
 import secrets
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator
 from django.db import models
 
 from apps.common.models import BaseModel
@@ -40,6 +41,11 @@ class Workspace(BaseModel):
     # partir de qué fecha se calculan los períodos nuevos.
     budget_period = models.CharField(
         max_length=10, choices=BUDGET_PERIOD_CHOICES, default=BUDGET_PERIOD_MONTHLY
+    )
+    # Día en que arranca la semana para el presupuesto semanal (0 = lunes …
+    # 6 = domingo, como `date.weekday()`). Sólo afecta a `budget_period` semanal.
+    week_start_day = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(6)]
     )
     # Hasta qué `period_start` (inclusive) ya se le hizo rollover de
     # provisión a este workspace -- ver `apps.reports.services.

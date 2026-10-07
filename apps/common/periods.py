@@ -37,13 +37,16 @@ def _check(period: str) -> None:
         raise ValueError(f"Período de presupuesto desconocido: {period!r}")
 
 
-def period_start(d: date, period: str) -> date:
-    """Fecha de inicio del período de tipo `period` que contiene a `d`."""
+def period_start(d: date, period: str, week_start: int = 0) -> date:
+    """Fecha de inicio del período de tipo `period` que contiene a `d`.
+
+    `week_start` (0 = lunes … 6 = domingo, como `date.weekday()`) sólo aplica a
+    los períodos semanales."""
     _check(period)
     if period == DAILY:
         return d
     if period == WEEKLY:
-        return d - timedelta(days=d.weekday())  # lunes de esa semana
+        return d - timedelta(days=(d.weekday() - week_start) % 7)  # inicio de esa semana
     if period == BIWEEKLY:
         return d.replace(day=1) if d.day <= 15 else d.replace(day=16)
     if period == MONTHLY:
@@ -72,9 +75,9 @@ def next_period_start(start: date, period: str) -> date:
     return period_end(start, period) + timedelta(days=1)
 
 
-def previous_period_start(start: date, period: str) -> date:
+def previous_period_start(start: date, period: str, week_start: int = 0) -> date:
     """`period_start` del período inmediatamente anterior a `start`."""
-    return period_start(start - timedelta(days=1), period)
+    return period_start(start - timedelta(days=1), period, week_start)
 
 
 def label(start: date, period: str) -> str:

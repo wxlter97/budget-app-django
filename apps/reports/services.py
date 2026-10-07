@@ -558,8 +558,10 @@ def close_previous_budget_period(workspace=None, as_of=None):
     closed = []
 
     for ws in workspaces:
-        current_start = periods.period_start(today, ws.budget_period)
-        last_ended = periods.previous_period_start(current_start, ws.budget_period)
+        current_start = periods.period_start(today, ws.budget_period, ws.week_start_day)
+        last_ended = periods.previous_period_start(
+            current_start, ws.budget_period, ws.week_start_day
+        )
 
         if ws.budget_period_closed_through is not None:
             cursor = periods.next_period_start(ws.budget_period_closed_through, ws.budget_period)

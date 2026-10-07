@@ -300,7 +300,7 @@ def notify_budget_thresholds():
             continue
         devices = _devices_for(user)
 
-        period_start = periods.period_start(today, workspace.budget_period)
+        period_start = periods.period_start(today, workspace.budget_period, workspace.week_start_day)
         for row in budget_vs_actual(workspace, user, period_start)["rows"]:
             budgeted = row["budgeted"] + row["provision"]
             if budgeted <= 0:
