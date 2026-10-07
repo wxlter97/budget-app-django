@@ -1231,7 +1231,8 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
         # quiere (más simple que pedirle que calcule el inicio exacto) --
         # acá se ajusta al inicio real según el `budget_period` vigente del
         # workspace, igual que hace `set_forward`.
-        return periods.period_start(value, self.context["workspace"].budget_period)
+        ws = self.context["workspace"]
+        return periods.period_start(value, ws.budget_period, ws.week_start_day)
 
     def validate(self, attrs):
         category = attrs.get("category") or getattr(self.instance, "category", None)
@@ -1297,7 +1298,9 @@ class CategoryBudgetViewSet(WorkspaceScopedViewSet):
             )
         amount = serializer.validated_data["amount"]
         budget_period = request.workspace.budget_period
-        start = periods.period_start(serializer.validated_data["period_start"], budget_period)
+        start = periods.period_start(
+            serializer.validated_data["period_start"], budget_period, request.workspace.week_start_day
+        )
 
         current = CategoryBudget.objects.filter(category=category, period_start=start).first()
         old_amount = current.amount if current else None

@@ -10,6 +10,15 @@ de la del frontend (`moneyapp`, que tiene su propio changelog).
 Para "qué falta"/planeamiento ver `ROADMAP.md`. Este archivo es sólo lo que
 ya se envió.
 
+## [1.9.0] - 2026-10-06
+
+### Agregado
+- `Workspace.week_start_day` (0 = lunes … 6 = domingo, default 0): día en que
+  arranca la semana del presupuesto semanal. Editable por el dueño; mover la
+  grilla reinicia el cierre de provisión, igual que cambiar `budget_period`.
+  `periods.period_start`/`previous_period_start` reciben `week_start`.
+  Migración `workspaces.0007`.
+
 ## [1.8.0] - 2026-10-02
 
 ### Agregado
