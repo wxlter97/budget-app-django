@@ -10,6 +10,17 @@ de la del frontend (`moneyapp`, que tiene su propio changelog).
 Para "qué falta"/planeamiento ver `ROADMAP.md`. Este archivo es sólo lo que
 ya se envió.
 
+## [1.10.0] - 2026-10-08
+
+### Agregado
+- `POST /ai/statement/`: lee un estado de cuenta (PDF o foto, hasta 12 MB) y
+  devuelve una **candidata** editable -- datos de la cartera (banco, últimos 4,
+  límite, día de corte y de pago, tasa, saldo al corte) y los movimientos del
+  período, con categoría sugerida por historial y duplicados marcados contra la
+  cartera indicada. No crea nada; mismo contrato de confianza por campo que los
+  recibos. Comparte la cuota mensual `ai_receipts_per_month` con los recibos
+  (nueva operación `statement` en `AIUsage`, migración `ai.0002`).
+
 ## [1.9.0] - 2026-10-06
 
 ### Agregado

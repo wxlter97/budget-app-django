@@ -27,11 +27,13 @@ OP_RECEIPT = "receipt"
 OP_PARSE = "parse"
 OP_CHAT = "chat"
 OP_SUMMARY = "summary"
+OP_STATEMENT = "statement"
 OP_CHOICES = [
     (OP_RECEIPT, "Lectura de recibo"),
     (OP_PARSE, "Parseo de texto o voz"),
     (OP_CHAT, "Pregunta de chat"),
     (OP_SUMMARY, "Resumen mensual"),
+    (OP_STATEMENT, "Lectura de estado de cuenta"),
 ]
 
 STATUS_OK = "ok"
