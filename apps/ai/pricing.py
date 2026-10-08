@@ -41,6 +41,7 @@ MODEL_FOR_OPERATION = {
     m.OP_PARSE: "gemini-3.5-flash-lite",    # texto corto → JSON
     m.OP_CHAT: "gemini-3.5-flash-lite",
     m.OP_SUMMARY: "gemini-3.8-flash",       # razona sobre el mes entero
+    m.OP_STATEMENT: "gemini-3.8-flash",     # PDF/imagen largo con tablas
 }
 
 # El dictado manda audio. En la serie 3 Gemini publica el mismo precio de
