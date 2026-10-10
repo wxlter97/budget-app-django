@@ -22,7 +22,7 @@ from apps.accounts.models import Wallet
 from apps.common.api import AtomicOnlyForWritesMixin, HasWorkspaceMembership
 from apps.transactions.services import RECEIPT_CONTENT_TYPES, RECEIPT_MAX_SIZE
 
-from . import chat, parsing, receipts, services
+from . import chat, parsing, receipts, services, statements
 from .client import AIUnavailable
 
 
@@ -190,6 +190,99 @@ class ReceiptScanView(APIView):
 
         return Response(ReceiptCandidateSerializer(candidate).data)
 
+
+
+# ---------------------------------------------------------------------------
+# Estados de cuenta
+# ---------------------------------------------------------------------------
+STATEMENT_MAX_SIZE = 12 * 1024 * 1024  # un PDF de varias páginas pesa más que un recibo
+
+
+class StatementWalletSerializer(serializers.Serializer):
+    """Datos para crear la cartera, ya con los nombres de campo de `Wallet`."""
+
+    kind = serializers.ChoiceField(choices=["credit", "bank"])
+    purpose = serializers.ChoiceField(choices=["debt", "spending"])
+    name = serializers.CharField()
+    bank = serializers.CharField(allow_null=True, help_text="Nombre leído; la app lo cruza con el catálogo de bancos.")
+    card_last4 = serializers.CharField(allow_null=True)
+    currency = serializers.CharField()
+    credit_limit = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True)
+    billing_cycle_day = serializers.IntegerField(allow_null=True)
+    payment_due_day = serializers.IntegerField(allow_null=True)
+    minimum_payment = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True)
+    interest_rate = serializers.DecimalField(max_digits=5, decimal_places=2, allow_null=True)
+    closing_balance = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True)
+
+
+class StatementTransactionSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    description = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    type = serializers.ChoiceField(choices=["expense", "income"])
+    category = serializers.UUIDField(allow_null=True, help_text="Sugerida por historial; null = que la elija el usuario.")
+    possible_duplicates = PossibleDuplicateSerializer(many=True)
+
+
+class StatementCandidateSerializer(serializers.Serializer):
+    """Una **candidata**: nada de esto se guarda hasta que el usuario confirma."""
+
+    statement_kind = serializers.ChoiceField(choices=["credit_card", "bank_account", "other"])
+    period_start = serializers.DateField(allow_null=True)
+    period_end = serializers.DateField(allow_null=True)
+    payment_due_date = serializers.DateField(allow_null=True)
+    wallet = StatementWalletSerializer()
+    transactions = StatementTransactionSerializer(many=True)
+    confidence = serializers.DictField(child=serializers.ChoiceField(choices=receipts.CONFIDENCE_LEVELS))
+
+
+class StatementScanRequestSerializer(serializers.Serializer):
+    file = serializers.FileField(help_text="PDF, JPG, PNG, WEBP o HEIC, hasta 12 MB.")
+    wallet = serializers.UUIDField(
+        required=False,
+        help_text="Opcional. Si viene, cada movimiento trae sus posibles duplicados en esa cartera.",
+    )
+
+
+@extend_schema(
+    tags=["ai"],
+    request=StatementScanRequestSerializer,
+    responses={200: StatementCandidateSerializer},
+)
+class StatementScanView(APIView):
+    """Lee un estado de cuenta y devuelve una candidata editable. **No crea
+    nada** ni guarda el archivo. Comparte la cuota mensual con los recibos."""
+
+    permission_classes = [IsAuthenticated, HasWorkspaceMembership]
+    parser_classes = [MultiPartParser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "ai"
+
+    def post(self, request):
+        file = request.FILES.get("file")
+        if not file:
+            raise ValidationError({"file": "Requerido."})
+        if file.size > STATEMENT_MAX_SIZE:
+            raise ValidationError({"file": "El archivo pesa más de 12 MB."})
+        if file.content_type not in RECEIPT_CONTENT_TYPES:
+            raise ValidationError({"file": "Formato no soportado (usá PDF, JPG, PNG, WEBP o HEIC)."})
+
+        try:
+            candidate = statements.scan(
+                user=request.user,
+                workspace=request.workspace,
+                file_bytes=file.read(),
+                content_type=file.content_type,
+                wallet=_wallet_from(request),
+            )
+        except AIUnavailable:
+            raise StatementUnavailable()
+
+        return Response(StatementCandidateSerializer(candidate).data)
+
+
+class StatementUnavailable(AIServiceUnavailable):
+    default_detail = "No se pudo leer el estado de cuenta ahora mismo. Probá de nuevo más tarde."
 
 
 # ---------------------------------------------------------------------------

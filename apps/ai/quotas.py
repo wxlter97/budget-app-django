@@ -35,6 +35,9 @@ from . import models as m
 # usuario, y que igual se registra en `AIUsage` para que se vea en el gasto.
 PLAN_FEATURE_KEYS = {
     m.OP_RECEIPT: "ai_receipts_per_month",
+    # Comparte tope con los recibos (decisión de producto): una lectura de
+    # estado de cuenta descuenta de la misma bolsa mensual.
+    m.OP_STATEMENT: "ai_receipts_per_month",
     m.OP_PARSE: "ai_parses_per_month",
     m.OP_CHAT: "ai_chats_per_month",
 }
@@ -43,6 +46,7 @@ PLAN_FEATURE_KEYS = {
 # viejo, clave nueva todavía no agregada). Son los números del plan gratis.
 FALLBACK_LIMITS = {
     m.OP_RECEIPT: 3,
+    m.OP_STATEMENT: 3,
     m.OP_PARSE: 10,
     m.OP_CHAT: 0,
 }
@@ -104,10 +108,19 @@ def limit_for(user, operation: str):
         return FALLBACK_LIMITS[operation]
 
 
+def _operations_sharing_limit(operation: str) -> list[str]:
+    """Las operaciones que descuentan de la misma bolsa que `operation`
+    (misma clave de plan): recibos y estados de cuenta comparten tope."""
+    key = PLAN_FEATURE_KEYS.get(operation)
+    if key is None:
+        return [operation]
+    return [op for op, k in PLAN_FEATURE_KEYS.items() if k == key]
+
+
 def used_this_month(user, operation: str, now=None) -> int:
     return m.AIUsage.objects.filter(
         user=user,
-        operation=operation,
+        operation__in=_operations_sharing_limit(operation),
         counts_against_quota=True,
         created_at__gte=month_start(now),
     ).count()

@@ -163,10 +163,16 @@ def budget_vs_actual(workspace, user, period_start):
         if converted is None:
             continue
         spent[row["category"]] = spent.get(row["category"], Decimal("0")) + converted
-    provisions = {
-        p.category_id: p.accumulated_amount
-        for p in CategoryProvision.objects.filter(category__workspace=workspace)
-    }
+    # Sólo las categorías que acumulan: con `rollover_surplus` apagado lo
+    # ya acumulado queda guardado pero no cuenta ni se muestra.
+    provisions = {}
+    if workspace.rollover_surplus:
+        provisions = {
+            p.category_id: p.accumulated_amount
+            for p in CategoryProvision.objects.filter(
+                category__workspace=workspace, category__rollover_surplus=True
+            )
+        }
 
     cat_ids = set(budgets) | set(spent)
     cats = {
@@ -552,8 +558,10 @@ def close_previous_budget_period(workspace=None, as_of=None):
     closed = []
 
     for ws in workspaces:
-        current_start = periods.period_start(today, ws.budget_period)
-        last_ended = periods.previous_period_start(current_start, ws.budget_period)
+        current_start = periods.period_start(today, ws.budget_period, ws.week_start_day)
+        last_ended = periods.previous_period_start(
+            current_start, ws.budget_period, ws.week_start_day
+        )
 
         if ws.budget_period_closed_through is not None:
             cursor = periods.next_period_start(ws.budget_period_closed_through, ws.budget_period)
@@ -576,7 +584,10 @@ def close_previous_budget_period(workspace=None, as_of=None):
 
 def _rollover_budget_period(workspace, period_start):
     """Suma el sobrante (presupuesto - gasto real) de cada categoría, para
-    ese período, a su provisión acumulada."""
+    ese período, a su provisión acumulada (si el workspace y la categoría
+    la tienen encendida)."""
+    if not workspace.rollover_surplus:
+        return
     period_end = periods.period_end(period_start, workspace.budget_period)
     rate_map = get_rate_map(workspace)
     budgets = CategoryBudget.objects.filter(
@@ -584,6 +595,8 @@ def _rollover_budget_period(workspace, period_start):
     ).select_related("category")
 
     for budget in budgets:
+        if not budget.category.rollover_surplus:
+            continue
         spent = _sum_converted(
             Transaction.objects.filter(
                 category=budget.category,

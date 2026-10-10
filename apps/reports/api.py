@@ -190,7 +190,8 @@ class _BaseReportView(AtomicOnlyForWritesMixin, APIView):
                 d = dt.date.fromisoformat(raw)
             except ValueError:
                 raise ValidationError({"period_start": "Debe ser una fecha YYYY-MM-DD."})
-        return periods.period_start(d, request.workspace.budget_period)
+        ws = request.workspace
+        return periods.period_start(d, ws.budget_period, ws.week_start_day)
 
 
 class BudgetReportView(_BaseReportView):

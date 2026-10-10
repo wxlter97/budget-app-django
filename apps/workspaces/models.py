@@ -1,6 +1,7 @@
 import secrets
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator
 from django.db import models
 
 from apps.common.models import BaseModel
@@ -41,12 +42,22 @@ class Workspace(BaseModel):
     budget_period = models.CharField(
         max_length=10, choices=BUDGET_PERIOD_CHOICES, default=BUDGET_PERIOD_MONTHLY
     )
+    # Día en que arranca la semana para el presupuesto semanal (0 = lunes …
+    # 6 = domingo, como `date.weekday()`). Sólo afecta a `budget_period` semanal.
+    week_start_day = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(6)]
+    )
     # Hasta qué `period_start` (inclusive) ya se le hizo rollover de
     # provisión a este workspace -- ver `apps.reports.services.
     # close_previous_budget_period`. Null = todavía no se cerró ninguno.
     # Se resetea a mano cuando cambia `budget_period` (ver WorkspaceSerializer)
     # para no arrastrar un rollover calculado bajo la grilla de períodos vieja.
     budget_period_closed_through = models.DateField(null=True, blank=True)
+    # Interruptor global de la provisión acumulada: si se apaga, NINGUNA
+    # categoría del workspace acumula sobrante (manda sobre
+    # `Category.rollover_surplus`, que es el ajuste fino por categoría). Lo ya
+    # acumulado se conserva pero no cuenta -- ver `reports.services`.
+    rollover_surplus = models.BooleanField(default=True)
 
     def __str__(self):
         return self.name

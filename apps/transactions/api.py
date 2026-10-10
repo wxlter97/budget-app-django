@@ -26,6 +26,7 @@ from . import xlsx_import as xlsx
 from .models import (
     Category,
     CategoryBudget,
+    CategoryProvision,
     InstallmentPurchase,
     Person,
     RecurringExpense,
@@ -70,7 +71,8 @@ class CategorySerializer(serializers.ModelSerializer):
         model = Category
         fields = (
             "id", "name", "icon", "color", "type", "parent", "sort_order",
-            "category_type", "is_group", "usage_count", "created_at", "updated_at",
+            "category_type", "rollover_surplus", "is_group", "usage_count", "created_at",
+            "updated_at",
         )
         read_only_fields = ("id", "is_group", "usage_count", "created_at", "updated_at")
 
@@ -142,6 +144,16 @@ class CategoryViewSet(WorkspaceScopedViewSet):
                 cat.sort_order = position
                 cat.save(update_fields=["sort_order", "updated_at"])
         return Response({"reordered": len(owned)})
+
+    @action(detail=True, methods=["post"], url_path="reset-provision")
+    def reset_provision(self, request, pk=None):
+        """Pone en cero lo acumulado de esta categoría (provisión). No toca
+        el presupuesto ni el interruptor `rollover_surplus`."""
+        category = self.get_object()
+        CategoryProvision.objects.filter(category=category).update(
+            accumulated_amount=0, last_updated=timezone.localdate()
+        )
+        return Response({"category": str(category.id), "accumulated_amount": "0.00"})
 
     @action(detail=False, methods=["get"])
     def deleted(self, request):
@@ -796,6 +808,31 @@ class TransactionViewSet(WorkspaceScopedViewSet):
             for c, v in sorted(by_currency.items())
         ])
 
+    @action(detail=False, methods=["get"])
+    def breakdown(self, request):
+        """Cuántos movimientos cumplen los mismos filtros que la lista, y sus
+        ingresos/gastos por categoría y moneda (de mayor a menor). Para el
+        "ver por categoría" de una búsqueda: igual que `totals`, sumar en el
+        cliente sólo lo cargado daría un número distinto según el scroll."""
+        qs = self.filter_queryset(self.get_queryset()).order_by()
+        count = qs.values("id").distinct().count()
+        rows = (
+            qs.filter(type__in=[Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE])
+            .values("category", "currency", "type")
+            .annotate(total=Sum("amount"), n=Count("id", distinct=True))
+        )
+        groups: dict[tuple, dict] = {}
+        for r in rows:
+            key = (r["category"], r["currency"])
+            g = groups.setdefault(key, {
+                "category": r["category"], "currency": r["currency"],
+                "income": Decimal("0"), "expenses": Decimal("0"), "count": 0,
+            })
+            g["income" if r["type"] == Transaction.TYPE_INCOME else "expenses"] += r["total"]
+            g["count"] += r["n"]
+        ordered = sorted(groups.values(), key=lambda g: -(g["income"] + g["expenses"]))
+        return Response({"count": count, "categories": ordered})
+
     # Definidas en `services` porque el mismo archivo entra también por
     # `/ai/receipt/` y las dos puertas tienen que aceptar lo mismo.
     RECEIPT_MAX_SIZE = services.RECEIPT_MAX_SIZE
@@ -1194,7 +1231,8 @@ class CategoryBudgetSerializer(serializers.ModelSerializer):
         # quiere (más simple que pedirle que calcule el inicio exacto) --
         # acá se ajusta al inicio real según el `budget_period` vigente del
         # workspace, igual que hace `set_forward`.
-        return periods.period_start(value, self.context["workspace"].budget_period)
+        ws = self.context["workspace"]
+        return periods.period_start(value, ws.budget_period, ws.week_start_day)
 
     def validate(self, attrs):
         category = attrs.get("category") or getattr(self.instance, "category", None)
@@ -1260,7 +1298,9 @@ class CategoryBudgetViewSet(WorkspaceScopedViewSet):
             )
         amount = serializer.validated_data["amount"]
         budget_period = request.workspace.budget_period
-        start = periods.period_start(serializer.validated_data["period_start"], budget_period)
+        start = periods.period_start(
+            serializer.validated_data["period_start"], budget_period, request.workspace.week_start_day
+        )
 
         current = CategoryBudget.objects.filter(category=category, period_start=start).first()
         old_amount = current.amount if current else None

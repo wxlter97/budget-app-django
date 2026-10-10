@@ -239,6 +239,7 @@ def export_backup(workspace):
                 "color": c.color,
                 "type": c.type,
                 "sort_order": c.sort_order,
+                "rollover_surplus": c.rollover_surplus,
                 "parent": str(c.parent_id) if c.parent_id else None,
             }
             for c in categories
@@ -550,6 +551,7 @@ def import_backup(workspace, data, requesting_user):
                 color=_coalesce(row, "color", ""),
                 type=row["type"],
                 sort_order=_coalesce(row, "sort_order", 0),
+                rollover_surplus=_coalesce(row, "rollover_surplus", True),
             )
             for row in cat_rows
         ]

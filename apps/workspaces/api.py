@@ -32,7 +32,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         model = Workspace
         fields = (
             "id", "name", "role", "member_count",
-            "base_currency", "budget_period",
+            "base_currency", "budget_period", "week_start_day", "rollover_surplus",
             "inbound_token", "inbound_email",
             "created_at", "updated_at",
         )
@@ -47,11 +47,18 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         # pensada para la vieja -- casi seguro desalineada. Más simple y más
         # seguro: arrancar de cero, sin reconstruir rollover retroactivo
         # cruzando el cambio de cadencia.
-        if "budget_period" in validated_data and validated_data["budget_period"] != instance.budget_period:
+        # Lo mismo vale para el día de inicio de la semana: mueve la grilla
+        # semanal, así que también se reinicia el cierre.
+        new_period = validated_data.get("budget_period", instance.budget_period)
+        new_week_start = validated_data.get("week_start_day", instance.week_start_day)
+        if new_period != instance.budget_period or (
+            new_period == periods.WEEKLY and new_week_start != instance.week_start_day
+        ):
             today = timezone.localdate()
             validated_data["budget_period_closed_through"] = periods.previous_period_start(
-                periods.period_start(today, validated_data["budget_period"]),
-                validated_data["budget_period"],
+                periods.period_start(today, new_period, new_week_start),
+                new_period,
+                new_week_start,
             )
         return super().update(instance, validated_data)
 
@@ -144,6 +151,19 @@ class WorkspaceViewSet(AtomicOnlyForWritesMixin, viewsets.ModelViewSet):
         self._require_owner(workspace, request.user)
         workspace.rotate_inbound_token()
         return Response(self.get_serializer(workspace).data)
+
+    @action(detail=True, methods=["post"], url_path="reset-provisions")
+    def reset_provisions(self, request, pk=None):
+        """Pone en cero lo acumulado (provisión) de TODAS las categorías del
+        workspace. Solo owner. No cambia ningún interruptor."""
+        from apps.transactions.models import CategoryProvision
+
+        workspace = self.get_object()
+        self._require_owner(workspace, request.user)
+        reset = CategoryProvision.objects.filter(category__workspace=workspace).update(
+            accumulated_amount=0, last_updated=timezone.localdate()
+        )
+        return Response({"reset": reset})
 
     @action(detail=True, methods=["post"])
     def reset(self, request, pk=None):

@@ -20,7 +20,10 @@ RESPONSE_SCHEMA = {
         "title": {"type": "string", "description": "Título corto, unas pocas palabras."},
         "body": {
             "type": "string",
-            "description": "El mensaje del resumen, 2 a 4 oraciones que conectan los patrones.",
+            "description": (
+                "El mensaje del resumen: una frase de apertura y luego 2 a 4 "
+                "líneas cortas, una por idea, separadas por saltos de línea."
+            ),
         },
     },
     "required": ["title", "body"],
@@ -32,9 +35,14 @@ de El Salvador y Centroamérica.
 
 Te paso una lista de patrones de gasto YA DETECTADOS (de forma \
 determinística, no los inventás ni agregás otros), cada uno con su título y \
-su cuerpo. Tu trabajo es conectarlos en UN solo mensaje cercano y breve (2 a \
-4 oraciones), no una lista ni un informe. Priorizá los que más le importan a \
+su cuerpo. Tu trabajo es conectarlos en UN solo mensaje cercano y breve, no \
+un informe. Priorizá los que más le importan a \
 la persona -- no hace falta mencionar los seis si son varios.
+
+Formato (se lee en una notificación, no de corrido): una frase corta de \
+apertura y luego de 2 a 4 líneas, una por idea, cada una de máximo ~90 \
+caracteres y empezando con "• ", separadas por saltos de línea. Nada de \
+párrafos largos.
 
 Reglas:
 - No inventes cifras que no estén en los patrones que te paso.
