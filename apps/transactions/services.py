@@ -347,20 +347,58 @@ def _approx_amount(amount) -> Decimal:
     return Decimal(amount).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
+_MONTH_WORDS = {
+    "ene", "enero", "feb", "febrero", "mar", "marzo", "abr", "abril", "may", "mayo",
+    "jun", "junio", "jul", "julio", "ago", "agosto", "sep", "sept", "septiembre",
+    "setiembre", "oct", "octubre", "nov", "noviembre", "dic", "diciembre",
+}
+
+
+def _subscription_label(txn) -> str:
+    """Con qué se reconoce el mismo cobro mes a mes: el comercio si está, y
+    si no la descripción sin números, signos ni nombres de mes ("NETFLIX.COM
+    0923" y "Netflix.com 1023" quedan en "netflix com"). Vacío si no hay nada
+    que la identifique."""
+    import re
+
+    if txn.merchant_id and txn.merchant:
+        return f"m:{txn.merchant_id}"
+    words = re.sub(r"[^a-záéíóúñü ]+", " ", (txn.description or "").lower()).split()
+    words = [w for w in words if w not in _MONTH_WORDS and len(w) > 1]
+    return " ".join(words[:4])
+
+
+def _display_name(txn) -> str:
+    if txn.merchant_id and txn.merchant:
+        return txn.merchant.name
+    return (txn.description or "").strip()
+
+
 def detect_recurring_candidates(workspace, user, months=4, min_occurrences=3):
-    """Transacciones que se repiten mes a mes en la misma categoría+cartera,
-    con un monto parecido, y que todavía no están marcadas como recurrentes.
+    """Transacciones que se repiten mes a mes con un monto parecido y que
+    todavía no están marcadas como recurrentes: suscripciones (Netflix,
+    Spotify, el gimnasio), servicios, el sueldo.
 
-    Reglas, a propósito conservadoras para no inundar de falsos positivos una
-    categoría con mucho movimiento como "Comida":
+    Se agrupan dos veces:
 
-    - Como mucho UNA transacción por mes en esa categoría+cartera -- si hay
-      más de una en algún mes, no es "una suscripción", es gasto normal y se
-      descarta el grupo entero.
+    - Por categoría + cartera + comercio/descripción (`_subscription_label`).
+      Es la que encuentra las suscripciones: dos servicios de streaming en
+      la misma tarjeta y la misma categoría son dos grupos distintos.
+    - Por categoría + cartera sola, como antes, para lo que no tiene una
+      descripción estable (la luz cargada a mano con textos distintos cada
+      mes). Sólo se usa si esa categoría+cartera no dio ya una candidata por
+      la vía de arriba.
+
+    Reglas de cada grupo, a propósito conservadoras para no inundar de falsos
+    positivos una categoría con mucho movimiento como "Comida":
+
+    - Como mucho UNA transacción por mes -- si hay más de una en algún mes,
+      no es un cobro fijo, es gasto normal y se descarta el grupo entero.
     - Aparece en al menos ``min_occurrences`` de los últimos ``months`` meses.
     - El monto no varía más de 15% (o $2, lo que sea mayor) entre la
       ocurrencia más chica y la más grande.
-    - No hay ya un `RecurringExpense` activo para esa categoría+cartera.
+    - No hay ya un `RecurringExpense` activo con esa categoría+cartera y un
+      monto parecido.
     - El usuario no la descartó antes (`RecurringSuggestionDismissal`).
     """
     from .models import RecurringSuggestionDismissal
@@ -368,75 +406,85 @@ def detect_recurring_candidates(workspace, user, months=4, min_occurrences=3):
     until = timezone.localdate().replace(day=1)
     since = until - relativedelta(months=months - 1)
 
-    txns = (
+    txns = list(
         visible_transactions(workspace, user)
         .filter(date__gte=since, type__in=[Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE])
         .exclude(source__in=[Transaction.SOURCE_RECURRING, Transaction.SOURCE_INSTALLMENT])
         .exclude(category__isnull=True)
-        .select_related("category", "wallet")
+        .select_related("category", "wallet", "merchant")
         .order_by("date")
     )
 
-    groups: dict = {}
-    for t in txns:
-        key = (t.type, t.category_id, t.wallet_id)
-        g = groups.setdefault(
-            key,
-            {
-                "type": t.type,
-                "category_id": t.category_id,
-                "category_name": t.category.name,
-                "wallet_id": t.wallet_id,
-                "wallet_name": t.wallet.name,
-                "by_month": {},
-            },
-        )
-        g["by_month"].setdefault((t.date.year, t.date.month), []).append(t)
+    def group(key_fn):
+        groups: dict = {}
+        for t in txns:
+            key = key_fn(t)
+            if key is None:
+                continue
+            g = groups.setdefault(key, {"txns": [], "by_month": {}})
+            g["txns"].append(t)
+            g["by_month"].setdefault((t.date.year, t.date.month), []).append(t)
+        return groups
 
-    already_recurring = set(
-        RecurringExpense.objects.filter(workspace=workspace, is_active=True).values_list(
-            "category_id", "wallet_id"
-        )
-    )
+    recurring_amounts = defaultdict(list)
+    for rec in RecurringExpense.objects.filter(workspace=workspace, is_active=True):
+        recurring_amounts[(rec.category_id, rec.wallet_id)].append(rec.amount)
     dismissed = {
         (d.category_id, d.wallet_id, d.approx_amount)
         for d in RecurringSuggestionDismissal.objects.filter(workspace=workspace)
     }
 
-    candidates = []
-    for g in groups.values():
+    def candidate(g):
         by_month = g["by_month"]
         if any(len(v) > 1 for v in by_month.values()):
-            continue
+            return None
         if len(by_month) < min_occurrences:
-            continue
-        if (g["category_id"], g["wallet_id"]) in already_recurring:
-            continue
-
+            return None
         amounts = [v[0].amount for v in by_month.values()]
         avg = sum(amounts) / len(amounts)
         tolerance = max(Decimal("2"), avg * Decimal("0.15"))
         if max(amounts) - min(amounts) > tolerance:
-            continue
-
-        approx = _approx_amount(avg)
-        if (g["category_id"], g["wallet_id"], approx) in dismissed:
-            continue
-
+            return None
         last_txn = max((v[0] for v in by_month.values()), key=lambda t: t.date)
-        candidates.append(
-            {
-                "type": g["type"],
-                "category": g["category_id"],
-                "category_name": g["category_name"],
-                "wallet": g["wallet_id"],
-                "wallet_name": g["wallet_name"],
-                "suggested_amount": avg.quantize(Decimal("0.01")),
-                "occurrences": len(by_month),
-                "last_date": last_txn.date,
-                "suggested_next_due_date": last_txn.date + relativedelta(months=1),
-            }
-        )
+        cat_wallet = (last_txn.category_id, last_txn.wallet_id)
+        if any(abs(a - avg) <= tolerance for a in recurring_amounts[cat_wallet]):
+            return None
+        if (*cat_wallet, _approx_amount(avg)) in dismissed:
+            return None
+        return {
+            "type": last_txn.type,
+            "category": last_txn.category_id,
+            "category_name": last_txn.category.name,
+            "wallet": last_txn.wallet_id,
+            "wallet_name": last_txn.wallet.name,
+            "name": _display_name(last_txn),
+            "suggested_amount": avg.quantize(Decimal("0.01")),
+            "occurrences": len(by_month),
+            "last_date": last_txn.date,
+            "suggested_next_due_date": last_txn.date + relativedelta(months=1),
+        }
+
+    candidates = []
+    covered = set()
+    by_label = group(
+        lambda t: (t.type, t.category_id, t.wallet_id, label)
+        if (label := _subscription_label(t))
+        else None
+    )
+    for g in by_label.values():
+        c = candidate(g)
+        if c:
+            candidates.append(c)
+            covered.add((c["type"], c["category"], c["wallet"]))
+    for key, g in group(lambda t: (t.type, t.category_id, t.wallet_id)).items():
+        if key in covered:
+            continue
+        c = candidate(g)
+        if c:
+            # Sin descripción estable, el nombre de una ocurrencia suelta
+            # confunde más de lo que ayuda: se nombra por la categoría.
+            c["name"] = ""
+            candidates.append(c)
 
     candidates.sort(key=lambda c: -c["occurrences"])
     return candidates
