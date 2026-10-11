@@ -32,6 +32,17 @@ env_file = BASE_DIR / ".env"
 if env_file.exists():
     env.read_env(str(env_file))
 
+# Producción (Cloud Run): TODOS los secretos en UN solo secreto de Secret
+# Manager con formato .env, montado como archivo (p. ej.
+# `--set-secrets=/secrets/budget.env=budget-env:latest`). Secret Manager cobra
+# por versión activa (6 gratis por cuenta de facturación), así que un archivo
+# en vez de un secreto por variable mantiene el costo en cero. Las variables
+# de entorno normales ganan sobre el archivo (`read_env` no pisa lo ya
+# definido), así que se puede migrar de a una variable sin romper nada.
+secrets_file = env("SECRETS_ENV_FILE", default="/secrets/budget.env")
+if Path(secrets_file).is_file():
+    env.read_env(secrets_file)
+
 # ---------------------------------------------------------------------------
 # Núcleo
 # ---------------------------------------------------------------------------
@@ -317,7 +328,7 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "budget API",
     "DESCRIPTION": "API REST de presupuesto personal/compartido (iOS + web).",
     # Bump manual en cada release que cambia comportamiento -- ver CHANGELOG.md.
-    "VERSION": "1.11.1",
+    "VERSION": "1.11.2",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SWAGGER_UI_DIST": "SIDECAR",
