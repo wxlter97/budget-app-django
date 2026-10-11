@@ -10,6 +10,14 @@ de la del frontend (`moneyapp`, que tiene su propio changelog).
 Para "qué falta"/planeamiento ver `ROADMAP.md`. Este archivo es sólo lo que
 ya se envió.
 
+## [1.11.2] - 2026-10-11
+
+### Agregado
+- Los secretos pueden venir de un archivo `.env` montado (`SECRETS_ENV_FILE`,
+  por defecto `/secrets/budget.env`), p. ej. un único secreto de Secret Manager
+  montado como archivo en Cloud Run, en vez de uno por variable. Las variables
+  de entorno normales siguen teniendo prioridad sobre el archivo.
+
 ## [1.11.1] - 2026-10-11
 
 ### Corregido
