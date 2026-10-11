@@ -10,6 +10,16 @@ de la del frontend (`moneyapp`, que tiene su propio changelog).
 Para "qué falta"/planeamiento ver `ROADMAP.md`. Este archivo es sólo lo que
 ya se envió.
 
+## [1.11.1] - 2026-10-11
+
+### Corregido
+- `POST /auth/token/refresh/`: el refresh token ya no se rota en cada refresh
+  sino sólo cuando le queda menos de la mitad de su vida (~cada 30 días,
+  manteniendo la ventana deslizante de 60). Antes, si la respuesta se perdía
+  (mala señal, o iOS suspendía la app a mitad de la llamada) el cliente
+  conservaba el token ya invalidado y la siguiente renovación daba 401: la
+  sesión se cerraba sola. Mientras no rota, la respuesta trae sólo `access`.
+
 ## [1.11.0] - 2026-10-10
 
 ### Agregado
