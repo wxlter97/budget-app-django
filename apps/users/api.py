@@ -1,3 +1,4 @@
+import time
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -6,11 +7,16 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import generics, serializers
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenObtainSerializer
+from rest_framework_simplejwt.serializers import (
+    TokenObtainPairSerializer,
+    TokenObtainSerializer,
+    TokenRefreshSerializer,
+)
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import RefreshToken, Token
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -263,7 +269,40 @@ class TwoFactorRegenerateBackupCodesView(generics.GenericAPIView):
         return Response({"backup_codes": backup_codes})
 
 
+class LateRotationTokenRefreshSerializer(TokenRefreshSerializer):
+    """Rota el refresh token sólo en la segunda mitad de su vida.
+
+    Con rotación en CADA refresh, si la respuesta se pierde (túnel, o iOS
+    suspende la app/PWA a mitad de la llamada) el cliente se queda con el
+    refresh viejo, ya en la blacklist: el siguiente intento da 401 y la
+    persona vuelve a ver el login ("se me cierra la sesión"). Mientras al
+    token le quede más de la mitad de su vida basta con entregar un access
+    nuevo -- el cliente ya soporta que no venga `refresh` -- y la rotación
+    (que mantiene la ventana deslizante de 60 días) pasa a ocurrir una vez
+    cada ~30 días en vez de cada 30 minutos.
+    """
+
+    ROTATE_BELOW_FRACTION = 0.5
+
+    def validate(self, attrs):
+        refresh = self.token_class(attrs["refresh"])
+        lifetime = jwt_settings.REFRESH_TOKEN_LIFETIME.total_seconds()
+        remaining = refresh["exp"] - time.time()
+        if remaining <= lifetime * self.ROTATE_BELOW_FRACTION:
+            return super().validate(attrs)
+
+        user_id = refresh.payload.get(jwt_settings.USER_ID_CLAIM)
+        if user_id:
+            user = get_user_model().objects.filter(**{jwt_settings.USER_ID_FIELD: user_id}).first()
+            if user is None or not jwt_settings.USER_AUTHENTICATION_RULE(user):
+                raise AuthenticationFailed(
+                    self.error_messages["no_active_account"], "no_active_account"
+                )
+        return {"access": str(refresh.access_token)}
+
+
 class TokenRefreshThrottledView(TokenRefreshView):
+    serializer_class = LateRotationTokenRefreshSerializer
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth"
 
