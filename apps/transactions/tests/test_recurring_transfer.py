@@ -12,6 +12,9 @@ from apps.accounts.models import Wallet
 from apps.transactions.models import Category, RecurringExpense
 from apps.workspaces.models import Membership, Workspace
 
+# Una fecha fija quedaba en el pasado y el serializer la rechaza: siempre a futuro.
+NEXT_DUE = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+
 User = get_user_model()
 HEADER = "HTTP_X_WORKSPACE_ID"
 
@@ -51,7 +54,7 @@ class RecurringExpenseTypeApiTests(APITestCase):
                 "wallet": str(self.checking.id),
                 "amount": "1200.00",
                 "frequency": "monthly",
-                "next_due_date": "2026-10-01",
+                "next_due_date": NEXT_DUE,
             }
         )
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
@@ -64,7 +67,7 @@ class RecurringExpenseTypeApiTests(APITestCase):
                 "wallet": str(self.checking.id),
                 "amount": "50.00",
                 "frequency": "monthly",
-                "next_due_date": "2026-10-01",
+                "next_due_date": NEXT_DUE,
             }
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
@@ -78,7 +81,7 @@ class RecurringExpenseTypeApiTests(APITestCase):
                 "to_wallet": str(self.checking.id),
                 "amount": "50.00",
                 "frequency": "monthly",
-                "next_due_date": "2026-10-01",
+                "next_due_date": NEXT_DUE,
             }
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
@@ -93,7 +96,7 @@ class RecurringExpenseTypeApiTests(APITestCase):
                 "to_wallet": str(self.savings.id),
                 "amount": "100.00",
                 "frequency": "monthly",
-                "next_due_date": "2026-10-01",
+                "next_due_date": NEXT_DUE,
             }
         )
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
@@ -107,7 +110,7 @@ class RecurringExpenseTypeApiTests(APITestCase):
                 "wallet": str(self.checking.id),
                 "amount": "10.00",
                 "frequency": "monthly",
-                "next_due_date": "2026-10-01",
+                "next_due_date": NEXT_DUE,
             }
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
@@ -121,7 +124,7 @@ class RecurringExpenseTypeApiTests(APITestCase):
                 "wallet": str(self.checking.id),
                 "amount": "10.00",
                 "frequency": "monthly",
-                "next_due_date": "2026-10-01",
+                "next_due_date": NEXT_DUE,
             }
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)

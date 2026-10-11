@@ -1,5 +1,7 @@
 """Resolución de plan y los dos gates que ya quedaron conectados:
 límite de workspaces poseídos y límite de miembros por workspace."""
+from datetime import date, timedelta
+
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -12,6 +14,9 @@ from apps.billing.services import (
     plan_for_workspace,
 )
 from apps.workspaces.models import Membership, Workspace
+
+# Una fecha fija quedaba en el pasado y el serializer la rechaza: siempre a futuro.
+NEXT_DUE = (date.today() + timedelta(days=30)).isoformat()
 
 User = get_user_model()
 
@@ -222,7 +227,7 @@ class RecurringExpenseLimitTests(APITestCase):
     def _payload(self, **overrides):
         payload = {
             "category": str(self.category.id), "wallet": str(self.wallet.id),
-            "amount": "12.99", "frequency": "monthly", "next_due_date": "2026-10-01",
+            "amount": "12.99", "frequency": "monthly", "next_due_date": NEXT_DUE,
         }
         payload.update(overrides)
         return payload
@@ -251,7 +256,7 @@ class RecurringExpenseLimitTests(APITestCase):
         Subscription.objects.create(user=self.owner, plan=self.plus, status=Subscription.STATUS_ACTIVE)
         RecurringExpense.objects.create(
             workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
-            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date="2026-10-01",
+            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date=NEXT_DUE,
         )
         resp = self.client.post(self.URL, self._payload(), format="json", **self.headers)
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.data)
@@ -262,11 +267,11 @@ class RecurringExpenseLimitTests(APITestCase):
         Subscription.objects.create(user=self.owner, plan=self.plus, status=Subscription.STATUS_ACTIVE)
         active = RecurringExpense.objects.create(
             workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
-            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date="2026-10-01",
+            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date=NEXT_DUE,
         )
         paused = RecurringExpense.objects.create(
             workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
-            wallet=self.wallet, amount="5.00", frequency="monthly", next_due_date="2026-10-01",
+            wallet=self.wallet, amount="5.00", frequency="monthly", next_due_date=NEXT_DUE,
             is_active=False,
         )
         resp = self.client.patch(
@@ -285,7 +290,7 @@ class RecurringExpenseLimitTests(APITestCase):
 
         active = RecurringExpense.objects.create(
             workspace=self.ws, type=RecurringExpense.TYPE_EXPENSE, category=self.category,
-            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date="2026-10-01",
+            wallet=self.wallet, amount="12.99", frequency="monthly", next_due_date=NEXT_DUE,
         )
         resp = self.client.patch(
             f"{self.URL}{active.id}/", {"amount": "15.00"}, format="json", **self.headers
