@@ -529,6 +529,9 @@ def _installment_pending(wallet, cutoff_date):
                 "installments_pending": len(pending),
                 "installments_total": purchase.installments_total,
                 "amount_pending": status["remaining_amount"],
+                # La cuota que entra en el próximo corte.
+                "next_installment_amount": pending[0]["amount"],
+                "next_installment_cutoff": pending[0]["cutoff_date"],
             }
         )
     return financed_not_due, lines
@@ -575,6 +578,11 @@ def credit_card_statement(wallet, as_of=None):
     total_due = used - financed_not_due
 
     return {
+        # "Pagar todo": lo que deja la tarjeta al día por completo -- el
+        # estado del último corte + lo comprado después -- sin adelantar
+        # cuotas a plazo que todavía no vencen. Nunca negativo (un saldo a
+        # favor no es "pagar menos que cero").
+        "payoff_today": max(total_due, Decimal("0")),
         "cutoff_date": cutoff_date,
         "next_cutoff_date": next_cutoff_date,
         "payment_due_date": payment_due_date,
@@ -582,6 +590,9 @@ def credit_card_statement(wallet, as_of=None):
         "available": available,
         "used": used,
         "installments_not_due": financed_not_due,
+        # Mismo monto que `payoff_today` pero con signo (negativo = saldo a
+        # favor). Se mantiene por compatibilidad con clientes viejos; NO es
+        # el saldo del estado (`statement_cycle.statement_balance`).
         "total_due": total_due,
         "installment_lines": lines,
     }
@@ -659,6 +670,7 @@ def _monthly_interest(wallet, principal):
 
 
 STATUS_PAID = "paid"
+STATUS_PAID_LATE = "paid_late"
 STATUS_MINIMUM_PAID = "minimum_paid"
 STATUS_PENDING = "pending"
 STATUS_OVERDUE = "overdue"
@@ -679,9 +691,12 @@ def statement_cycle(wallet, cutoff_date, as_of=None):
     - ``adjustments``: lo que haga falta para cuadrar con el saldo real (0
       salvo casos raros: un saldo inicial editado, una compra a plazo sin su
       transacción...). Se expone en vez de esconderlo.
-    - ``paid_since_cutoff``: pagos hechos DESPUÉS del corte (hasta
-      ``as_of`` o la fecha límite, lo que llegue primero) -- son los que
-      cuentan para este estado.
+    - ``paid_since_cutoff``: pagos hechos DESPUÉS del corte y antes del
+      corte siguiente (hasta ``as_of``) -- son los que cuentan para este
+      estado, aunque lleguen después de la fecha límite: un pago tardío
+      igual baja lo que falta (estado ``paid_late``), no se "pierde".
+    - ``paid_on_time``: la parte de esos pagos hecha hasta la fecha límite;
+      decide si el estado quedó vencido.
 
     ``None`` si la tarjeta no tiene fecha de corte."""
     if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day:
@@ -696,18 +711,27 @@ def statement_cycle(wallet, cutoff_date, as_of=None):
     installments = _installments_due_on(wallet, cutoff_date)
     adjustments = balance - (previous + purchases + installments - payments)
 
-    pay_until = min(as_of, due_date) if due_date else as_of
+    next_cutoff = _next_cutoff(wallet.billing_cycle_day, cutoff_date)
+    pay_until = min(as_of, next_cutoff)
     paid = _credits_between(wallet, cutoff_date, pay_until) if pay_until > cutoff_date else Decimal("0")
+    on_time_until = min(pay_until, due_date) if due_date else pay_until
+    paid_on_time = (
+        _credits_between(wallet, cutoff_date, on_time_until) if on_time_until > cutoff_date else Decimal("0")
+    )
     remaining = max(balance - paid, Decimal("0"))
     minimum = minimum_payment(wallet, balance)
     minimum_remaining = max(minimum - paid, Decimal("0")) if minimum is not None else None
+    past_due = bool(due_date) and as_of > due_date
 
     if balance <= 0:
         status = STATUS_NOTHING_DUE
     elif remaining <= 0:
-        status = STATUS_PAID
-    elif due_date and as_of > due_date:
-        status = STATUS_OVERDUE if minimum_remaining is None or minimum_remaining > 0 else STATUS_MINIMUM_PAID
+        status = STATUS_PAID_LATE if past_due and paid_on_time < balance else STATUS_PAID
+    elif past_due:
+        # Vencido = no se cubrió el mínimo (o el total, sin mínimo
+        # configurado) a tiempo. Cubrirlo tarde no borra el recargo.
+        target = minimum if minimum is not None else balance
+        status = STATUS_MINIMUM_PAID if paid_on_time >= target else STATUS_OVERDUE
     elif minimum_remaining is not None and minimum_remaining <= 0:
         status = STATUS_MINIMUM_PAID
     else:
@@ -725,6 +749,7 @@ def statement_cycle(wallet, cutoff_date, as_of=None):
         "statement_balance": balance,
         "minimum_payment": minimum,
         "paid_since_cutoff": paid,
+        "paid_on_time": paid_on_time,
         "remaining": remaining,
         "minimum_remaining": minimum_remaining,
         "status": status,
@@ -777,6 +802,67 @@ def statement_payoff(wallet, as_of=None):
         return None
     as_of = as_of or timezone.localdate()
     return statement_cycle(wallet, _cutoff_on_or_before(wallet.billing_cycle_day, as_of), as_of=as_of)
+
+
+PHASE_DUE = "due"              # hay que pagar y todavía no vence
+PHASE_OVERDUE = "overdue"      # venció sin cubrir el mínimo
+PHASE_FINANCED = "financed"    # venció con el mínimo cubierto: el resto genera intereses
+PHASE_PAID = "paid"            # el último estado ya está pagado
+PHASE_NOTHING_DUE = "nothing_due"
+
+
+def payment_guidance(wallet, as_of=None):
+    """La respuesta a "¿cuánto pago hoy?" de una tarjeta, en una sola cosa
+    que el cliente (y los avisos) muestran igual en todos lados:
+
+    - ``phase``: en qué momento del ciclo está (ver ``PHASE_*``).
+    - ``amount``: lo que falta del último estado -- pagarlo evita intereses.
+    - ``minimum_remaining``: lo que falta para el mínimo (``None`` sin mínimo).
+    - ``due_date`` / ``days_left``: fecha límite y días que faltan (negativo
+      si ya pasó).
+    - ``next_cutoff_date`` / ``next_statement_so_far``: lo que ya va al
+      próximo estado (no se paga ahora).
+    - ``payoff_today``: "pagar todo" -- deja la tarjeta al día por completo
+      sin adelantar cuotas a plazo (ver `credit_card_statement`).
+
+    ``None`` si la tarjeta no tiene fecha de corte."""
+    if wallet.kind != Wallet.KIND_CREDIT or not wallet.billing_cycle_day:
+        return None
+    as_of = as_of or timezone.localdate()
+    today = credit_card_statement(wallet, as_of=as_of)
+    cycle = statement_cycle(wallet, today["cutoff_date"], as_of=as_of)
+    unbilled = unbilled_activity(wallet, as_of=as_of)
+    return guidance_from(cycle, today, unbilled, as_of)
+
+
+def guidance_from(cycle, today, unbilled, as_of):
+    """`payment_guidance` a partir de piezas ya calculadas (para no repetir
+    consultas donde ya se tienen)."""
+    status = cycle["status"]
+    due_date = cycle["payment_due_date"]
+    if status == STATUS_NOTHING_DUE:
+        phase = PHASE_NOTHING_DUE
+    elif status in (STATUS_PAID, STATUS_PAID_LATE):
+        phase = PHASE_PAID
+    elif status == STATUS_OVERDUE:
+        phase = PHASE_OVERDUE
+    elif due_date and as_of > due_date:
+        phase = PHASE_FINANCED
+    else:
+        phase = PHASE_DUE
+    return {
+        "phase": phase,
+        "status": status,
+        "amount": cycle["remaining"],
+        "statement_balance": cycle["statement_balance"],
+        "minimum_remaining": cycle["minimum_remaining"],
+        "cutoff_date": cycle["cutoff_date"],
+        "due_date": due_date,
+        "days_left": (due_date - as_of).days if due_date else None,
+        "next_cutoff_date": unbilled["next_cutoff_date"],
+        "next_statement_so_far": unbilled["total"],
+        "payoff_today": today["payoff_today"],
+    }
 
 
 def _previous_period(start, end):
@@ -840,6 +926,8 @@ def credit_card_statements_summary(workspace, user, as_of=None):
         # menos lo ya abonado (no el saldo de hoy, que incluye compras que
         # van al próximo estado) -- ver `statement_cycle`.
         cycle = statement_cycle(w, data["cutoff_date"], as_of=as_of)
+        unbilled = unbilled_activity(w, as_of=as_of)
+        guidance = guidance_from(cycle, data, unbilled, as_of or timezone.localdate())
         results.append(
             {
                 "wallet_id": w.id,
@@ -851,6 +939,8 @@ def credit_card_statements_summary(workspace, user, as_of=None):
                 "remaining": cycle["remaining"],
                 "minimum_remaining": cycle["minimum_remaining"],
                 "status": cycle["status"],
+                "minimum_payment": cycle["minimum_payment"],
+                "guidance": guidance,
             }
         )
     return results

@@ -10,7 +10,9 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import Wallet
 from apps.accounts.services import (
+    credit_card_statement,
     minimum_payment,
+    payment_guidance,
     statement_cycle,
     statement_cycles,
     unbilled_activity,
@@ -103,11 +105,29 @@ class StatementCycleTests(_Base):
         self.assertEqual(c["minimum_remaining"], Decimal("0.00"))
         self.assertEqual(c["status"], "minimum_paid")
 
-    def test_payments_after_due_date_do_not_count_for_that_cycle(self):
+    def test_late_payment_counts_and_marks_paid_late(self):
         w = self._card()
         self._buy(w, "80.00", dt.date(2026, 2, 15))
         self._pay(w, "80.00", dt.date(2026, 3, 15))
         c = statement_cycle(w, dt.date(2026, 3, 1), as_of=dt.date(2026, 3, 20))
+        self.assertEqual(c["paid_since_cutoff"], Decimal("80.00"))
+        self.assertEqual(c["paid_on_time"], Decimal("0"))
+        self.assertEqual(c["remaining"], Decimal("0"))
+        self.assertEqual(c["status"], "paid_late")
+
+    def test_partial_late_payment_lowers_remaining_but_stays_overdue(self):
+        w = self._card()
+        self._buy(w, "80.00", dt.date(2026, 2, 15))
+        self._pay(w, "30.00", dt.date(2026, 3, 15))
+        c = statement_cycle(w, dt.date(2026, 3, 1), as_of=dt.date(2026, 3, 20))
+        self.assertEqual(c["remaining"], Decimal("50.00"))
+        self.assertEqual(c["status"], "overdue")
+
+    def test_payments_after_next_cutoff_belong_to_next_cycle(self):
+        w = self._card()
+        self._buy(w, "80.00", dt.date(2026, 2, 15))
+        self._pay(w, "80.00", dt.date(2026, 4, 2))
+        c = statement_cycle(w, dt.date(2026, 3, 1), as_of=dt.date(2026, 4, 5))
         self.assertEqual(c["paid_since_cutoff"], Decimal("0"))
         self.assertEqual(c["status"], "overdue")
 
@@ -142,6 +162,76 @@ class StatementCycleTests(_Base):
         u = unbilled_activity(w, as_of=dt.date(2026, 3, 5))
         self.assertEqual(u["purchases"], Decimal("25.00"))
         self.assertEqual(u["next_cutoff_date"], dt.date(2026, 4, 1))
+
+
+class PaymentGuidanceTests(_Base):
+    """"¿Cuánto pago hoy?": la fase del ciclo y los montos que la acompañan."""
+
+    def test_due_phase_before_due_date(self):
+        w = self._card(min_payment_pct=Decimal("10"))
+        self._buy(w, "100.00", dt.date(2026, 2, 15))
+        g = payment_guidance(w, as_of=dt.date(2026, 3, 4))
+        self.assertEqual(g["phase"], "due")
+        self.assertEqual(g["amount"], Decimal("100.00"))
+        self.assertEqual(g["minimum_remaining"], Decimal("10.00"))
+        self.assertEqual(g["due_date"], dt.date(2026, 3, 10))
+        self.assertEqual(g["days_left"], 6)
+
+    def test_paid_phase_shows_next_statement_so_far(self):
+        w = self._card()
+        self._buy(w, "100.00", dt.date(2026, 2, 15))
+        self._pay(w, "100.00", dt.date(2026, 3, 3))
+        self._buy(w, "25.00", dt.date(2026, 3, 4))
+        g = payment_guidance(w, as_of=dt.date(2026, 3, 5))
+        self.assertEqual(g["phase"], "paid")
+        self.assertEqual(g["amount"], Decimal("0"))
+        self.assertEqual(g["next_statement_so_far"], Decimal("25.00"))
+        self.assertEqual(g["next_cutoff_date"], dt.date(2026, 4, 1))
+
+    def test_overdue_phase(self):
+        w = self._card()
+        self._buy(w, "100.00", dt.date(2026, 2, 15))
+        g = payment_guidance(w, as_of=dt.date(2026, 3, 12))
+        self.assertEqual(g["phase"], "overdue")
+        self.assertEqual(g["days_left"], -2)
+
+    def test_financed_phase_when_minimum_covered_on_time(self):
+        w = self._card(min_payment_pct=Decimal("10"))
+        self._buy(w, "100.00", dt.date(2026, 2, 15))
+        self._pay(w, "10.00", dt.date(2026, 3, 5))
+        g = payment_guidance(w, as_of=dt.date(2026, 3, 12))
+        self.assertEqual(g["phase"], "financed")
+        self.assertEqual(g["amount"], Decimal("90.00"))
+
+    def test_nothing_due(self):
+        w = self._card()
+        g = payment_guidance(w, as_of=dt.date(2026, 3, 5))
+        self.assertEqual(g["phase"], "nothing_due")
+
+    def test_payoff_today_includes_after_cutoff_but_not_future_installments(self):
+        w = self._card()
+        self._buy(w, "100.00", dt.date(2026, 2, 15))  # del corte
+        self._buy(w, "25.00", dt.date(2026, 3, 3))  # después del corte
+        purchase = InstallmentPurchase.objects.create(
+            workspace=self.ws, wallet=w, category=self.cat, description="TV",
+            total_amount=Decimal("300.00"), installments_total=3, start_date=dt.date(2026, 2, 10),
+        )
+        self._buy(w, "300.00", dt.date(2026, 2, 10), installment_purchase=purchase,
+                  source=Transaction.SOURCE_INSTALLMENT)
+        g = payment_guidance(w, as_of=dt.date(2026, 3, 4))
+        # Estado: 100 + cuota 1 de la TV (100). Pagar todo: + 25 de después
+        # del corte, sin las 2 cuotas que faltan (200).
+        self.assertEqual(g["amount"], Decimal("200.00"))
+        self.assertEqual(g["payoff_today"], Decimal("225.00"))
+        (line,) = credit_card_statement(w, as_of=dt.date(2026, 3, 4))["installment_lines"]
+        self.assertEqual(line["next_installment_amount"], Decimal("100.00"))
+        self.assertEqual(line["next_installment_cutoff"], dt.date(2026, 4, 1))
+
+    def test_payoff_today_never_negative(self):
+        w = self._card()
+        self._pay(w, "50.00", dt.date(2026, 3, 3))
+        g = payment_guidance(w, as_of=dt.date(2026, 3, 4))
+        self.assertEqual(g["payoff_today"], Decimal("0"))
 
 
 class MinimumPaymentTests(_Base):
@@ -192,6 +282,7 @@ class StatementCyclesApiTests(_Base):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(len(resp.data["cycles"]), 2)
         self.assertIn("unbilled", resp.data)
+        self.assertIn(resp.data["guidance"]["phase"], {"due", "overdue", "financed", "paid", "nothing_due"})
 
     def test_statement_cycles_404_for_non_card(self):
         resp = self.client.get(f"/api/v1/wallets/{self.bank.id}/statement-cycles/")
@@ -219,5 +310,7 @@ class StatementCyclesApiTests(_Base):
         resp = self.client.get("/api/v1/wallets/statements/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         row = next(r for r in resp.data if str(r["wallet_id"]) == str(w.id))
-        self.assertIn(row["status"], {"pending", "overdue", "paid", "minimum_paid", "nothing_due"})
+        self.assertIn(row["status"], {"pending", "overdue", "paid", "paid_late", "minimum_paid", "nothing_due"})
         self.assertIn("remaining", row)
+        self.assertEqual(row["guidance"]["amount"], row["remaining"])
+        self.assertIn("payoff_today", row)

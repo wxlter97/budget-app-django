@@ -17,6 +17,7 @@ from .services import (
     aggregated_balances,
     credit_card_statement,
     credit_card_statements_summary,
+    guidance_from,
     goal_projection,
     recompute_wallet_balance,
     savings_interest_projection,
@@ -275,6 +276,8 @@ class StatementInstallmentLineSerializer(serializers.Serializer):
     installments_pending = serializers.IntegerField()
     installments_total = serializers.IntegerField()
     amount_pending = serializers.DecimalField(max_digits=16, decimal_places=2)
+    next_installment_amount = serializers.DecimalField(max_digits=16, decimal_places=2)
+    next_installment_cutoff = serializers.DateField()
 
 
 class CreditCardStatementSerializer(serializers.Serializer):
@@ -285,6 +288,7 @@ class CreditCardStatementSerializer(serializers.Serializer):
     available = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
     used = serializers.DecimalField(max_digits=16, decimal_places=2)
     installments_not_due = serializers.DecimalField(max_digits=16, decimal_places=2)
+    payoff_today = serializers.DecimalField(max_digits=16, decimal_places=2)
     total_due = serializers.DecimalField(max_digits=16, decimal_places=2)
     installment_lines = StatementInstallmentLineSerializer(many=True)
 
@@ -304,6 +308,7 @@ class StatementCycleSerializer(serializers.Serializer):
     statement_balance = serializers.DecimalField(**_M)
     minimum_payment = serializers.DecimalField(**_M, allow_null=True)
     paid_since_cutoff = serializers.DecimalField(**_M)
+    paid_on_time = serializers.DecimalField(**_M)
     remaining = serializers.DecimalField(**_M)
     minimum_remaining = serializers.DecimalField(**_M, allow_null=True)
     status = serializers.CharField()
@@ -317,6 +322,20 @@ class UnbilledActivitySerializer(serializers.Serializer):
     purchases = serializers.DecimalField(**_M)
     installments_next = serializers.DecimalField(**_M)
     total = serializers.DecimalField(**_M)
+
+
+class PaymentGuidanceSerializer(serializers.Serializer):
+    phase = serializers.CharField()
+    status = serializers.CharField()
+    amount = serializers.DecimalField(**_M)
+    statement_balance = serializers.DecimalField(**_M)
+    minimum_remaining = serializers.DecimalField(**_M, allow_null=True)
+    cutoff_date = serializers.DateField()
+    due_date = serializers.DateField(allow_null=True)
+    days_left = serializers.IntegerField(allow_null=True)
+    next_cutoff_date = serializers.DateField()
+    next_statement_so_far = serializers.DecimalField(**_M)
+    payoff_today = serializers.DecimalField(**_M)
 
 
 class _PreviousPeriodSerializer(serializers.Serializer):
@@ -350,7 +369,9 @@ class CreditCardStatementSummarySerializer(CreditCardStatementSerializer):
     statement_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
     remaining = serializers.DecimalField(max_digits=16, decimal_places=2)
     minimum_remaining = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    minimum_payment = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
     status = serializers.CharField()
+    guidance = PaymentGuidanceSerializer()
     wallet_id = serializers.UUIDField()
     wallet_name = serializers.CharField()
     currency = serializers.CharField()
@@ -566,10 +587,15 @@ class WalletViewSet(WorkspaceScopedViewSet):
             count = min(max(int(request.query_params.get("count", 6)), 1), 24)
         except ValueError:
             return Response({"detail": "count inválido."}, status=400)
+        cycles = statement_cycles(wallet, count=count)
+        unbilled = unbilled_activity(wallet)
+        today = timezone.localdate()
+        guidance = guidance_from(cycles[0], credit_card_statement(wallet, as_of=today), unbilled, today)
         return Response(
             {
-                "cycles": StatementCycleSerializer(statement_cycles(wallet, count=count), many=True).data,
-                "unbilled": UnbilledActivitySerializer(unbilled_activity(wallet)).data,
+                "cycles": StatementCycleSerializer(cycles, many=True).data,
+                "unbilled": UnbilledActivitySerializer(unbilled).data,
+                "guidance": PaymentGuidanceSerializer(guidance).data,
             }
         )
 

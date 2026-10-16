@@ -10,6 +10,36 @@ de la del frontend (`moneyapp`, que tiene su propio changelog).
 Para "qué falta"/planeamiento ver `ROADMAP.md`. Este archivo es sólo lo que
 ya se envió.
 
+## [1.12.0] - 2026-10-16
+
+### Agregado
+- Guía de pago de tarjeta (`guidance`) en `GET /wallets/statements/` (por
+  tarjeta) y en `GET /wallets/{id}/statement-cycles/`: en qué fase del ciclo
+  está (`due`, `overdue`, `financed`, `paid`, `nothing_due`), cuánto falta del
+  último estado, lo que falta para el mínimo, días a la fecha límite y lo que
+  ya va al próximo estado. Es la misma respuesta a «¿cuánto pago hoy?» en
+  todos lados.
+- `payoff_today` («pagar todo»): deja la tarjeta al día por completo -- el
+  estado + lo comprado después del corte -- sin adelantar cuotas a plazo que
+  aún no vencen. En `statement/`, `statements/` y en la guía. `total_due`
+  queda por compatibilidad (mismo monto, con signo).
+- `paid_on_time` en cada estado de `statement-cycles/`.
+- `next_installment_amount` / `next_installment_cutoff` en cada compra a
+  plazo pendiente de `statement/`: la cuota que entra en el próximo corte.
+
+### Corregido
+- Un pago hecho después de la fecha límite (y antes del corte siguiente) ya
+  baja lo que falta del estado. Antes no contaba y el estado seguía «vencido»
+  con el monto completo hasta el próximo corte. Si cubre todo, el estado queda
+  `paid_late`.
+- Pagos programados: el pago de tarjeta muestra lo que falta del último
+  estado, no el saldo de hoy (que incluía compras que van al estado
+  siguiente). Sin nada pendiente, no aparece.
+
+### Cambiado
+- Avisos de estado de cuenta con la misma frase que la app: «paga X antes del
+  DD/MM para no pagar intereses» / «vencido, paga X hoy». Textos en tuteo.
+
 ## [1.11.2] - 2026-10-11
 
 ### Agregado

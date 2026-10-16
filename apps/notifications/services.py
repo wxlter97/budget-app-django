@@ -441,12 +441,11 @@ def notify_statement_due():
 
             # 1. Cierre.
             if 0 <= (today - cutoff).days <= STATEMENT_CLOSED_GRACE_DAYS and cycle["remaining"] > 0:
-                parts = [f"{wallet.name}: saldo al corte {_money_text(cycle['statement_balance'], cur)}"]
+                text = f"{wallet.name}: paga {_money_text(cycle['remaining'], cur)}"
+                text += f" antes del {due.strftime('%d/%m')}" if due else ""
+                text += " para no pagar intereses."
                 if minimum is not None:
-                    parts.append(f"mínimo {_money_text(minimum, cur)}")
-                text = ", ".join(parts) + "."
-                if due:
-                    text += f" Fecha límite: {due.strftime('%d/%m')}."
+                    text += f" Mínimo: {_money_text(minimum, cur)}."
                 send(NotificationLog.KIND_STATEMENT_CLOSED, related, "Cerró tu estado de cuenta", text)
 
             if due is None:
@@ -458,8 +457,8 @@ def notify_statement_due():
                 stage = "today" if days_left == 0 else "before"
                 when = "hoy" if days_left == 0 else f"antes del {due.strftime('%d/%m')}"
                 text = (
-                    f"{wallet.name}: pagá {_money_text(cycle['remaining'], cur)} {when} "
-                    f"para no generar intereses (corte del {cutoff.strftime('%d/%m')})."
+                    f"{wallet.name}: paga {_money_text(cycle['remaining'], cur)} {when} "
+                    f"para no pagar intereses (corte del {cutoff.strftime('%d/%m')})."
                 )
                 if cycle["minimum_remaining"]:
                     text += f" Mínimo: {_money_text(cycle['minimum_remaining'], cur)}."
@@ -483,8 +482,8 @@ def notify_statement_due():
                     NotificationLog.KIND_STATEMENT_OVERDUE,
                     related,
                     "Pago de tarjeta vencido",
-                    f"{wallet.name}: no registramos {what} que vencía el {due.strftime('%d/%m')}. "
-                    f"Pendiente: {_money_text(owed, cur)}. Si ya pagaste, registrá el pago.",
+                    f"{wallet.name}: vencido, paga {_money_text(owed, cur)} hoy. No registramos "
+                    f"{what} que vencía el {due.strftime('%d/%m')}; si ya pagaste, registra el pago.",
                 )
 
 
@@ -557,7 +556,7 @@ def notify_statement_cutoff(today=None):
                 title=f"{wallet.name} corta {when}",
                 body=(
                     "Lo que compres después del corte entra al estado siguiente y lo "
-                    f"pagás un mes más tarde — {workspace.name}"
+                    f"pagas un mes más tarde — {workspace.name}"
                 ),
                 data={
                     "type": NotificationLog.KIND_STATEMENT_CUTOFF,
