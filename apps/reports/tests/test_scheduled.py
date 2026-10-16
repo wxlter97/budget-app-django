@@ -95,14 +95,15 @@ class ScheduledEndpointTests(APITestCase):
 
     def test_card_payment_due_date_is_listed(self, _localdate):
         # corte el 5 (ya pasó este mes respecto a TODAY=10 de marzo), pago el
-        # 25 -- cae en el mismo mes del corte (25 > 5), después de TODAY.
+        # 25 -- cae en el mismo mes del corte (25 > 5), después de TODAY. La
+        # compra es ANTES del corte: entra en el estado que vence el 25.
         card = Wallet.objects.create(
             workspace=self.ws, name="Visa", purpose=Wallet.PURPOSE_DEBT,
             kind=Wallet.KIND_CREDIT, billing_cycle_day=5, payment_due_day=25,
         )
         Transaction.objects.create(
             wallet=card, category=self.cat, amount=Decimal("50.00"),
-            date=dt.date(2026, 3, 6), type=Transaction.TYPE_EXPENSE,
+            date=dt.date(2026, 3, 4), type=Transaction.TYPE_EXPENSE,
         )
         res = self.client.get(
             "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
@@ -113,6 +114,25 @@ class ScheduledEndpointTests(APITestCase):
         self.assertEqual(item["date"], "2026-03-25")
         self.assertEqual(item["amount"], "50.00")
         self.assertIn("Visa", item["description"])
+
+    def test_card_payment_is_statement_not_purchases_after_cutoff(self, _localdate):
+        # Lo comprado después del corte (6 de marzo) va al estado siguiente:
+        # no se suma al pago que vence el 25.
+        card = Wallet.objects.create(
+            workspace=self.ws, name="Visa", purpose=Wallet.PURPOSE_DEBT,
+            kind=Wallet.KIND_CREDIT, billing_cycle_day=5, payment_due_day=25,
+        )
+        for day, amount in ((4, "50.00"), (6, "30.00")):
+            Transaction.objects.create(
+                wallet=card, category=self.cat, amount=Decimal(amount),
+                date=dt.date(2026, 3, day), type=Transaction.TYPE_EXPENSE,
+            )
+        res = self.client.get(
+            "/api/v1/reports/scheduled/?since=2026-03-01&until=2026-03-31",
+            **{HEADER: str(self.ws.id)},
+        )
+        item = next(i for i in res.data if i["kind"] == "card_payment")
+        self.assertEqual(item["amount"], "50.00")
 
     def test_card_without_payment_due_day_has_no_card_payment_item(self, _localdate):
         # `cls.wallet` tiene billing_cycle_day pero no payment_due_day --
@@ -180,7 +200,7 @@ class ScheduledEndpointTests(APITestCase):
         )
         Transaction.objects.create(
             wallet=card, category=self.cat, amount=Decimal("50.00"),
-            date=dt.date(2026, 3, 6), type=Transaction.TYPE_EXPENSE,
+            date=dt.date(2026, 3, 4), type=Transaction.TYPE_EXPENSE,
         )
         Wallet.objects.create(
             workspace=self.ws, name="Préstamo carro", purpose=Wallet.PURPOSE_DEBT,

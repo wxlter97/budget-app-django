@@ -12,7 +12,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.accounts.models import Wallet
-from apps.accounts.services import credit_card_statement, installment_status
+from apps.accounts.services import credit_card_statement, installment_status, statement_cycle
 from apps.common import periods
 from apps.transactions.models import (
     Category,
@@ -449,6 +449,11 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
         due = statement["payment_due_date"] if statement else None
         if due is None or due < since or due > until:
             continue
+        # Lo que falta del estado del último corte -- no el saldo de hoy,
+        # que incluye compras que van al próximo estado.
+        owed = statement_cycle(card, statement["cutoff_date"], as_of=today)["remaining"]
+        if owed <= 0:
+            continue
         items.append(
             {
                 "date": due,
@@ -456,7 +461,7 @@ def upcoming_scheduled(workspace, user, until=None, since=None):
                 "type": "expense",
                 "source_id": card.id,
                 "description": f"Pago de tarjeta · {card.name}",
-                "amount": statement["total_due"],
+                "amount": owed,
                 "category": None,
                 "category_name": None,
                 "wallet": card.id,

@@ -454,7 +454,7 @@ class NotifyStatementDueTests(NotificationServicesTestCase):
             services.notify_statement_due()
         mock_send.assert_called_once()
         self.assertEqual(mock_send.call_args.kwargs["title"], "Cerró tu estado de cuenta")
-        self.assertIn("Fecha límite: 10/03", mock_send.call_args.kwargs["body"])
+        self.assertIn("antes del 10/03 para no pagar intereses", mock_send.call_args.kwargs["body"])
 
     def test_payment_resolves_pending_statement_notifications(self):
         with patch("django.utils.timezone.localdate", return_value=self.DUE_DATE), patch(
@@ -522,7 +522,7 @@ class NotifyStatementDueTests(NotificationServicesTestCase):
         self.assertEqual(data["amount"], "200.00")
         self.assertEqual(data["due_date"], "2026-03-10")
         self.assertEqual(mock_send.call_args.kwargs["title"], "Hoy vence el pago de tu tarjeta")
-        self.assertIn("para no generar intereses", mock_send.call_args.kwargs["body"])
+        self.assertIn("para no pagar intereses", mock_send.call_args.kwargs["body"])
 
 
 class NotifyInsightsTests(NotificationServicesTestCase):
